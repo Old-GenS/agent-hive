@@ -153,6 +153,31 @@ body {
 .modal-btns .cancel { background: var(--bg3); color: var(--text); }
 .modal-btns .confirm { background: var(--accent); color: white; border-color: var(--accent); }
 
+/* Session controls, tool lines, repo detail */
+.chat-controls { flex-wrap: wrap; align-items: center; }
+.mini-input { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 4px 8px; font-size: 12px; width: 130px; }
+.mini-input.wide { width: 240px; }
+.mini-input:disabled, .mini-select:disabled { opacity: .5; }
+.mini-btn { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.mini-btn:hover { border-color: var(--accent); }
+.chat-input-row .mini-btn { padding: 10px 14px; font-size: 14px; }
+.session-info { color: var(--text2); font-size: 12px; font-family: monospace; margin-left: auto; }
+.msg.tool { align-self: flex-start; background: none; color: var(--text2); font-size: 12px; padding: 0 16px; max-width: 100%; }
+.msg.system.error { color: var(--red); }
+.gh-meta { color: var(--text2); font-weight: 400; font-size: 11px; }
+.gh-note { color: var(--text2); font-size: 12px; padding: 12px; }
+.gh-detail { padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+.gh-detail h3 { font-size: 18px; }
+.gh-detail-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.gh-detail-btns button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--accent); color: white; cursor: pointer; font-size: 13px; }
+@media (max-width: 640px) {
+  .gh-layout { flex-direction: column; }
+  .gh-sidebar { width: 100%; max-height: 45vh; border-right: none; border-bottom: 1px solid var(--border); }
+  .mini-input, .mini-input.wide { width: 100%; }
+  .msg { max-width: 100%; }
+  .header-left .tabs .tab-btn { padding: 6px 10px; }
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

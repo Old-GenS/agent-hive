@@ -14,14 +14,14 @@ echo ""
 
 # Check Node
 if ! command -v node &>/dev/null; then
-  echo "ERROR: Node.js >= 18 is required. Install it first:"
+  echo "ERROR: Node.js >= 20 is required. Install it first:"
   echo "  https://nodejs.org/"
   exit 1
 fi
 
 NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
-if [ "$NODE_VER" -lt 18 ]; then
-  echo "ERROR: Node.js >= 18 required, found $(node -v)"
+if [ "$NODE_VER" -lt 20 ]; then
+  echo "ERROR: Node.js >= 20 required, found $(node -v)"
   exit 1
 fi
 echo "  Node: $(node -v) ✓"
@@ -32,6 +32,18 @@ if ! command -v git &>/dev/null; then
   exit 1
 fi
 echo "  Git: $(git --version | head -1) ✓"
+
+# Check podman (tasks run in podman sandboxes)
+if ! command -v podman &>/dev/null; then
+  echo "ERROR: podman is required (tasks run in sandboxes). Install it, e.g.: sudo apt install podman"
+  exit 1
+fi
+echo "  Podman: $(podman --version) ✓"
+if [ -r /dev/kvm ] && [ -w /dev/kvm ] && command -v krun &>/dev/null; then
+  echo "  Isolation: krun microVMs ✓"
+else
+  echo "  Isolation: rootless containers (no usable /dev/kvm + krun). See README > Isolation levels."
+fi
 
 # Clone or update
 if [ -d "$APP_DIR" ]; then
@@ -46,15 +58,20 @@ else
   cd "$APP_DIR"
 fi
 
-# Install deps
+# Install deps and build (dev deps are needed for the build, then pruned)
 echo ""
-echo "  Installing dependencies..."
-npm install --omit=dev
-
-# Build
-echo ""
-echo "  Building..."
+echo "  Building server..."
+npm ci
 npm run build
+npm prune --omit=dev
+
+echo ""
+echo "  Building web UI..."
+npm run build:ui
+
+echo ""
+echo "  Building sandbox image (first time takes a few minutes)..."
+npm run build:image
 
 # .env setup
 if [ ! -f .env ]; then
@@ -75,5 +92,5 @@ echo "    1. Edit $APP_DIR/.env"
 echo "    2. Start: node $APP_DIR/dist/index.js"
 echo "    3. Test: curl http://localhost:8080/health"
 echo ""
-echo "  For systemd setup, see the repo README."
+echo "  For systemd setup and deploy keys, see README.md and AGENTS.md."
 echo ""

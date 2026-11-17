@@ -1,0 +1,24 @@
+# The agent-hive sandbox: pi plus the tools a coding task usually needs.
+# Each task runs in a fresh container from this image (podman --runtime krun gives it its own
+# kernel). It sees only the task's clone at /work, its session at /session and one LLM API key:
+# no SSH keys, no gh token, no git remote.
+FROM docker.io/library/node:24-trixie-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates curl jq ripgrep fd-find procps less file tree patch unzip xz-utils \
+      python3 python3-venv build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# libkrun's TSI networking can oops the guest kernel on some IPv6 socket options, so pi runs
+# through no-ipv6, which makes AF_INET6 sockets fail and everything falls back to IPv4.
+COPY no-ipv6.c /tmp/no-ipv6.c
+RUN gcc -O2 -o /usr/local/bin/no-ipv6 /tmp/no-ipv6.c && rm /tmp/no-ipv6.c
+
+# Pinned so a pi release can't change behaviour under a running deployment; bump deliberately.
+ARG PI_VERSION=1.5.2
+RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" && npm cache clean --force
+
+ENV HOME=/root PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0
+RUN mkdir -p /root/.pi/agent && echo '{ "enableInstallTelemetry": false }' > /root/.pi/agent/settings.json
+COPY hive-agent hive-export /usr/local/bin/
+WORKDIR /work

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Runs pi in JSON-event mode on /work. Arguments are passed straight to pi.
+# --approve: the sandbox is the trust boundary, so project-local pi resources may load.
+set -uo pipefail
+git config --global --add safe.directory '*'
+exec no-ipv6 pi --mode json --approve "$@"

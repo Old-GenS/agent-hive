@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Turns the agent's work into patch files in /out, which the host applies to its own clean
+# clone with `git am`. The host never runs git inside /work, so nothing the agent did to .git
+# (hooks, config, filters) can run on the host.
+set -euo pipefail
+base=${1:?base commit required}
+cd /work
+git config --global --add safe.directory '*'
+# Build and cache junk the agent left behind shouldn't land in the branch. Applies to untracked
+# files only; anything the repo already tracks is unaffected.
+cat >> .git/info/exclude <<'X'
+__pycache__/
+*.py[co]
+node_modules/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+X
+git add -A
+if ! git diff --cached --quiet; then
+  git commit -q --no-verify -m "hive: uncommitted changes from the agent"
+fi
+git format-patch -q --binary --no-stat -o /out "$base..HEAD"
+ls /out | wc -l

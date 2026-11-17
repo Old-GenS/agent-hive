@@ -1,339 +1,123 @@
 /**
- * GitHub Panel — repo browser with clone, fork, branch, commit, push.
- * Ported from the existing vanilla JS panel, converted to TypeScript.
+ * GitHub panel: browse your repos or search public ones, then hand one to the chat.
+ * Repo names and descriptions come from GitHub and are attacker-controllable for public repos,
+ * so they're only ever inserted escaped.
  */
+import { api, esc } from "./util.js";
 
 interface Repo {
   name: string;
+  nameWithOwner?: string;
   fullName?: string;
   description?: string;
   visibility?: string;
   stargazersCount?: number;
   language?: string;
-  owner?: { login: string };
+  isArchived?: boolean;
 }
 
-interface RepoStatus {
-  branch?: string;
-  status?: string;
-  recentCommits?: string[];
-}
-
-interface FileEntry {
-  name: string;
-  type: "file" | "dir";
-  size?: number;
-}
+const fullName = (r: Repo) => r.nameWithOwner || r.fullName || r.name;
 
 export class GitHubPanel {
-  private token: string;
-  private serverUrl: string;
   private repos: Repo[] = [];
-  private searchResults: Repo[] = [];
-  private activeRepo: string | null = null;
+  private results: Repo[] = [];
   private mode: "mine" | "search" = "mine";
-  private searchTimeout: ReturnType<typeof setTimeout> | null = null;
-  private pushTarget: string | null = null;
+  private timer?: ReturnType<typeof setTimeout>;
+  private active?: string;
 
-  constructor(token: string, serverUrl: string) {
-    this.token = token;
-    this.serverUrl = serverUrl;
+  constructor(private useRepo: (fullName: string) => void) {}
+
+  init() {
+    document.getElementById("modeMine")!.onclick = () => this.setMode("mine");
+    document.getElementById("modeSearch")!.onclick = () => this.setMode("search");
+    document.getElementById("repoFilter")!.oninput = () => this.onInput();
+    void this.refresh();
   }
 
-  private api(path: string, opts: RequestInit = {}): Promise<Response> {
-    return fetch(`${this.serverUrl}${path}`, {
-      ...opts,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        ...opts.headers,
-      },
-    });
+  private async refresh() {
+    const r = await api("/api/github/repos");
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return this.message(data.error || "Couldn't load repos");
+    this.repos = data;
+    this.render();
   }
 
-  async refresh(): Promise<void> {
-    try {
-      const res = await this.api("/api/github/repos");
-      this.repos = await res.json();
-      this.renderRepos();
-    } catch (e) {
-      console.error("Failed to load repos:", e);
-    }
-  }
-
-  setMode(mode: "mine" | "search"): void {
+  private setMode(mode: "mine" | "search") {
     this.mode = mode;
-    document.getElementById("modeMine")?.classList.toggle("active", mode === "mine");
-    document.getElementById("modeSearch")?.classList.toggle("active", mode === "search");
+    document.getElementById("modeMine")!.classList.toggle("active", mode === "mine");
+    document.getElementById("modeSearch")!.classList.toggle("active", mode === "search");
     const input = document.getElementById("repoFilter") as HTMLInputElement;
-    if (input) {
-      input.value = "";
-      input.placeholder = mode === "search"
-        ? 'Search public repos (e.g. "fastapi web framework")'
-        : "Filter repos...";
-    }
-    if (mode === "mine") this.renderRepos();
+    input.value = "";
+    input.placeholder = mode === "search" ? "Search public repos…" : "Filter repos…";
+    this.results = [];
+    this.render();
   }
 
-  onFilterInput(): void {
-    if (this.mode === "mine") {
-      this.renderRepos();
-      return;
-    }
-    if (this.searchTimeout) clearTimeout(this.searchTimeout);
-    const input = document.getElementById("repoFilter") as HTMLInputElement;
-    const q = input?.value?.trim() || "";
-    if (q.length < 2) {
-      const list = document.getElementById("repoList");
-      if (list) list.innerHTML = "";
-      return;
-    }
-    this.searchTimeout = setTimeout(() => this.searchRepos(q), 500);
+  private onInput() {
+    if (this.mode === "mine") return this.render();
+    clearTimeout(this.timer);
+    this.timer = setTimeout(async () => {
+      const q = (document.getElementById("repoFilter") as HTMLInputElement).value.trim();
+      if (!q) return;
+      const r = await api(`/api/github/search?q=${encodeURIComponent(q)}`);
+      this.results = r.ok ? await r.json() : [];
+      this.render();
+    }, 400);
   }
 
-  private async searchRepos(q: string): Promise<void> {
-    try {
-      const res = await this.api(`/api/github/search?q=${encodeURIComponent(q)}`);
-      this.searchResults = await res.json();
-      this.renderSearchResults();
-    } catch (e) {
-      console.error("Search failed:", e);
-    }
+  private message(text: string) {
+    document.getElementById("repoList")!.innerHTML = `<div class="gh-note">${esc(text)}</div>`;
   }
 
-  private renderSearchResults(): void {
-    const list = document.getElementById("repoList");
-    if (!list) return;
+  private render() {
+    const list = document.getElementById("repoList")!;
+    const filter = (document.getElementById("repoFilter") as HTMLInputElement).value.toLowerCase();
+    const items = this.mode === "mine"
+      ? this.repos.filter((r) => !r.isArchived && fullName(r).toLowerCase().includes(filter))
+      : this.results;
+    if (!items.length) return this.message(this.mode === "search" ? "Type to search" : "No repos");
     list.innerHTML = "";
-    if (!this.searchResults.length) {
-      list.innerHTML = '<div style="padding:12px;color:var(--text2);font-size:13px">No results</div>';
-      return;
-    }
-    this.searchResults.forEach((r) => {
+    for (const r of items) {
       const div = document.createElement("div");
-      div.className = "gh-repo-item";
-      const stars = r.stargazersCount ? ` ⭐${r.stargazersCount}` : "";
-      const lang = r.language ? ` <span style="color:var(--purple);font-size:11px">${r.language}</span>` : "";
-      div.innerHTML = `<div class="gh-repo-name">${r.name}${stars}${lang}</div><div class="gh-repo-desc">${r.description || ""}</div>`;
-      div.onclick = () => this.forkAndClone(r.fullName || r.name);
+      div.className = "gh-repo-item" + (fullName(r) === this.active ? " active" : "");
+      const meta = [r.visibility === "PRIVATE" || r.visibility === "private" ? "🔒" : "",
+        r.stargazersCount ? `⭐ ${r.stargazersCount}` : "", r.language || ""].filter(Boolean).join(" ");
+      div.innerHTML = `<div class="gh-repo-name">${esc(fullName(r))} <span class="gh-meta">${esc(meta)}</span></div>
+        <div class="gh-repo-desc">${esc(r.description || "")}</div>`;
+      div.onclick = () => this.select(r);
       list.appendChild(div);
-    });
-  }
-
-  private renderRepos(): void {
-    const filter = (document.getElementById("repoFilter") as HTMLInputElement)?.value?.toLowerCase() || "";
-    const list = document.getElementById("repoList");
-    if (!list) return;
-    list.innerHTML = "";
-    this.repos
-      .filter((r) => !filter || r.name.toLowerCase().includes(filter) || (r.description || "").toLowerCase().includes(filter))
-      .forEach((r) => {
-        const div = document.createElement("div");
-        div.className = "gh-repo-item" + (this.activeRepo === r.name ? " active" : "");
-        div.innerHTML = `<div class="gh-repo-name">${r.name} ${r.visibility === "private" ? "🔒" : ""}</div><div class="gh-repo-desc">${r.description || ""}</div>`;
-        div.onclick = () => this.selectRepo(r.name);
-        list.appendChild(div);
-      });
-  }
-
-  async selectRepo(name: string): Promise<void> {
-    this.activeRepo = name;
-    this.renderRepos();
-    const empty = document.getElementById("ghEmpty");
-    const content = document.getElementById("ghContent");
-    if (empty) empty.style.display = "none";
-    if (content) content.style.display = "flex";
-    const nameEl = document.getElementById("ghRepoName");
-    if (nameEl) nameEl.textContent = name;
-    await Promise.all([this.loadRepoStatus(name), this.loadFiles(name)]);
-  }
-
-  private async loadRepoStatus(name: string): Promise<void> {
-    try {
-      const res = await this.api(`/api/github/status/${name}`);
-      const data: RepoStatus & { error?: string } = await res.json();
-      const actionsEl = document.getElementById("ghActions");
-      const branchEl = document.getElementById("ghBranch");
-      const statusEl = document.getElementById("ghStatus");
-      const filesEl = document.getElementById("ghFiles");
-      const logEl = document.getElementById("ghLog");
-
-      if (!res.ok || data.error) {
-        if (actionsEl) actionsEl.innerHTML = `<button onclick="window._ghPanel.cloneRepo('${name}')">📥 Clone</button>`;
-        if (branchEl) branchEl.textContent = "";
-        if (statusEl) statusEl.textContent = "Not cloned";
-        if (filesEl) filesEl.innerHTML = '<div class="gh-empty">Clone this repo to get started</div>';
-        if (logEl) logEl.style.display = "none";
-        return;
-      }
-
-      if (branchEl) branchEl.textContent = data.branch || "";
-      const changes = data.status ? data.status.split("\n").length : 0;
-      if (statusEl) statusEl.textContent = changes > 0 ? `${changes} change(s)` : "Clean";
-      if (actionsEl) {
-        actionsEl.innerHTML = `
-          <button onclick="window._ghPanel.pullRepo('${name}')">📥 Pull</button>
-          <button onclick="window._ghPanel.newBranch('${name}')">🌿 Branch</button>
-          <button onclick="window._ghPanel.openCommitModal('${name}')">📤 Push</button>
-          <button onclick="window._ghPanel.refreshStatus('${name}')">🔄</button>
-        `;
-      }
-      if (data.recentCommits && data.recentCommits[0] && logEl) {
-        logEl.style.display = "block";
-        logEl.textContent = data.recentCommits.join("\n");
-      }
-    } catch (e) {
-      console.error("loadRepoStatus error:", e);
     }
   }
 
-  private async loadFiles(name: string, path = ""): Promise<void> {
-    try {
-      const res = await this.api(`/api/github/files/${name}?path=${encodeURIComponent(path)}`);
-      const data = await res.json();
-      const filesEl = document.getElementById("ghFiles");
-      if (!filesEl) return;
-      if (!res.ok || !data.files) {
-        filesEl.innerHTML = '<div class="gh-empty">No files</div>';
-        return;
-      }
-      filesEl.innerHTML = "";
-      if (path) {
-        const back = document.createElement("div");
-        back.className = "gh-file";
-        back.innerHTML = '<span class="icon dir">📁</span> ..';
-        back.onclick = () => this.loadFiles(name, path.split("/").slice(0, -1).join("/"));
-        filesEl.appendChild(back);
-      }
-      (data.files as FileEntry[]).forEach((f) => {
-        const div = document.createElement("div");
-        div.className = "gh-file";
-        const icon = f.type === "dir" ? "📁" : this.getFileIcon(f.name);
-        const iconClass = f.type === "dir" ? "dir" : "file";
-        const size = f.type === "file" ? this.formatSize(f.size || 0) : "";
-        div.innerHTML = `<span class="icon ${iconClass}">${icon}</span> ${f.name} <span class="size">${size}</span>`;
-        if (f.type === "dir") {
-          div.onclick = () => this.loadFiles(name, path ? `${path}/${f.name}` : f.name);
-        }
-        filesEl.appendChild(div);
-      });
-    } catch (e) {
-      console.error("loadFiles error:", e);
-    }
-  }
-
-  private getFileIcon(name: string): string {
-    const ext = name.split(".").pop()?.toLowerCase() || "";
-    const icons: Record<string, string> = {
-      ts: "🔷", js: "📜", json: "📋", md: "📝", py: "🐍",
-      html: "🌐", css: "🎨", sh: "⚡", yml: "⚙️", yaml: "⚙️",
-      toml: "⚙️", sql: "🗃️",
-    };
-    return icons[ext] || "📄";
-  }
-
-  private formatSize(b: number): string {
-    if (b < 1024) return b + "B";
-    if (b < 1048576) return (b / 1024).toFixed(1) + "K";
-    return (b / 1048576).toFixed(1) + "M";
-  }
-
-  async cloneRepo(name: string): Promise<void> {
-    const repo = this.repos.find((r) => r.name === name);
-    if (!repo) return;
-    const fullName = repo.fullName || (repo.owner?.login ? `${repo.owner.login}/${name}` : name);
-    const res = await this.api("/api/github/clone", {
-      method: "POST",
-      body: JSON.stringify({ repo: fullName }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      this.loadRepoStatus(name);
-      this.loadFiles(name);
-    } else {
-      alert("Clone failed: " + data.error);
-    }
-  }
-
-  async pullRepo(name: string): Promise<void> {
-    const res = await this.api("/api/github/pull", {
-      method: "POST",
-      body: JSON.stringify({ repo: name }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      this.loadRepoStatus(name);
-      this.loadFiles(name);
-    } else {
-      alert("Pull failed: " + data.error);
-    }
-  }
-
-  async newBranch(name: string): Promise<void> {
-    const branch = prompt("New branch name:");
-    if (!branch) return;
-    const res = await this.api("/api/github/branch", {
-      method: "POST",
-      body: JSON.stringify({ repo: name, branch }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      this.loadRepoStatus(name);
-    } else {
-      alert("Branch failed: " + data.error);
-    }
-  }
-
-  openCommitModal(name: string): void {
-    this.pushTarget = name;
-    (document.getElementById("commitMsg") as HTMLInputElement).value = "";
-    document.getElementById("commitModal")?.classList.add("active");
-    document.getElementById("commitMsg")?.focus();
-  }
-
-  closeCommitModal(): void {
-    document.getElementById("commitModal")?.classList.remove("active");
-  }
-
-  async confirmPush(): Promise<void> {
-    const msg = (document.getElementById("commitMsg") as HTMLInputElement)?.value?.trim() || "Update from Hive UI";
-    this.closeCommitModal();
-    if (!this.pushTarget) return;
-    const res = await this.api("/api/github/push", {
-      method: "POST",
-      body: JSON.stringify({ repo: this.pushTarget, message: msg }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      this.loadRepoStatus(this.pushTarget);
-    } else {
-      alert("Push failed: " + data.error);
-    }
-  }
-
-  refreshStatus(name: string): void {
-    this.loadRepoStatus(name);
-    this.loadFiles(name);
-  }
-
-  private async forkAndClone(fullName: string): Promise<void> {
-    const name = fullName.split("/").pop() || fullName;
-    if (confirm(`Fork ${fullName} into oatclaw88 and clone?`)) {
-      try {
-        const res = await this.api("/api/github/fork", {
-          method: "POST",
-          body: JSON.stringify({ repo: fullName }),
-        });
+  private select(r: Repo) {
+    this.active = fullName(r);
+    this.render();
+    const main = document.getElementById("ghMain")!;
+    main.innerHTML = `
+      <div class="gh-detail">
+        <h3>${esc(fullName(r))}</h3>
+        <p>${esc(r.description || "No description")}</p>
+        <div class="gh-detail-btns">
+          <button id="ghUse">💬 Work on this repo</button>
+          ${this.mode === "search" ? '<button id="ghFork">🍴 Fork, then work on the fork</button>' : ""}
+        </div>
+        <p class="gh-note">The agent works on a copy in a sandbox and its commits are pushed to a new
+        <code>hive/…</code> branch. Pushing needs a deploy key (or gh access) for this repo on the server.</p>
+        <div id="ghMsg" class="gh-note"></div>
+      </div>`;
+    document.getElementById("ghUse")!.onclick = () => this.useRepo(fullName(r));
+    const fork = document.getElementById("ghFork");
+    if (fork) {
+      fork.onclick = async () => {
+        document.getElementById("ghMsg")!.textContent = "Forking…";
+        const res = await api("/api/github/fork", { method: "POST", body: JSON.stringify({ repo: fullName(r) }) });
         const data = await res.json();
-        if (res.ok) {
-          await this.refresh();
-          setTimeout(() => this.selectRepo(name), 1000);
-        } else {
-          alert("Fork failed: " + data.error);
+        if (!res.ok) {
+          document.getElementById("ghMsg")!.textContent = data.error || "Fork failed";
+          return;
         }
-      } catch (e: any) {
-        alert("Error: " + e.message);
-      }
+        this.useRepo(data.repo);
+      };
     }
   }
 }

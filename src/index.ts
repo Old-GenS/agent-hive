@@ -1,118 +1,73 @@
+import { config } from "./config.js";
 import Fastify from "fastify";
 import fWebSocket from "@fastify/websocket";
 import fStatic from "@fastify/static";
-import dotenv from "dotenv";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import promptRoute from "./routes/prompt.js";
-import statusRoute from "./routes/status.js";
-import abortRoute from "./routes/abort.js";
-import snippetRoute from "./routes/snippet.js";
-import eventsRoute from "./routes/events.js";
-import githubRoute from "./routes/github.js";
-import userRoute from "./routes/user.js";
+import { loadTokens, requireAuth } from "./auth.js";
+import { checkSandbox, runtimeInfo } from "./sandbox.js";
+import { capacity, taskCount } from "./tasks.js";
+import sessionRoutes from "./routes/sessions.js";
+import githubRoutes from "./routes/github.js";
 
-dotenv.config();
-
-// Multi-token support — backwards compatible with single API_TOKEN
-const API_TOKEN = process.env.API_TOKEN;
-const API_TOKENS: Record<string, { name: string; role?: string }> = {};
-
-if (process.env.API_TOKENS) {
-  try {
-    const parsed = JSON.parse(process.env.API_TOKENS);
-    for (const [tok, profile] of Object.entries(parsed)) {
-      API_TOKENS[tok] = profile as any;
-    }
-  } catch {
-    console.warn("Failed to parse API_TOKENS, falling back to single token");
-  }
+let tokenCount = 0;
+try {
+  tokenCount = loadTokens();
+} catch (err) {
+  console.error(`FATAL: ${(err as Error).message}`);
+  process.exit(1);
 }
-
-if (!Object.keys(API_TOKENS).length && API_TOKEN) {
-  API_TOKENS[API_TOKEN] = { name: "Admin" };
-}
-
-if (!Object.keys(API_TOKENS).length) {
-  console.error("FATAL: API_TOKEN or API_TOKENS not set in .env");
+if (!tokenCount) {
+  console.error("FATAL: set API_TOKEN (or API_TOKENS) in .env; generate one with: openssl rand -hex 32");
   process.exit(1);
 }
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+mkdirSync(config.workspace, { recursive: true, mode: 0o700 });
+// Tasks live in memory, so task dirs left by a previous run are orphans. Only UUID-named dirs
+// are touched, so a WORKSPACE pointed somewhere unexpected can't be wiped.
+const UUID_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+for (const entry of readdirSync(config.workspace)) {
+  if (UUID_DIR.test(entry)) rmSync(join(config.workspace, entry), { recursive: true, force: true });
+}
 
-const app = Fastify({ logger: true });
-
-// Auth middleware — skip public paths, store user on request
-app.addHook("onRequest", async (req, reply) => {
-  const publicPaths = ["/health", "/", "/docs", "/public/", "/ui", "/ui/"];
-  if (publicPaths.some((p) => req.url === p)) return;
-  if (req.url.startsWith("/public/") || req.url.startsWith("/ui/")) return;
-  if (req.url.startsWith("/assets/") || req.url.endsWith(".css") || req.url.endsWith(".js") || req.url.endsWith(".ico") || req.url.endsWith(".woff2") || req.url.endsWith(".ttf") || req.url.endsWith(".mjs")) return;
-
-  const token =
-    req.headers.authorization?.replace("Bearer ", "") ||
-    (req.query as Record<string, string>).token;
-
-  const userProfile = API_TOKENS[token || ""];
-  if (!userProfile) {
-    reply.code(401).send({ error: "Unauthorized" });
-    return;
-  }
-
-  (req as any).hiveUser = { token: token!, name: userProfile.name, role: userProfile.role || "user" };
-});
+const here = dirname(fileURLToPath(import.meta.url));
+const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
 await app.register(fWebSocket);
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// Serve public static files (landing page)
-await app.register(fStatic, {
-  root: join(__dirname, "..", "public"),
-  prefix: "/public/",
-  decorateReply: true,
-});
-
-// Serve the new pi-web-ui build
-await app.register(fStatic, {
-  root: join(__dirname, "..", "ui", "dist"),
-  prefix: "/ui/",
-  decorateReply: false
-});
-
-// Public routes
-app.get("/", async (_req, reply) => {
-  return reply.sendFile("landing.html");
-});
-app.get("/docs", async (_req, reply) => {
-  return reply.sendFile("landing.html");
-});
-
-// Serve new UI at /ui
-app.get("/ui", async (_req, reply) => {
-  return reply.sendFile("index.html", join(__dirname, "..", "ui", "dist"));
-});
-app.get("/ui/", async (_req, reply) => {
-  return reply.sendFile("index.html", join(__dirname, "..", "ui", "dist"));
-});
-
-app.register(promptRoute);
-app.register(statusRoute);
-app.register(abortRoute);
-app.register(snippetRoute);
-app.register(eventsRoute);
-app.register(githubRoute);
-app.register(userRoute);
-
+// ── public: landing page, UI assets, health ──
+await app.register(fStatic, { root: join(here, "..", "public"), prefix: "/public/" });
+const uiDist = join(here, "..", "ui", "dist");
+if (existsSync(uiDist)) {
+  await app.register(fStatic, { root: uiDist, prefix: "/ui/", decorateReply: false });
+  app.get("/ui", (_req, reply) => reply.redirect("/ui/"));
+} else {
+  app.log.warn("ui/dist not found; build the UI with: npm run build:ui");
+}
+app.get("/", (_req, reply) => reply.sendFile("landing.html"));
+app.get("/docs", (_req, reply) => reply.sendFile("landing.html"));
 app.get("/health", async () => ({
   status: "ok",
   uptime: Math.floor(process.uptime()),
-  sessions: (await import("./sessions/manager.js")).getSessionCount(),
+  sessions: taskCount(),
+  isolation: runtimeInfo.isolation,
 }));
 
+// ── API: everything registered in this scope requires auth ──
+await app.register(async (api) => {
+  api.addHook("onRequest", requireAuth);
+  api.get("/capacity", async () => capacity());
+  await api.register(sessionRoutes);
+  await api.register(githubRoutes);
+});
+
+for (const problem of checkSandbox()) app.log.error(problem);
+app.log.info(`sandbox isolation: ${runtimeInfo.isolation}${runtimeInfo.runtime ? ` (--runtime ${runtimeInfo.runtime})` : ""}`);
+if (runtimeInfo.warning) app.log.warn(runtimeInfo.warning);
+
 try {
-  await app.listen({ port: PORT, host: "0.0.0.0" });
-  console.log(`Agent Hive running on port ${PORT}`);
+  await app.listen({ port: config.port, host: config.host });
 } catch (err) {
   app.log.error(err);
   process.exit(1);

@@ -1,271 +1,308 @@
 /**
- * Agent Hive UI — Main entry point
- *
- * Custom chat UI with streaming via WebSocket + REST API.
- * GitHub panel for repo browsing.
- * Token-based auth.
+ * Agent Hive UI: chat with an agent that works on a repo inside a sandbox, plus a GitHub panel
+ * for picking the repo. Everything from the server is rendered as text (escaped) — agent output
+ * and repo descriptions are untrusted.
  */
-
-import { HiveAgentProxy } from "./hive-agent.js";
 import { GitHubPanel } from "./github-panel.js";
+import { STORAGE_KEY, api, esc, getToken, serverUrl, setToken } from "./util.js";
 
-const STORAGE_KEY = "hive_token";
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-// ---- Helpers ----
-const $ = (id: string) => document.getElementById(id) as HTMLElement;
-const serverUrl = window.location.origin;
-let token = localStorage.getItem(STORAGE_KEY) || "";
-let user: { name: string } | null = null;
-let agent: HiveAgentProxy | null = null;
-let ghPanel: GitHubPanel | null = null;
-let currentTab = "chat";
-
-function api(path: string, opts: RequestInit = {}): Promise<Response> {
-  return fetch(`${serverUrl}${path}`, {
-    ...opts,
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...opts.headers },
-  });
+function formatContent(text: string): string {
+  return esc(text)
+    .replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
 }
 
-// ---- Auth ----
-async function validateToken(): Promise<boolean> {
-  try { return (await fetch(`${serverUrl}/health`)).ok; } catch { return false; }
+// ── auth ──
+
+async function validateToken(): Promise<{ name: string } | null> {
+  try {
+    const r = await api("/api/user");
+    return r.ok ? await r.json() : null;
+  } catch {
+    return null;
+  }
 }
 
-async function loadUser() {
-  try { const r = await api("/api/user"); if (r.ok) user = await r.json(); } catch { user = null; }
+function renderTokenGate(error = false) {
+  $("app").innerHTML = `
+    <div class="token-gate"><div class="token-gate-inner">
+      <h2>🐝 Agent Hive</h2>
+      <p>Enter your API token to continue</p>
+      <input type="password" id="tokenInput" placeholder="API token" autofocus>
+      <button id="loginBtn">Continue</button>
+      <div class="token-error ${error ? "visible" : ""}">Invalid token</div>
+    </div></div>`;
+  const login = async () => {
+    setToken($<HTMLInputElement>("tokenInput").value.trim());
+    if (!getToken()) return;
+    const user = await validateToken();
+    if (!user) return renderTokenGate(true);
+    localStorage.setItem(STORAGE_KEY, getToken());
+    renderApp(user);
+  };
+  $("loginBtn").onclick = login;
+  $("tokenInput").onkeydown = (e) => { if (e.key === "Enter") login(); };
 }
 
-async function doLogin() {
-  const t = ($("tokenInput") as HTMLInputElement).value.trim();
-  if (!t) return;
-  token = t;
-  if (!(await validateToken())) { $("tokenError").classList.add("visible"); return; }
-  localStorage.setItem(STORAGE_KEY, token);
-  await loadUser();
-  renderApp();
-}
+// ── chat ──
 
-function doLogout() { localStorage.removeItem(STORAGE_KEY); location.reload(); }
+let sessionId: string | null = null;
+let ws: WebSocket | null = null;
+let busy = false;
+let bubble: HTMLElement | null = null;
+let bubbleText = "";
 
-// ---- Chat ----
-let streamingEl: HTMLElement | null = null;
-let streamingBuffer = "";
-
-function addMessage(role: string, text: string, cls = "") {
+function addMessage(cls: string, html: string): HTMLElement {
   const area = $("chatMessages");
   const div = document.createElement("div");
-  div.className = `msg ${role} ${cls}`;
-  div.innerHTML = formatContent(text);
+  div.className = `msg ${cls}`;
+  div.innerHTML = html;
   area.appendChild(div);
   area.scrollTop = area.scrollHeight;
   return div;
 }
 
-function formatContent(text: string): string {
-  // Escape HTML first
-  const escaped = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  // Code blocks
-  return escaped
-    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>')
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/\n/g, "<br>");
+function setBusy(b: boolean) {
+  busy = b;
+  $<HTMLButtonElement>("sendBtn").disabled = b;
+  $("abortBtn").style.display = b ? "" : "none";
 }
 
-async function sendChat() {
-  const input = $("chatInput") as HTMLTextAreaElement;
-  const btn = $("sendBtn") as HTMLButtonElement;
-  const text = input.value.trim();
-  if (!text || !agent) return;
+function lockSessionControls() {
+  for (const id of ["repoInput", "branchInput", "providerSelect", "modelInput", "reviewSelect"]) {
+    $<HTMLInputElement>(id).disabled = !!sessionId;
+  }
+  $("sessionInfo").textContent = sessionId ? `session ${sessionId.slice(0, 8)}` : "";
+}
 
-  input.value = "";
-  input.style.height = "42px";
-  btn.disabled = true;
+function newSession() {
+  ws?.close();
+  sessionId = null;
+  $("chatMessages").innerHTML = "";
+  lockSessionControls();
+  setBusy(false);
+}
 
-  addMessage("user", text);
-
-  // Create streaming placeholder
+function handleEvent(e: any) {
   const area = $("chatMessages");
-  streamingEl = document.createElement("div");
-  streamingEl.className = "msg assistant streaming";
-  area.appendChild(streamingEl);
-  streamingBuffer = "";
-
-  let done = false;
-  const unsub = agent.subscribe((event: any) => {
-    if (done) return;
-    if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      streamingBuffer += event.assistantMessageEvent.delta;
-      if (streamingEl) streamingEl.innerHTML = formatContent(streamingBuffer);
-      area.scrollTop = area.scrollHeight;
-    }
-    if (event.type === "agent_end" || event.type === "turn_end" || event.type === "error") {
-      done = true;
-      if (streamingEl) {
-        streamingEl.classList.remove("streaming");
-        if (!streamingBuffer) streamingEl.innerHTML = formatContent(event.error || "No response");
+  switch (e.type) {
+    case "message_start":
+      if (e.message?.role === "assistant") {
+        bubble = addMessage("assistant streaming", "");
+        bubbleText = "";
       }
-      streamingEl = null;
-      btn.disabled = false;
-      unsub();
+      break;
+    case "message_update":
+      if (bubble && e.assistantMessageEvent?.type === "text_delta") {
+        bubbleText += e.assistantMessageEvent.delta;
+        bubble.innerHTML = formatContent(bubbleText);
+        area.scrollTop = area.scrollHeight;
+      }
+      break;
+    case "message_end":
+      if (bubble) {
+        bubble.classList.remove("streaming");
+        if (!bubbleText) bubble.remove();
+        bubble = null;
+      }
+      break;
+    case "tool_execution_start": {
+      const args = e.args?.command ?? e.args?.path ?? e.args?.file_path ?? "";
+      addMessage("tool", `🔧 ${esc(e.toolName)} <code>${esc(String(args).slice(0, 200))}</code>`);
+      break;
     }
-  });
-
-  try {
-    await agent.prompt(text);
-  } catch (e: any) {
-    if (!done) {
-      if (streamingEl) streamingEl.innerHTML = `<span class="error">Error: ${e.message}</span>`;
-      streamingEl = null;
-      btn.disabled = false;
-      unsub();
+    case "hive_status": {
+      const labels: Record<string, string> = {
+        queued: `⏳ queued (${e.running ?? "?"}/${e.max ?? "?"} sandboxes busy)`,
+        cloning: "📥 cloning repo",
+        running: "🐝 agent working in sandbox",
+        reviewing: `🔍 review cycle ${e.cycle}/${e.of}`,
+        pushing: "📤 pushing changes",
+      };
+      if (labels[e.status]) addMessage("system", esc(labels[e.status]));
+      break;
     }
+    case "hive_done":
+      if (e.status === "idle") {
+        addMessage("system", e.resultBranch
+          ? `✅ done — pushed ${esc(e.commitsPushed)} commit(s) to <strong>${esc(e.resultBranch)}</strong>`
+          : "✅ done");
+      } else {
+        addMessage("system error", `${e.status === "aborted" ? "⏹ aborted" : "❌ failed"}${e.error ? ": " + esc(e.error) : ""}`);
+      }
+      setBusy(false);
+      ws?.close();
+      break;
   }
 }
 
-function handleChatKey(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
-  const ta = e.target as HTMLTextAreaElement;
-  ta.style.height = "42px";
-  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+async function connect(id: string) {
+  ws?.close();
+  const r = await api(`/events/${id}/ticket`, { method: "POST" });
+  if (!r.ok) throw new Error("couldn't open event stream");
+  const { ticket } = await r.json();
+  const url = `${serverUrl.replace(/^http/, "ws")}/events/${id}?ticket=${encodeURIComponent(ticket)}`;
+  ws = new WebSocket(url);
+  ws.onmessage = (m) => {
+    try {
+      handleEvent(JSON.parse(m.data));
+    } catch {}
+  };
+  ws.onclose = () => {
+    if (busy) addMessage("system", "stream closed; check status later");
+    setBusy(false);
+  };
 }
 
-// ---- Tabs ----
+async function sendChat() {
+  const input = $<HTMLTextAreaElement>("chatInput");
+  const text = input.value.trim();
+  if (!text || busy) return;
+  input.value = "";
+  addMessage("user", formatContent(text));
+  setBusy(true);
+
+  const body: Record<string, unknown> = { prompt: text };
+  const thinking = $<HTMLSelectElement>("thinkingSelect").value;
+  if (thinking) body.thinkingLevel = thinking;
+  if (sessionId) {
+    body.sessionId = sessionId;
+  } else {
+    const repo = $<HTMLInputElement>("repoInput").value.trim();
+    const branch = $<HTMLInputElement>("branchInput").value.trim();
+    const provider = $<HTMLSelectElement>("providerSelect").value;
+    const model = $<HTMLInputElement>("modelInput").value.trim();
+    const review = Number($<HTMLSelectElement>("reviewSelect").value);
+    if (repo) body.repo = repo;
+    if (repo && branch) body.branch = branch;
+    if (provider) body.provider = provider;
+    if (model) body.model = model;
+    if (repo && review) body.reviewCycles = review;
+  }
+
+  try {
+    const r = await api("/prompt", { method: "POST", body: JSON.stringify(body) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    if (!sessionId) {
+      sessionId = data.sessionId;
+      lockSessionControls();
+    }
+    await connect(data.sessionId);
+  } catch (err: any) {
+    addMessage("system error", `❌ ${esc(err.message)}`);
+    setBusy(false);
+  }
+}
+
+async function abort() {
+  if (sessionId) await api(`/abort/${sessionId}`, { method: "POST" }).catch(() => {});
+}
+
+function useRepo(fullName: string) {
+  newSession();
+  $<HTMLInputElement>("repoInput").value = fullName;
+  switchTab("chat");
+  $("chatInput").focus();
+}
+
 function switchTab(tab: string) {
-  currentTab = tab;
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", (b as HTMLElement).dataset.tab === tab));
-  document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", (p as HTMLElement).dataset.tab === tab));
-  if (tab === "github" && ghPanel) { ghPanel.refresh(); }
+  document.querySelectorAll<HTMLElement>(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  document.querySelectorAll<HTMLElement>(".tab-panel").forEach((p) => p.classList.toggle("active", p.dataset.tab === tab));
 }
 
-// ---- Token Gate ----
-function renderTokenGate() {
-  ($("app")!).innerHTML = `
-    <div class="token-gate">
-      <div class="token-gate-inner">
-        <h2>🐝 Agent Hive</h2>
-        <p>Enter your API token to continue</p>
-        <input type="password" id="tokenInput" placeholder="hive_token_..." autofocus
-               onkeydown="if(event.key==='Enter')window._login()">
-        <button onclick="window._login()">Connect</button>
-        <div class="token-error" id="tokenError">Invalid token</div>
-      </div>
-    </div>`;
-  (window as any)._login = doLogin;
-}
+// ── app ──
 
-// ---- Render ----
-async function renderApp() {
-  if (!token) { renderTokenGate(); return; }
-  if (!(await validateToken())) { localStorage.removeItem(STORAGE_KEY); token = ""; renderTokenGate(); return; }
-  await loadUser();
-
-  agent = new HiveAgentProxy({ serverUrl, token });
-  ghPanel = new GitHubPanel(token, serverUrl);
-  (window as any)._ghPanel = ghPanel;
-  (window as any)._switchTab = switchTab;
-  (window as any)._logout = doLogout;
-
-  const app = $("app")!;
-  app.innerHTML = `
-    <!-- Header -->
+function renderApp(user: { name: string }) {
+  $("app").innerHTML = `
     <div class="header">
       <div class="header-left">
         <h1>🐝 <span>Agent Hive</span></h1>
         <div class="tabs">
-          <button class="tab-btn active" data-tab="chat" onclick="_switchTab('chat')">💬 Chat</button>
-          <button class="tab-btn" data-tab="github" onclick="_switchTab('github')">🐙 GitHub</button>
+          <button class="tab-btn active" data-tab="chat">💬 Chat</button>
+          <button class="tab-btn" data-tab="github">🐙 GitHub</button>
         </div>
       </div>
       <div class="header-right">
-        <span class="user-badge">${user?.name || "User"}</span>
-        <button class="btn-logout" onclick="_logout()">Logout</button>
+        <span class="user-badge">${esc(user.name)}</span>
+        <button class="btn-logout" id="logoutBtn">Logout</button>
       </div>
     </div>
-
-    <!-- Main -->
     <div class="main">
-      <!-- Chat Tab -->
-      <div class="tab-panel active" data-tab="chat" id="chatPanel">
+      <div class="tab-panel active" data-tab="chat">
         <div class="chat-area" id="chatMessages"></div>
         <div class="chat-input-bar">
           <div class="chat-controls">
-            <select id="modelSelect" class="mini-select">
-              <option value="">Model: Default</option>
-              <option value="deepseek-chat">DeepSeek Chat</option>
-              <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
-              <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4</option>
+            <input id="repoInput" class="mini-input wide" placeholder="repo (owner/name) — empty for no repo">
+            <input id="branchInput" class="mini-input" placeholder="branch">
+            <select id="providerSelect" class="mini-select">
+              <option value="">Provider: default</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="zai">Z.AI</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
             </select>
+            <input id="modelInput" class="mini-input" placeholder="model (default)">
             <select id="thinkingSelect" class="mini-select">
-              <option value="">Thinking: Auto</option>
-              <option value="off">Off</option>
-              <option value="minimal">Minimal</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
+              <option value="">Thinking: default</option>
+              <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option>
             </select>
+            <select id="reviewSelect" class="mini-select">
+              <option value="0">No review</option><option value="1">1 review cycle</option><option value="2">2 review cycles</option>
+            </select>
+            <span class="session-info" id="sessionInfo"></span>
+            <button class="mini-btn" id="newBtn">New session</button>
           </div>
           <div class="chat-input-row">
-            <textarea id="chatInput" placeholder="Send a message... (Enter to send, Shift+Enter for new line)"
-                      onkeydown="window._chatKey(event)" rows="1"></textarea>
-            <button id="sendBtn" onclick="_sendChat()">Send</button>
+            <textarea id="chatInput" rows="1" placeholder="Describe the task… (Enter to send, Shift+Enter for a new line)"></textarea>
+            <button id="abortBtn" class="mini-btn" style="display:none">Stop</button>
+            <button id="sendBtn">Send</button>
           </div>
         </div>
       </div>
-
-      <!-- GitHub Tab -->
       <div class="tab-panel" data-tab="github">
         <div class="gh-layout">
           <div class="gh-sidebar">
             <div class="gh-sidebar-header">
               <div class="gh-mode-toggle">
-                <button class="gh-mode-btn active" id="modeMine" onclick="_ghPanel.setMode('mine')">My Repos</button>
-                <button class="gh-mode-btn" id="modeSearch" onclick="_ghPanel.setMode('search')">Search</button>
+                <button class="gh-mode-btn active" id="modeMine">My Repos</button>
+                <button class="gh-mode-btn" id="modeSearch">Search</button>
               </div>
-              <input type="text" id="repoFilter" placeholder="Filter repos..." oninput="_ghPanel.onFilterInput()">
+              <input type="text" id="repoFilter" placeholder="Filter repos...">
             </div>
             <div class="gh-repo-list" id="repoList"></div>
-            <div class="gh-actions" id="ghActions">
-              <button onclick="_ghPanel.refresh()">🔄 Refresh</button>
-            </div>
           </div>
-          <div class="gh-main">
-            <div class="gh-toolbar">
-              <strong id="ghRepoName">Select a repo</strong>
-              <span class="branch" id="ghBranch"></span>
-              <span class="status" id="ghStatus"></span>
-            </div>
-            <div id="ghEmpty" class="gh-empty">Select a repository from the sidebar</div>
-            <div id="ghContent" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
-              <div class="gh-files" id="ghFiles"></div>
-            </div>
-            <div class="gh-log" id="ghLog" style="display:none;"></div>
-          </div>
-        </div>
-        <!-- Commit Modal -->
-        <div class="modal-overlay" id="commitModal">
-          <div class="modal">
-            <h3>Commit & Push</h3>
-            <input type="text" id="commitMsg" placeholder="Commit message" maxlength="200">
-            <div class="modal-btns">
-              <button class="cancel" onclick="_ghPanel.closeCommitModal()">Cancel</button>
-              <button class="confirm" onclick="_ghPanel.confirmPush()">Push</button>
-            </div>
-          </div>
+          <div class="gh-main" id="ghMain"><div class="gh-empty">Select a repository from the sidebar</div></div>
         </div>
       </div>
     </div>`;
 
-  (window as any)._chatKey = handleChatKey;
-  (window as any)._sendChat = sendChat;
-  ghPanel.refresh();
+  document.querySelectorAll<HTMLElement>(".tab-btn").forEach((b) => (b.onclick = () => switchTab(b.dataset.tab!)));
+  $("logoutBtn").onclick = () => { localStorage.removeItem(STORAGE_KEY); location.reload(); };
+  $("sendBtn").onclick = sendChat;
+  $("abortBtn").onclick = abort;
+  $("newBtn").onclick = newSession;
+  const input = $<HTMLTextAreaElement>("chatInput");
+  input.onkeydown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  };
+  input.oninput = () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; };
 
-  // Focus chat input
-  setTimeout(() => ($("chatInput") as HTMLTextAreaElement)?.focus(), 100);
+  new GitHubPanel(useRepo).init();
+  input.focus();
 }
 
-renderApp();
+(async () => {
+  if (!getToken()) return renderTokenGate();
+  const user = await validateToken();
+  if (!user) {
+    localStorage.removeItem(STORAGE_KEY);
+    return renderTokenGate();
+  }
+  renderApp(user);
+})();

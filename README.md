@@ -1,220 +1,176 @@
 # Agent Hive
 
-**Self-hosted coding agent server.** Your own private coding AI on a VPS. Clone repos, write code, push changes — all through a simple API or web UI.
+**Self-hosted coding agent server.** Send a task and a repo; get a branch back. Every task runs
+[pi](https://pi.dev) in its own throwaway microVM, so a confused or prompt-injected agent can't
+reach your server's keys.
 
-Powered by [pi.dev](https://pi.dev) SDK (BSD 3-Clause).
+```
+POST /prompt {repo, prompt}
+  host: clone repo with your deploy key      → origin/   (never mounted in a sandbox)
+  host: copy it, no remote                   → work/
+  VM:   pi works in /work and commits          (sees work/ and one LLM key, nothing else)
+  VM:   optional review cycles                 (a second agent reviews the diff and fixes)
+  VM:   git format-patch                     → out/
+  host: git am onto origin/, push            → hive/<id>
+```
+
+The host never runs git inside the agent's copy, so hooks or config the agent writes into
+`.git` can't execute on the server. Results always go to a new `hive/<id>` branch; you merge.
 
 ---
 
-## Quick Start
+## Requirements
+
+- Linux with **Node.js 20+**, **git**, and **rootless podman**
+- For microVM isolation: `/dev/kvm` and **krun** (crun built with libkrun — `crun-krun` on
+  Fedora; check your distro). Without them, tasks run as rootless containers — see
+  [Isolation levels](#isolation-levels).
+- An API key for at least one provider: DeepSeek, Z.AI, OpenRouter, Anthropic or OpenAI
+- For private repos: an SSH deploy key per repo (see [AGENTS.md](AGENTS.md#adding-a-repo));
+  for the UI's repo browser and forks: `gh auth login`
+
+## Quick start
 
 ```bash
-# 1. Install
 curl -sL https://raw.githubusercontent.com/stansz/agent-hive/main/install.sh | bash
-cd agent-hive
-
-# 2. Generate an API token
-openssl rand -hex 32
-# Copy the output — you'll need it below
-
-# 3. Edit .env — paste your API token and add LLM provider keys
-nano .env
-# API_TOKEN=<paste-token-here>
-# DEEPSEEK_API_KEY=sk-...  (or OPENROUTER_API_KEY, or ZAI_CODE, etc.)
-
-# 4. Start the server
+cd ~/agent-hive
+nano .env                 # API_TOKEN (openssl rand -hex 32) and one provider key
 node dist/index.js
 ```
 
-### Web UI
+The installer builds the server, the web UI and the sandbox image. At startup the log says which
+isolation it picked:
 
-Once the server is running, open your browser:
+```
+sandbox isolation: microvm (--runtime krun)
+```
 
-| URL | What it is |
-|-----|------------|
-| `http://localhost:8080/` | Landing page — API docs, setup guide |
-| `http://localhost:8080/ui/` | Chat interface — send tasks, check results |
+| URL | What |
+|-----|------|
+| `http://localhost:8080/` | Landing page |
+| `http://localhost:8080/ui/` | Web UI: chat, pick a repo, watch the agent work |
 
-The web UI uses the same `API_TOKEN` from your `.env`. No separate frontend needed.
+The server listens on `127.0.0.1` by default. Put it behind a tunnel or reverse proxy with TLS
+(e.g. Cloudflare Tunnel) rather than exposing the port; set `HOST=0.0.0.0` only if you must.
 
-### Or Use MCP
-
-Connect any MCP-compatible client (Claude Code, Cursor, OpenClaw):
+### MCP
 
 ```bash
-export HIVE_URL=http://localhost:8080
-export HIVE_TOKEN=your-api-token
+export HIVE_URL=http://localhost:8080 HIVE_TOKEN=your-api-token
 npx github:stansz/hive-mcp
 ```
 
-See [stansz/hive-mcp](https://github.com/stansz/hive-mcp) for full setup.
+See [stansz/hive-mcp](https://github.com/stansz/hive-mcp).
 
----
+## Isolation levels
 
-# What It Does
+| Runtime | When | Boundary |
+|---------|------|----------|
+| `krun` | `/dev/kvm` usable and `krun` installed (auto) | Own guest kernel. Escaping needs a KVM/libkrun bug. |
+| `runsc` | `HIVE_RUNTIME=runsc` with gVisor installed | User-space kernel; works without KVM. Not tested here. |
+| default (`crun`/`runc`) | Fallback | Shared host kernel: namespaces + seccomp. A kernel exploit escapes to the user running podman. |
 
-Agent Hive runs coding LLMs on your own infrastructure. No data leaves your VPS. It can:
-
-- **Clone any repo** — private (SSH deploy keys) or public
-- **Read, write, edit, commit, push** — full git workflow
-- **Diff-based code review** — reviews actual git diffs, applies fixes in-repo
-- **Fork and work** — fork external repos into oatclaw88 bot account
-- **Web UI** — chat interface with streaming, GitHub repo browser, commit/push
-- **MCP tools** — connect from any MCP client (Claude Code, Cursor, Hermes)
-
-## How It Works
-
-```
-HTTP client ──→ Agent Hive ──→ pi.dev SDK ──→ LLM API
-                    │
-                    └── clones repo → works → pushes changes
-```
-
-1. Send a task via API: "Review and improve trails/regroup.py"
-2. Hive clones the repo into an ephemeral workspace
-3. The LLM reads `AGENTS.md` (auto-discovered), explores the code, makes changes, and pushes
-4. Optionally runs a self-review cycle with a second model
-5. Session data is cleaned up — nothing persists
+In every mode the sandbox has network access (it must reach the LLM API) and sees the selected
+provider's key. In container mode, run agent-hive as a **dedicated user** that holds nothing but
+what Hive needs, so an escape lands somewhere boring.
 
 ## API
 
-All endpoints except `/health` require `Authorization: Bearer <token>`.
+All endpoints except `/health` need `Authorization: Bearer <token>`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| POST | `/prompt` | Start a task, or follow up with `sessionId` |
+| POST | `/snippet` | One-shot question about some code; waits and returns `{result}` |
+| GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `error` |
+| GET | `/messages/:id` | Conversation so far |
+| POST | `/abort/:id` | Stop the running sandbox |
+| DELETE | `/session/:id` | Delete the session and its files |
+| GET | `/files/:id?path=`, `/file/:id?path=` | Browse the agent's working copy |
+| POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |
+| WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` |
+| GET | `/capacity` | Running / queued sandboxes |
+| GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
+| POST | `/api/github/fork` | Fork into the `gh` account; returns `{repo}` |
 | GET | `/health` | Health check (no auth) |
-| POST | `/prompt` | Start a coding task |
-| GET | `/status/:id` | Session state |
-| GET | `/messages/:id` | Session messages |
-| POST | `/abort/:id` | Cancel running session |
-| DELETE | `/session/:id` | Destroy session |
-| POST | `/snippet` | Quick code task (no repo) |
-| WS | `/events/:id` | Streaming events |
 
-### Start a Task
+### Start a task
 
 ```bash
 curl -X POST http://localhost:8080/prompt \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Review and improve the parser module",
-    "repo": "https://github.com/owner/repo.git",
-    "provider": "deepseek",
-    "model": "deepseek-v4-pro",
-    "reviewCycles": 1
-  }'
+  -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"prompt": "Fix the off-by-one in the pager", "repo": "owner/repo", "reviewCycles": 1}'
+# → {"sessionId": "1a2b3c4d-…", "status": "queued", ...}
+
+curl http://localhost:8080/status/1a2b3c4d-… -H "Authorization: Bearer $API_TOKEN"
+# → {"status": "idle", "resultBranch": "hive/1a2b3c4d", "commitsPushed": 2, ...}
 ```
 
-Request fields:
+| Field | Description |
+|-------|-------------|
+| `prompt` | Required. The task. |
+| `repo` | `owner/name` or a github.com URL. Omit for a repo-less chat. |
+| `branch` | Branch to start from (default: the repo's default branch). |
+| `provider` | `deepseek`, `zai`, `openrouter`, `anthropic`, `openai` (default: `DEFAULT_PROVIDER`, else the first with a key). |
+| `model` | Model ID (default: `DEFAULT_MODEL`, else a per-provider default). |
+| `thinkingLevel` | `off` … `xhigh` (default `DEFAULT_THINKING`). |
+| `reviewCycles` | 0–5 review-and-fix passes before pushing. |
+| `reviewModel` | A different model for the review passes. |
+| `systemPromptOverride` | Replaces the appended system prompt. |
+| `sessionId` | Follow up on an existing session: same pi conversation, same working copy; the branch is re-pushed. |
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `prompt` | yes | Task description |
-| `repo` | no | Git repo URL (HTTPS — auto-converted to SSH for deploy key auth) |
-| `provider` | no | LLM provider |
-| `model` | no | Model ID |
-| `reviewCycles` | no | Auto-review rounds (default 0) |
-| `reviewModel` | no | Different model for review cycles |
-| `branch` | no | Branch to clone |
-
-### Check Status
-
-```bash
-curl http://localhost:8080/status/{sessionId} \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-### Streaming Events
-
-Connect to the WebSocket endpoint for real-time streaming:
-
-```
-ws://localhost:8080/events/{sessionId}
-```
-
-## AGENTS.md Auto-Discovery
-
-Place an `AGENTS.md` in your repo root with project context — Hive reads it automatically.
-
-The session is created with `cwd` pointing to the cloned repo, so [pi.dev](https://pi.dev)'s built-in `AGENTS.md` discovery kicks in. No prompt hacks needed. The prompt also includes "Read AGENTS.md for project context" as a fallback.
+The event stream carries pi's [JSON events](https://pi.dev) (`message_update` text deltas,
+`tool_execution_start`/`_end`, …) plus `hive_status` (`queued`, `cloning`, `running`,
+`reviewing`, `pushing`, `idle`, `failed`, `aborted`) and a final `hive_done`. Events of the
+current run are replayed to late subscribers.
 
 ## Configuration
 
-Your API token and LLM provider keys go in the `.env` file:
-
-```bash
-# Generate a token (any secure random string works)
-openssl rand -hex 32
-```
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_TOKEN` | (required) | Bearer token for all API calls |
-| `PORT` | `8080` | Server port |
-| `MAX_CONCURRENT_SESSIONS` | `3` | Max parallel sessions |
-| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | 30 min idle timeout |
-| `DEFAULT_PROVIDER` | `openrouter` | Default LLM provider (auto-detected from available API keys) |
-| `DEFAULT_MODEL` | — | Default model (falls back to provider default if unset) |
-| `DEEPSEEK_API_KEY` | | Direct DeepSeek access |
-| `OPENROUTER_API_KEY` | | OpenRouter gateway |
-| `PI_TELEMETRY` | `0` | Disable pi telemetry |
-| `WORKSPACE` | `/tmp/hive-workspace` | Repo clone directory |
+| `API_TOKEN` | — | Bearer token (min 16 chars). Or `API_TOKENS` as JSON `{"token": {"name": "…"}}`. |
+| `PORT` / `HOST` | `8080` / `127.0.0.1` | Listen address |
+| `DEFAULT_PROVIDER`, `DEFAULT_MODEL`, `DEFAULT_THINKING` | auto / per provider / `low` | Defaults for tasks |
+| `DEEPSEEK_API_KEY`, `ZAI_API_KEY` (or `ZAI_CODE`), `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | | Provider keys; only the task's provider key enters its sandbox |
+| `MAX_CONCURRENT_SESSIONS` | `2` | Sandboxes running at once; more tasks queue |
+| `MAX_QUEUED_SESSIONS` | `10` | Queue length before `503` |
+| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Idle sessions (and their files) are deleted after this |
+| `HIVE_RUNTIME` | `auto` | `auto`, `krun`, `runsc`, `crun`, `runc` |
+| `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `1g` / `1` | Per sandbox. Size `MAX_CONCURRENT_SESSIONS` × memory to fit the host. |
+| `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | A sandbox run is killed after this |
+| `HIVE_IMAGE` | `localhost/agent-hive-sandbox:latest` | Sandbox image |
+| `WORKSPACE` | `/tmp/hive-workspace` | Task directories |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | `agent-hive` | Identity for the agent's commits |
+| `HIVE_BRANCH_PREFIX` | `hive/` | Result branch prefix |
+| `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
 
-## Deployment
-
-### Quick (install script)
-
-```bash
-curl -sL https://raw.githubusercontent.com/stansz/agent-hive/main/install.sh | bash
-cd agent-hive
-# Edit .env
-node dist/index.js
-```
-
-### Manual
-
-```bash
-git clone https://github.com/stansz/agent-hive.git
-cd agent-hive
-cp .env.example .env
-# Edit .env
-npm install --omit=dev
-npm run build
-node dist/index.js
-```
-
-### Systemd
+## Running as a service
 
 ```ini
+# ~/.config/systemd/user/agent-hive.service   (rootless podman wants a user service)
 [Unit]
-Description=Agent Hive API Server
-After=network.target
+Description=Agent Hive
+After=network-online.target
 
 [Service]
-Type=simple
-User=youruser
-WorkingDirectory=/home/youruser/agent-hive
-ExecStart=/usr/bin/node /home/youruser/agent-hive/dist/index.js
-Restart=always
-RestartSec=5
-EnvironmentFile=/home/youruser/agent-hive/.env
+WorkingDirectory=%h/agent-hive
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
-## SSH Deploy Keys (for private repos)
+```bash
+systemctl --user daemon-reload && systemctl --user enable --now agent-hive
+sudo loginctl enable-linger $USER   # keep it running when you're logged out
+```
 
-Hive uses SSH deploy keys to authenticate with private repos — one key per repo.
+## Upgrading pi
 
-**To add a repo:**
-1. Generate an ed25519 key on the server
-2. Add the public key as a deploy key via GitHub API
-3. Add the key to your SSH config
-
-The server automatically converts HTTPS repo URLs to SSH URLs for deploy key auth.
+The sandbox image pins pi (`PI_VERSION` in `image/Containerfile`). To move to a newer release,
+bump it and run `npm run build:image`. Running tasks keep the image they started with.
 
 ## License
 
-BSD 3-Clause
+Powered by [pi](https://pi.dev) (BSD 3-Clause).

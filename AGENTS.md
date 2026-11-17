@@ -1,253 +1,81 @@
 # Agent Hive — AGENTS.md
 
-## What This Is
+## What this is
 
-Self-hosted coding agent server. Clones GitHub repos, runs LLM tasks, pushes changes back. Accessible via REST API and MCP tools.
+A self-hosted coding agent server. A task clones a GitHub repo on the host, runs
+[pi](https://pi.dev) on a copy of it inside a throwaway podman sandbox (a krun microVM when the
+host has KVM), and pushes the agent's commits to a new `hive/<id>` branch. REST API, a web UI at
+`/ui/`, and MCP via the separate [hive-mcp](https://github.com/stansz/hive-mcp) package.
 
-## Two-Account GitHub Model
+## Layout
 
-Hive uses **two GitHub identities** for isolation and least-privilege:
+| Path | What |
+|------|------|
+| `src/index.ts` | Fastify setup: public routes (landing, `/ui/`, `/health`) and the authenticated API scope |
+| `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
+| `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
+| `src/tasks.ts` | Task lifecycle: queue → clone → agent run → review cycles → export → push; idle cleanup |
+| `src/sandbox.ts` | `podman run` wrapper, runtime detection (krun / runsc / plain container), JSONL parsing |
+| `src/git.ts` | Host-side git on the pristine clone only: clone, `git am` the patches, push |
+| `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/abort`, `/session`, `/files`, `/events` |
+| `src/routes/github.ts` | `gh`-backed repo list, search, fork for the UI |
+| `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch) |
+| `ui/` | Vite + vanilla TS web UI, built to `ui/dist` |
+| `public/landing.html` | Landing page served at `/` |
 
-| Account | Role | Auth Method | Scope |
-|---------|------|-------------|-------|
-| **stansz** | Repo owner (Sz's account) | SSH deploy keys (per-repo) | Only repos with keys installed |
-| **oatclaw88** | Hive's bot account | `gh` CLI OAuth token | Forks, PRs, API queries |
+Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`. There is no test suite yet.
 
-**Why two accounts?** Hive runs on a $2 VPS. If it gets compromised, the attacker only gets oatclaw88 (fork perms) and per-repo deploy keys — not full access to Sz's GitHub.
+## Security model — keep these invariants
 
-### Flow 1: Your Repos (stansz/*)
+1. **The sandbox gets nothing secret except one LLM key.** Mounts are only the task's `work/` and
+   `session/` (plus `out/` for export). Keys are passed with `-e NAME` from the child env, never
+   on the command line. Don't add host mounts or env vars casually.
+2. **The host never runs git in `work/`.** The agent controls `work/.git` (hooks, config,
+   filters, fsmonitor). Host git runs only in `origin/`, which no sandbox mounts, with hooks
+   disabled. Changes cross over only as patch files applied with `git am`.
+3. **Every API route lives inside the authenticated scope** in `index.ts`. Don't add path-based
+   auth exceptions.
+4. **Anything from GitHub or the agent is untrusted in the UI** — render with `esc()` only.
+5. Repo URLs are restricted to github.com (`normalizeRepo`); `HIVE_ALLOW_ANY_REPO_URL=1` is for
+   local testing only.
 
-```
-Hive prompt with repo=stansz/geo-scripts
-  → git clone via SSH (deploy key: geo_scripts_deploy)
-  → LLM works in cloned dir
-  → git add -A && commit && push (author: oatclaw88, push via deploy key)
-```
+## Two-account GitHub model
 
-Deploy keys are installed on the **stansz** repo (Settings → Deploy Keys → Allow write access). Hive commits as oatclaw88 but pushes directly to stansz/repo because the deploy key has write access.
+| Account | Role | Auth | Scope |
+|---------|------|------|-------|
+| **stansz** | Repo owner | SSH deploy keys (per repo, write access) | Only repos with a key installed |
+| **oatclaw88** | Hive's bot account | `gh` CLI login | Repo list/search, forks |
 
-### Flow 2: External Repos (third-party/*)
+If the server is compromised, the attacker gets the bot account and the per-repo deploy keys, not
+full access to the owner's GitHub. The sandbox gets neither.
 
-```
-Hive prompt with repo=someorg/somerepo
-  → Fork into oatclaw88 via gh repo fork
-  → Clone the fork via gh repo clone oatclaw88/somerepo
-  → LLM works in cloned dir
-  → Push to oatclaw88 fork
-  → (Phase 2: open PR from oatclaw88 → someorg/somerepo)
-```
+- **Your repos:** task with `repo=stansz/<repo>` → host clones via the deploy key → agent works in
+  the sandbox → host pushes `hive/<id>` via the deploy key. Merge or open a PR yourself.
+- **External repos:** fork into oatclaw88 (UI "Fork" button or `POST /api/github/fork`), then run
+  the task on `oatclaw88/<repo>`. PR creation is not built yet.
 
-## SSH Deploy Keys
-
-One ed25519 key per repo. All stored in `~/.ssh/` on the Hive VPS.
-
-| Key | Installed On | Access |
-|-----|-------------|--------|
-| `agent_hive_deploy` | stansz/agent-hive | read/write |
-| `geo_scripts_deploy` | stansz/geo-scripts | read/write |
-
-### SSH Config (`~/.ssh/config`)
-
-```
-Host github.com
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/agent_hive_deploy
-  IdentityFile ~/.ssh/geo_scripts_deploy
-  IdentitiesOnly no
-```
-
-`IdentitiesOnly no` means SSH tries all keys against all repos. GitHub accepts whichever key matches. If no deploy key matches, the `gh` CLI auth (oatclaw88) handles it.
-
-### Adding a New Repo
-
-1. **Generate key on VPS:**
-   ```bash
-   ssh-keygen -t ed25519 -f ~/.ssh/<repo>_deploy -N ""
-   ```
-
-2. **Add deploy key to stansz repo (from your local machine):**
-   ```bash
-   gh repo deploy-key add - --repo stansz/<repo> --title hive-$(date +%Y%m%d) --allow-write < ~/.ssh/<repo>_deploy.pub
-   ```
-   Or via GitHub web: repo Settings → Deploy keys → Add new → paste public key → check "Allow write access"
-
-3. **Add to SSH config on VPS:**
-   Append `IdentityFile ~/.ssh/<repo>_deploy` to the existing `Host github.com` block.
-
-4. **Test:**
-   ```bash
-   ssh -T git@github.com 2>&1  # Should show stansz or oatclaw88
-   git clone git@github.com:stansz/<repo>.git /tmp/test-clone
-   ```
-
-## Git Author
-
-All commits from Hive are authored as:
-- **Name:** oatclaw88
-- **Email:** oatclaw88@users.noreply.github.com
-
-Set in prompt.ts after cloning. If you want commits to show as stansz for your own repos, update the git config lines in `src/routes/prompt.ts`.
-
-## gh CLI Auth
+### Adding a repo
 
 ```bash
-gh auth status
-# → Logged in as oatclaw88
-# → Git operations protocol: https
-# → Token: ghp_...
+# on the server, as the user that runs agent-hive
+ssh-keygen -t ed25519 -f ~/.ssh/<repo>_deploy -N ""
+# from your machine (or repo Settings → Deploy keys → Allow write access)
+gh repo deploy-key add - --repo stansz/<repo> --title hive-$(date +%Y%m%d) --allow-write < <repo>_deploy.pub
+# on the server: add  IdentityFile ~/.ssh/<repo>_deploy  to the Host github.com block in ~/.ssh/config
+git ls-remote git@github.com:stansz/<repo>.git   # test
 ```
 
-Used for: `gh repo fork`, `gh repo clone`, `gh repo list`, `gh search repos`, and the Web UI repo browser.
+### Commit author
 
-The token has repo scope — oatclaw88 can fork any public repo and push to its own forks.
+Commits made in the sandbox use `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from `.env` (default
+`agent-hive`). Set them to `oatclaw88` / `oatclaw88@users.noreply.github.com` to keep the old
+attribution.
 
-## Environment Variables
+## Status
 
-Key ones in `/home/jc/agent-hive/.env`:
+**Done:** sandboxed runs (krun/runsc/container), branch push, review cycles with an optional
+second model, follow-ups in the same session, WebSocket streaming with replay, snippet endpoint,
+web UI.
 
-| Variable | Purpose |
-|----------|---------|
-| `API_TOKEN` | Bearer auth for Hive API |
-| `GITHUB_TOKEN` | oatclaw88's gh CLI token |
-| `DEFAULT_PROVIDER` | LLM provider (openrouter/deepseek/zai) |
-| `DEFAULT_MODEL` | Default LLM model |
-| `DEEPSEEK_API_KEY` | DeepSeek direct access |
-| `OPENROUTER_API_KEY` | OpenRouter gateway |
-| `ZAI_CODE` | Z.AI coding endpoint |
-
-## API Quick Reference
-
-### Core Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check (no auth) |
-| POST | `/prompt` | Start a coding task |
-| GET | `/status/:id` | Check session state |
-| POST | `/abort/:id` | Cancel session |
-| POST | `/snippet` | Quick code task, no repo |
-| WS | `/events/:id` | Streaming events |
-
-### GitHub Endpoints (via `gh` CLI)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/github/repos` | List oatclaw88 repos |
-| POST | `/api/github/clone` | Clone repo to workspace |
-| POST | `/api/github/pull` | Pull latest |
-| POST | `/api/github/branch` | Create branch |
-| POST | `/api/github/push` | Stage, commit, push |
-| POST | `/api/github/fork` | Fork → clone (oatclaw88) |
-| GET | `/api/github/files/:repo` | Browse files |
-| GET | `/api/github/file/:repo` | Read file contents |
-| GET | `/api/github/status/:repo` | Git status + recent commits |
-| GET | `/api/github/search` | Search public repos |
-
-## Architecture
-
-**Server:** Fastify (TypeScript) + WebSocket + pi-coding-agent SDK
-**Frontend:** Vanilla TypeScript SPA (Vite) — raw DOM, no framework
-**MCP:** @modelcontextprotocol/sdk
-
-| Component | Lines | Description |
-|-----------|-------|-------------|
-| `src/index.ts` | 119 | Fastify server, auth, static files, routes |
-| `src/sessions/manager.ts` | ~290 | Session lifecycle, provider auto-registration, model resolution |
-| `src/loops/review.ts` | 239 | Diff-based code review + text review (legacy) |
-| `src/routes/prompt.ts` | 220 | Task dispatch: clone repo, create session, auto-review, cleanup |
-| `src/routes/github.ts` | 325 | GitHub API: repos, clone, pull, branch, push, fork, files, search |
-| `src/mcp/server.ts` | 228 | MCP stdio transport |
-| `ui/src/main.ts` | 271 | App shell, auth, chat, tabs |
-| `ui/src/hive-agent.ts` | 306 | WebSocket streaming chat agent |
-| `ui/src/github-panel.ts` | 339 | Repo browser, commit/push modal |
-
-## Phase Status
-
-| Phase | Status |
-|-------|--------|
-| **Phase 1 — Core** | ✅ Complete — API, MCP, Web UI, CF Tunnel |
-| **Phase 2 — GitHub Workflow** | ⚠️ Partial — clone/branch/push/review done, PR creation not built, no TDD loops |
-
-### Phase 2: What's Done vs Pending
-
-**Done:**
-- SSH deploy key auth (two-account model: stansz repos via deploy keys, oatclaw88 bot)
-- Repo clone, branch, stage, commit, push
-- Fork external repos into oatclaw88
-- Diff-based code review with in-repo fix cycles
-- AGENTS.md auto-discovery
-
-**Pending:**
-- PR creation (Flow 2: "open PR from oatclaw88 → upstream")
-- TDD loop (write tests → code → verify → iterate)
-- Session persistence (reload loses all chat history)
-
-## AGENTS.md Auto-Discovery (for your repos)
-
-Hive automatically reads `AGENTS.md` from any repo it clones. If you want Hive to understand your project before it starts coding, add an `AGENTS.md` to your repo root with:
-
-- **Project overview** — what it does, why it exists
-- **Tech stack** — language, framework, key dependencies
-- **Directory structure** — where things live
-- **Conventions** — coding style, naming patterns, preferred approaches
-- **Build/test/lint commands** — so the LLM can verify its work
-- **Gotchas** — non-obvious design decisions, known issues, things not to touch
-
-How it works: Hive sets `cwd` to the cloned repo, so pi.dev's built-in AGENTS.md discovery loads it automatically. The prompt also includes "Read AGENTS.md for project context" as a fallback. No configuration needed — just put the file there.
-
----
-
-## Auto Code Review (diff-based)
-
-When `reviewCycles > 0` is set on a repo task, Hive performs a proper code review using actual git diffs — not LLM text output.
-
-### How it works
-
-1. **Pre-task snapshot** — captures `git rev-parse HEAD` before the LLM starts
-2. **Main task** — LLM edits files and commits
-3. **Diff** — `git diff <baseSha>` gets the real changes
-4. **Review** — separate session reviews the diff for bugs, security issues, edge cases, style, and correctness
-5. **Fix** — new agent session with `cwd=repoDir` reads files and applies fixes directly
-6. **Commit** — auto-commits fixes as "review: apply fixes from cycle N"
-7. **Repeat** for N cycles (configurable)
-
-### What the reviewer checks
-
-- **Bugs** — logic errors, off-by-one, null/undefined, race conditions
-- **Security** — injection, auth issues, data exposure, unsafe deserialization
-- **Edge cases** — empty inputs, boundary conditions, error paths
-- **Style** — naming, consistency, unnecessary complexity
-- **Correctness** — does the change actually do what was asked?
-
-Each finding includes file location, severity (critical / warning / nit), and a suggested fix.
-
-### LGTM shortcut
-
-If the review says "LGTM" on the first cycle, the fix pass is skipped entirely.
-
-### Usage
-
-**API:**
-```json
-{
-  "prompt": "Refactor the parser module",
-  "repo": "https://github.com/owner/repo",
-  "reviewCycles": 1,
-  "reviewModel": "deepseek-v4-pro"
-}
-```
-
-**MCP tools:** Use `mcp_hive_hive_prompt` with `thinkingLevel` param.
-
----
-
-## VPS Details
-
-- **IP:** 23.95.36.186
-- **OS:** Debian 13 (trixie)
-- **Node:** v22.22.2
-- **Specs:** 1 core, 3GB RAM, 30GB disk
-- **Services:** agent-hive (systemd), cloudflared (CF Tunnel)
-- **Domain:** hive.ogsapps.cc → localhost:8080 via Cloudflare Tunnel
-- **Firewall:** UFW, SSH only (no public API ports)
+**Not built yet:** PR creation, persistence across restarts (sessions are in memory; task dirs
+are swept at startup), a test suite, a per-task network allowlist for the sandbox.
