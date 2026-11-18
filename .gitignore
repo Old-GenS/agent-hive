@@ -4,4 +4,5 @@ dist/
 *.log
 ui/dist/
 ui/node_modules/
+vm/hive-vm
 __pycache__/

@@ -56,6 +56,8 @@ export class Task extends EventEmitter {
   baseSha?: string;
   resultBranch?: string;
   commitsPushed = 0;
+  /** token and cost totals over every agent run of this task */
+  usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   messages: ChatMessage[] = [];
   /** events of the current prompt, replayed to WebSocket clients that connect late */
   replay: any[] = [];
@@ -110,6 +112,7 @@ export class Task extends EventEmitter {
       branch: this.branch,
       resultBranch: this.resultBranch,
       commitsPushed: this.commitsPushed,
+      usage: this.usage,
       provider: this.provider,
       model: this.model,
       thinkingLevel: this.thinkingLevel,
@@ -137,12 +140,18 @@ export class Task extends EventEmitter {
     let lastText = "";
     let lastError = "";
     const key = providerKey(this.provider)!;
+    const mounts = [
+      { host: join(this.dir, "work"), container: "/work" },
+      { host: join(this.dir, "session"), container: "/session" },
+    ];
+    // The npm cache is shared by every task (and survives sandboxes); export runs don't need it.
+    if (config.sandbox.npmCache) {
+      mkdirSync(config.sandbox.npmCache, { recursive: true });
+      mounts.push({ host: config.sandbox.npmCache, container: "/root/.npm" });
+    }
     this.sandbox = runSandbox({
       name: `hive-${this.id.slice(0, 8)}-${++this.runs}`,
-      mounts: [
-        { host: join(this.dir, "work"), container: "/work" },
-        { host: join(this.dir, "session"), container: "/session" },
-      ],
+      mounts,
       env: { [PROVIDERS[this.provider].sandboxEnv]: key, ...gitIdentity() },
       command: ["hive-agent", ...pi],
       onEvent: (event) => {
@@ -152,6 +161,12 @@ export class Task extends EventEmitter {
           const m = event.message;
           const text = messageText(m);
           if (m.role === "assistant") {
+            const u = m.usage ?? {};
+            this.usage.input += u.input ?? 0;
+            this.usage.output += u.output ?? 0;
+            this.usage.cacheRead += u.cacheRead ?? 0;
+            this.usage.cacheWrite += u.cacheWrite ?? 0;
+            this.usage.cost += u.cost?.total ?? 0;
             if (text) lastText = text;
             if (m.stopReason === "error" || m.errorMessage) lastError = m.errorMessage || "model error";
           }
@@ -359,12 +374,12 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
       await task.exportAndPush();
     }
     task.setStatus("idle");
-    task.emitEvent({ type: "hive_done", status: "idle", resultBranch: task.resultBranch, commitsPushed: task.commitsPushed });
+    task.emitEvent({ type: "hive_done", status: "idle", resultBranch: task.resultBranch, commitsPushed: task.commitsPushed, usage: task.usage });
   } catch (err) {
     const aborted = err instanceof AbortError;
     task.error = aborted ? undefined : (err as Error).message;
     task.setStatus(aborted ? "aborted" : "failed", task.error ? { error: task.error } : {});
-    task.emitEvent({ type: "hive_done", status: task.status, error: task.error, resultBranch: task.resultBranch });
+    task.emitEvent({ type: "hive_done", status: task.status, error: task.error, resultBranch: task.resultBranch, usage: task.usage });
     if (!aborted) console.error(`task ${task.id} failed:`, task.error);
   } finally {
     release();

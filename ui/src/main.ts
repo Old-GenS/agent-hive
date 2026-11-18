@@ -128,9 +128,10 @@ function handleEvent(e: any) {
     }
     case "hive_done":
       if (e.status === "idle") {
+        const cost = e.usage?.cost > 0 ? esc(` · $${Number(e.usage.cost).toFixed(4)}`) : "";
         addMessage("system", e.resultBranch
-          ? `✅ done — pushed ${esc(e.commitsPushed)} commit(s) to <strong>${esc(e.resultBranch)}</strong>`
-          : "✅ done");
+          ? `✅ done — pushed ${esc(e.commitsPushed)} commit(s) to <strong>${esc(e.resultBranch)}</strong>${cost}`
+          : `✅ done${cost}`);
       } else {
         addMessage("system error", `${e.status === "aborted" ? "⏹ aborted" : "❌ failed"}${e.error ? ": " + esc(e.error) : ""}`);
       }

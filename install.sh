@@ -73,6 +73,17 @@ echo ""
 echo "  Building sandbox image (first time takes a few minutes)..."
 npm run build:image
 
+# libkrun microVMs: build the direct launcher and export the image to a rootfs when the host can
+# boot them. The image must be rebuilt before the rootfs, so this comes after build:image.
+if [ "$(uname -s)" = "Linux" ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] \
+  && command -v pasta &>/dev/null && ldconfig -p 2>/dev/null | grep -q 'libkrun\.so\.1'; then
+  echo ""
+  echo "  Building libkrun launcher and rootfs..."
+  npm run build:vm
+  npm run build:rootfs
+  echo "  Isolation: libkrun microVMs (no podman at run time) ✓"
+fi
+
 # .env setup
 if [ ! -f .env ]; then
   cp .env.example .env

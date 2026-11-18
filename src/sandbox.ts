@@ -1,16 +1,19 @@
 /**
- * Runs commands in a throwaway podman sandbox: a krun microVM when the host has KVM, otherwise
- * gVisor or a plain rootless container (see detectRuntime). The sandbox gets only the mounts and
- * env vars passed in; the host's SSH keys, gh login and .env never enter it.
+ * Runs commands in a throwaway sandbox: a libkrun microVM launched directly by vm/hive-vm inside
+ * a pasta network namespace, or a podman container (a krun microVM when the host has KVM,
+ * otherwise gVisor or a plain rootless container; see detectRuntime). The sandbox gets only the
+ * mounts and env vars passed in; the host's SSH keys, gh login and .env never enter it.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { isIPv4 } from "node:net";
+import { join } from "node:path";
 import { config } from "./config.js";
 
 export type Isolation = "microvm" | "gvisor" | "container";
 
 export interface RuntimeInfo {
-  runtime?: string; // undefined = podman's default (crun or runc)
+  runtime?: string; // undefined = podman's default (crun or runc); "libkrun" = direct microVM
   isolation: Isolation;
   warning?: string;
 }
@@ -38,12 +41,56 @@ const CONTAINER_WARNING =
   "would escape to the user running podman, so run agent-hive as a user with no other secrets, " +
   "or use a host with /dev/kvm (krun) or install gVisor (HIVE_RUNTIME=runsc).";
 
+/** Sandbox memory string ("512m", "1g", "768") in MiB. */
+export function parseMemoryMiB(s: string): number {
+  const m = /^(\d+)([mg])?$/i.exec(s.trim());
+  if (!m) throw new Error(`invalid memory size "${s}" (expected e.g. 512m, 1g or 768)`);
+  const n = Number.parseInt(m[1], 10);
+  return m[2]?.toLowerCase() === "g" ? n * 1024 : n;
+}
+
+/** First IPv4 nameserver in resolv.conf contents, falling back to 1.1.1.1. */
+export function hostNameserver(resolvConf: string): string {
+  for (const line of resolvConf.split("\n")) {
+    const m = /^\s*nameserver\s+(\S+)/.exec(line);
+    if (m && isIPv4(m[1])) return m[1];
+  }
+  return "1.1.1.1";
+}
+
+function resolvConf(): string {
+  try {
+    return readFileSync("/etc/resolv.conf", "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** True when the direct libkrun backend can run: /dev/kvm, launcher, rootfs, pasta and libkrun. */
+export function libkrunAvailable(): boolean {
+  try {
+    if (!kvmUsable()) return false;
+    if (!existsSync(config.sandbox.vmBin)) return false;
+    if (!existsSync(join(realpathSync(config.sandbox.rootfs), "usr/local/bin/hive-vm-init"))) return false;
+    if (!onPath("pasta")) return false;
+    execFileSync(config.sandbox.vmBin, ["--check"], {
+      env: { ...process.env, HIVE_LIBKRUN: config.sandbox.libkrun },
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function detectRuntime(): RuntimeInfo {
   const wanted = config.sandbox.runtime;
+  if (wanted === "libkrun") return { runtime: "libkrun", isolation: "microvm" };
   if (wanted === "krun") return { runtime: "krun", isolation: "microvm" };
   if (wanted === "runsc") return { runtime: "runsc", isolation: "gvisor" };
   if (wanted === "crun" || wanted === "runc") return { runtime: wanted, isolation: "container", warning: CONTAINER_WARNING };
-  if (wanted !== "auto") throw new Error(`HIVE_RUNTIME must be auto, krun, runsc, crun or runc (got "${wanted}")`);
+  if (wanted !== "auto") throw new Error(`HIVE_RUNTIME must be auto, libkrun, krun, runsc, crun or runc (got "${wanted}")`);
+  if (libkrunAvailable()) return { runtime: "libkrun", isolation: "microvm" };
   if (kvmUsable() && onPath("krun")) return { runtime: "krun", isolation: "microvm" };
   return {
     isolation: "container",
@@ -71,7 +118,41 @@ export interface SandboxHandle {
 
 const MAX_KEPT_OUTPUT = 64 * 1024;
 
-export function runSandbox(opts: SandboxOptions): SandboxHandle {
+/** pasta + hive-vm argv; env values travel via the child's env, never here. */
+export function buildLibkrunCommand(
+  opts: SandboxOptions,
+  p: { vmBin: string; rootfs: string; cpus: number; memoryMiB: number; hostDns: string },
+): { file: string; args: string[] } {
+  const args = [
+    "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
+    "--dns-forward", "169.254.1.53", "--dns-host", p.hostDns,
+    "--", p.vmBin,
+    "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
+  ];
+  for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
+  for (const name of Object.keys(opts.env)) args.push("--env", name);
+  args.push("--dns", "169.254.1.53", "--workdir", "/work", "--", ...opts.command);
+  return { file: "pasta", args };
+}
+
+function spawnLibkrun(opts: SandboxOptions) {
+  const { sandbox } = config;
+  const cmd = buildLibkrunCommand(opts, {
+    vmBin: sandbox.vmBin,
+    rootfs: realpathSync(sandbox.rootfs),
+    cpus: Number.parseInt(sandbox.cpus, 10),
+    memoryMiB: parseMemoryMiB(sandbox.memory),
+    hostDns: hostNameserver(resolvConf()),
+  });
+  // The launcher reads HIVE_LIBKRUN from its own env.
+  return spawn(cmd.file, cmd.args, {
+    env: { ...process.env, ...opts.env, HIVE_LIBKRUN: sandbox.libkrun },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+}
+
+function spawnPodman(opts: SandboxOptions) {
   const { sandbox } = config;
   const args = ["run", "--rm", "--name", opts.name];
   if (runtimeInfo.runtime) args.push("--runtime", runtimeInfo.runtime);
@@ -87,11 +168,25 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
   for (const m of opts.mounts) args.push("-v", `${m.host}:${m.container}:${m.ro ? "ro," : ""}Z`);
   for (const name of Object.keys(opts.env)) args.push("-e", name);
   args.push("-w", "/work", sandbox.image, ...opts.command);
-
-  const child = spawn("podman", args, {
+  return spawn("podman", args, {
     env: { ...process.env, ...opts.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function killGroup(pid: number | undefined, signal: NodeJS.Signals) {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // ESRCH: the group is already gone.
+  }
+}
+
+export function runSandbox(opts: SandboxOptions): SandboxHandle {
+  const { sandbox } = config;
+  const libkrun = runtimeInfo.runtime === "libkrun";
+  const child = libkrun ? spawnLibkrun(opts) : spawnPodman(opts);
 
   let stdoutTail = "";
   let stderrTail = "";
@@ -125,16 +220,43 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
   });
 
   const started = Date.now();
+  let hitTimeout = false;
+  const timer = libkrun
+    ? setTimeout(() => {
+        hitTimeout = true;
+        killGroup(child.pid, "SIGKILL");
+      }, sandbox.timeoutMin * 60_000)
+    : undefined;
+
   const done = new Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
-    child.on("error", (err) => resolve({ code: 127, stdout: stdoutTail, stderr: `${stderrTail}\n${err.message}`, timedOut: false }));
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      resolve({ code: 127, stdout: stdoutTail, stderr: `${stderrTail}\n${err.message}`, timedOut: false });
+    });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
       if (pending.length) stdoutTail = keep(stdoutTail, pending.toString("utf8"));
-      const timedOut = code !== 0 && Date.now() - started >= sandbox.timeoutMin * 60_000;
+      const timedOut = hitTimeout || (code !== 0 && Date.now() - started >= sandbox.timeoutMin * 60_000);
       resolve({ code: code ?? 1, stdout: stdoutTail, stderr: stderrTail, timedOut });
     });
   });
 
   const stop = async () => {
+    if (libkrun) {
+      if (child.exitCode !== null) return;
+      killGroup(child.pid, "SIGTERM");
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => {
+          if (child.exitCode === null) killGroup(child.pid, "SIGKILL");
+          resolve();
+        }, 3000);
+        child.once("close", () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+      return;
+    }
     await new Promise<void>((resolve) => {
       const p = spawn("podman", ["stop", "-t", "3", opts.name], { stdio: "ignore" });
       p.on("close", () => resolve());
@@ -146,9 +268,18 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
   return { done, stop };
 }
 
-/** Startup self-check: podman present and the sandbox image built. Returns problems found. */
+/** Startup self-check: the chosen runtime's launcher/image present. Returns problems found. */
 export function checkSandbox(): string[] {
   const problems: string[] = [];
+  if (runtimeInfo.runtime === "libkrun") {
+    if (!existsSync(config.sandbox.vmBin)) {
+      problems.push(`libkrun launcher ${config.sandbox.vmBin} not found; build it with: npm run build:vm`);
+    }
+    if (!existsSync(config.sandbox.rootfs)) {
+      problems.push(`libkrun rootfs ${config.sandbox.rootfs} not found; create it with: npm run build:rootfs`);
+    }
+    return problems;
+  }
   if (!onPath("podman")) {
     problems.push("podman is not installed; no task can run.");
     return problems;

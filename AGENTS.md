@@ -15,21 +15,25 @@ host has KVM), and pushes the agent's commits to a new `hive/<id>` branch. REST 
 | `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
 | `src/tasks.ts` | Task lifecycle: queue → clone → agent run → review cycles → export → push; idle cleanup |
-| `src/sandbox.ts` | `podman run` wrapper, runtime detection (krun / runsc / plain container), JSONL parsing |
+| `src/sandbox.ts` | `podman run` / `pasta` + `hive-vm` wrapper, runtime detection (libkrun / krun / runsc / plain container), JSONL parsing |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, `git am` the patches, push |
 | `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/abort`, `/session`, `/files`, `/events` |
 | `src/routes/github.ts` | `gh`-backed repo list, search, fork for the UI |
-| `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch) |
+| `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
+| `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist` |
 | `public/landing.html` | Landing page served at `/` |
 
-Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`. There is no test suite yet.
+Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
+backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `npm test`.
 
 ## Security model — keep these invariants
 
 1. **The sandbox gets nothing secret except one LLM key.** Mounts are only the task's `work/` and
    `session/` (plus `out/` for export). Keys are passed with `-e NAME` from the child env, never
-   on the command line. Don't add host mounts or env vars casually.
+   on the command line. Don't add host mounts or env vars casually. The libkrun backend also maps
+   no guest ports to the host and runs in a pasta namespace that cannot reach the host's loopback,
+   gateway or own addresses; its root is a read-only export of the image with an in-RAM overlay.
 2. **The host never runs git in `work/`.** The agent controls `work/.git` (hooks, config,
    filters, fsmonitor). Host git runs only in `origin/`, which no sandbox mounts, with hooks
    disabled. Changes cross over only as patch files applied with `git am`.
@@ -38,6 +42,9 @@ Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`. Ther
 4. **Anything from GitHub or the agent is untrusted in the UI** — render with `esc()` only.
 5. Repo URLs are restricted to github.com (`normalizeRepo`); `HIVE_ALLOW_ANY_REPO_URL=1` is for
    local testing only.
+6. **The npm cache is the one thing shared between tasks.** `HIVE_NPM_CACHE` (default
+   `~/.cache/agent-hive/npm`) is mounted read-write at `/root/.npm` in every agent sandbox, so it
+   must never hold credentials or task data; it only caches packages.
 
 ## Two-account GitHub model
 
@@ -73,9 +80,10 @@ attribution.
 
 ## Status
 
-**Done:** sandboxed runs (krun/runsc/container), branch push, review cycles with an optional
-second model, follow-ups in the same session, WebSocket streaming with replay, snippet endpoint,
-web UI.
+**Done:** sandboxed runs (libkrun/podman krun/runsc/container), branch push, review cycles with an
+optional second model, follow-ups in the same session, WebSocket streaming with replay, snippet
+endpoint, web UI, a shared npm cache and per-task token/cost totals.
 
 **Not built yet:** PR creation, persistence across restarts (sessions are in memory; task dirs
-are swept at startup), a test suite, a per-task network allowlist for the sandbox.
+are swept at startup), a comprehensive test suite (only the launcher CLI and sandbox command
+building are covered), a per-task network allowlist for the sandbox.

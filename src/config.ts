@@ -1,7 +1,13 @@
 import dotenv from "dotenv";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 dotenv.config();
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
+const cacheHome = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
 
 function int(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -48,10 +54,16 @@ export const config = {
     "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so.",
   sandbox: {
     image: process.env.HIVE_IMAGE || "localhost/agent-hive-sandbox:latest",
-    runtime: process.env.HIVE_RUNTIME || "auto", // auto | krun | runsc | crun | runc
+    runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun | krun | runsc | crun | runc
     memory: process.env.HIVE_SANDBOX_MEMORY || "1g",
     cpus: process.env.HIVE_SANDBOX_CPUS || "1",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
+    vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
+    rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
+    libkrun: process.env.HIVE_LIBKRUN || "libkrun.so.1",
+    // Shared npm cache for the agent's downloads; exempt from the per-task sandbox isolation.
+    // HIVE_NPM_CACHE="" disables it.
+    npmCache: process.env.HIVE_NPM_CACHE ?? join(cacheHome, "agent-hive/npm"),
   },
   git: {
     authorName: process.env.GIT_AUTHOR_NAME || "agent-hive",

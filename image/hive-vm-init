@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# First process inside a libkrun guest. Builds a writable overlay root in RAM over the read-only
+# virtiofs root, mounts the task shares, then chroots and execs the command. All writes outside
+# the shares die with the VM.
+set -euo pipefail
+
+R=/run/hive/root
+# The guest root is a read-only virtiofs mount, so /run/hive cannot be created in place: put /run
+# on a tmpfs first (it exists in every image), then the writable state below it.
+mount -t tmpfs -o mode=0755,size="${HIVE_TMPFS_SIZE:-50%}" hive-run /run
+mkdir -p /run/hive
+mount -t tmpfs -o mode=0755,size="${HIVE_TMPFS_SIZE:-50%}" hive-tmp /run/hive
+mkdir -p /run/hive/upper /run/hive/work "$R"
+mount -t overlay overlay -o "lowerdir=/,upperdir=/run/hive/upper,workdir=/run/hive/work" "$R"
+
+for d in proc sys dev; do
+  mount --rbind "/$d" "$R/$d"
+done
+
+if [[ -n "${HIVE_SHARES:-}" ]]; then
+  IFS=',' read -ra shares <<<"$HIVE_SHARES"
+  for entry in "${shares[@]}"; do
+    IFS=':' read -r tag guest ro <<<"$entry"
+    mkdir -p "$R$guest"
+    if [[ "${ro:-}" == "ro" ]]; then
+      mount -t virtiofs -o ro "$tag" "$R$guest"
+    else
+      mount -t virtiofs "$tag" "$R$guest"
+    fi
+  done
+fi
+
+if [[ -n "${HIVE_DNS:-}" ]]; then
+  rm -f "$R/etc/resolv.conf"
+  printf 'nameserver %s\n' "$HIVE_DNS" >"$R/etc/resolv.conf"
+fi
+
+# The image ENV lines do not apply when we exec directly, so set the ones pi and tools need.
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PI_SKIP_VERSION_CHECK=1
+export PI_TELEMETRY=0
+
+exec chroot "$R" /usr/bin/env --chdir="${HIVE_WORKDIR:-/}" "$@"

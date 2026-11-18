@@ -20,5 +20,5 @@ RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" && npm cache 
 
 ENV HOME=/root PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0
 RUN mkdir -p /root/.pi/agent && echo '{ "enableInstallTelemetry": false }' > /root/.pi/agent/settings.json
-COPY hive-agent hive-export /usr/local/bin/
+COPY hive-agent hive-export hive-vm-init /usr/local/bin/
 WORKDIR /work

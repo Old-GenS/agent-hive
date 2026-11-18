@@ -45,6 +45,11 @@ isolation it picked:
 sandbox isolation: microvm (--runtime krun)
 ```
 
+Building from source instead of using the installer: `npm ci && npm run build && npm run build:ui
+&& npm run build:image`. To enable the libkrun backend, also run `npm run build:vm` and
+`npm run build:rootfs` (needs `/dev/kvm`, libkrun and `pasta`). `npm test` runs the server build
+and the test suite.
+
 | URL | What |
 |-----|------|
 | `http://localhost:8080/` | Landing page |
@@ -66,6 +71,7 @@ See [stansz/hive-mcp](https://github.com/stansz/hive-mcp).
 
 | Runtime | When | Boundary |
 |---------|------|----------|
+| `libkrun` | `/dev/kvm` usable, libkrun and `pasta` installed, `vm/hive-vm` and the rootfs present (auto) | Own guest kernel; no podman at run time. Read-only shared root with an in-RAM writable layer; a network namespace that blocks the host's loopback, gateway and own addresses. |
 | `krun` | `/dev/kvm` usable and `krun` installed (auto) | Own guest kernel. Escaping needs a KVM/libkrun bug. |
 | `runsc` | `HIVE_RUNTIME=runsc` with gVisor installed | User-space kernel; works without KVM. Not tested here. |
 | default (`crun`/`runc`) | Fallback | Shared host kernel: namespaces + seccomp. A kernel exploit escapes to the user running podman. |
@@ -73,6 +79,9 @@ See [stansz/hive-mcp](https://github.com/stansz/hive-mcp).
 In every mode the sandbox has network access (it must reach the LLM API) and sees the selected
 provider's key. In container mode, run agent-hive as a **dedicated user** that holds nothing but
 what Hive needs, so an escape lands somewhere boring.
+
+The libkrun backend boots a rootfs exported from the sandbox image. After rebuilding the image
+(`npm run build:image`) you must re-run `npm run build:rootfs`.
 
 ## API
 
@@ -135,7 +144,11 @@ current run are replayed to late subscribers.
 | `MAX_CONCURRENT_SESSIONS` | `2` | Sandboxes running at once; more tasks queue |
 | `MAX_QUEUED_SESSIONS` | `10` | Queue length before `503` |
 | `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Idle sessions (and their files) are deleted after this |
-| `HIVE_RUNTIME` | `auto` | `auto`, `krun`, `runsc`, `crun`, `runc` |
+| `HIVE_RUNTIME` | `auto` | `auto`, `libkrun`, `krun`, `runsc`, `crun`, `runc` |
+| `HIVE_VM_BIN` | `vm/hive-vm` | libkrun launcher binary |
+| `HIVE_ROOTFS` | `~/.local/share/agent-hive/rootfs/current` | Sandbox rootfs exported by `npm run build:rootfs`; re-run it after `npm run build:image` |
+| `HIVE_LIBKRUN` | `libkrun.so.1` | libkrun shared library loaded by `hive-vm` at run time |
+| `HIVE_NPM_CACHE` | `~/.cache/agent-hive/npm` | npm cache directory shared into sandboxes; empty disables |
 | `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `1g` / `1` | Per sandbox. Size `MAX_CONCURRENT_SESSIONS` × memory to fit the host. |
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | A sandbox run is killed after this |
 | `HIVE_IMAGE` | `localhost/agent-hive-sandbox:latest` | Sandbox image |
@@ -169,7 +182,8 @@ sudo loginctl enable-linger $USER   # keep it running when you're logged out
 ## Upgrading pi
 
 The sandbox image pins pi (`PI_VERSION` in `image/Containerfile`). To move to a newer release,
-bump it and run `npm run build:image`. Running tasks keep the image they started with.
+bump it and run `npm run build:image`, then `npm run build:rootfs` if you use the libkrun backend.
+Running tasks keep the image they started with.
 
 ## License
 
