@@ -8,7 +8,7 @@
  */
 import { parseArgs } from "node:util";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -20,6 +20,9 @@ hive apply [run] [--branch <name>]
 hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
 hive list
 hive clean <run> | --all
+hive setup
+hive doctor
+hive update [--check | --rollback]
 `;
 
 function sleep(ms: number): Promise<void> {
@@ -53,6 +56,7 @@ async function cmdRun(args: string[]): Promise<number> {
   const { startRun, listRuns } = await import("./runs.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
   const { renderEvent } = await import("./render.js");
+  const { bundleRoot, updateNotice } = await import("./release.js");
 
   const prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[0] ?? "");
   if (!prompt.trim()) throw new Error("a prompt is required");
@@ -72,8 +76,15 @@ async function cmdRun(args: string[]): Promise<number> {
     console.error(
       "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)",
     );
+    const rootfs = process.env.HIVE_ROOTFS;
+    if (bundleRoot() && rootfs !== undefined && !existsSync(rootfs)) {
+      console.error("hive: run hive setup to download the VM filesystem");
+    }
     return 1;
   }
+
+  const notice = await updateNotice();
+  if (notice !== undefined) console.error(notice);
 
   if (repo !== undefined && (await isDirty(repo))) {
     console.error("hive: uncommitted changes are not included; the agent works on HEAD");
@@ -255,6 +266,149 @@ async function cmdClean(args: string[]): Promise<number> {
   return 0;
 }
 
+function kvmState(): "ok" | "missing" | "no access" {
+  try {
+    accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
+    return "ok";
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "no access";
+  }
+}
+
+/** Path of a command on PATH, or undefined. */
+function commandPath(bin: string): string | undefined {
+  try {
+    const path = execFileSync("sh", ["-c", `command -v ${bin}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return path || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function cmdDoctor(args: string[]): Promise<number> {
+  parseArgs({ args, allowPositionals: true });
+  const { config } = await import("./config.js");
+  const { libkrunAvailable } = await import("./sandbox.js");
+  const { currentVersion } = await import("./release.js");
+
+  let allOk = true;
+  const lines: string[] = [`hive ${currentVersion() ?? "dev (from source)"}`];
+
+  const kvm = kvmState();
+  lines.push(`/dev/kvm: ${kvm}`);
+  if (kvm !== "ok") allOk = false;
+
+  const libkrun = config.sandbox.libkrun;
+  let libkrunOk = false;
+  if (existsSync(config.sandbox.vmBin)) {
+    try {
+      execFileSync(config.sandbox.vmBin, ["--check"], {
+        env: { ...process.env, HIVE_LIBKRUN: libkrun },
+        stdio: "ignore",
+      });
+      libkrunOk = true;
+    } catch {
+      libkrunOk = false;
+    }
+  }
+  lines.push(
+    libkrunOk
+      ? `libkrun: ok (${libkrun})`
+      : "libkrun: not found — install your distro's libkrun package (Fedora: sudo dnf install libkrun)",
+  );
+  if (!libkrunOk) allOk = false;
+
+  const pasta = commandPath("pasta");
+  lines.push(pasta ? `pasta: ok (${pasta})` : "pasta: not found — install passt (Fedora: sudo dnf install passt)");
+  if (!pasta) allOk = false;
+
+  const launcherOk = existsSync(config.sandbox.vmBin);
+  lines.push(
+    launcherOk ? `launcher: ok (${config.sandbox.vmBin})` : `launcher: missing (${config.sandbox.vmBin})`,
+  );
+  if (!launcherOk) allOk = false;
+
+  let rootfsOk = false;
+  let rootfsPath = config.sandbox.rootfs;
+  try {
+    rootfsPath = realpathSync(config.sandbox.rootfs);
+    rootfsOk = existsSync(join(rootfsPath, "usr/local/bin/hive-vm-init"));
+  } catch {
+    rootfsOk = false;
+  }
+  lines.push(rootfsOk ? `rootfs: ok (${rootfsPath})` : `rootfs: missing (${config.sandbox.rootfs}) — run hive setup`);
+  if (!rootfsOk) allOk = false;
+
+  const isolationOk = libkrunAvailable();
+  lines.push(`isolation: ${isolationOk ? "microvm (system libkrun)" : "unavailable"}`);
+  if (!isolationOk) allOk = false;
+
+  process.stdout.write(lines.join("\n") + "\n");
+  return allOk ? 0 : 1;
+}
+
+async function cmdSetup(args: string[]): Promise<number> {
+  parseArgs({ args, allowPositionals: true });
+  const { bundleRoot, setupRootfs } = await import("./release.js");
+  if (bundleRoot()) {
+    const path = await setupRootfs();
+    process.stdout.write(`hive: VM filesystem ready: ${path}\n`);
+  } else {
+    process.stdout.write(
+      "hive: running from source; build the VM filesystem with npm run build:image && npm run build:rootfs\n",
+    );
+  }
+  return cmdDoctor([]);
+}
+
+async function cmdUpdate(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      check: { type: "boolean" },
+      rollback: { type: "boolean" },
+    },
+  });
+  const { activate, bundleRoot, compareVersions, currentVersion, fetchRelease, installRelease, prune, rollback } =
+    await import("./release.js");
+  if (!bundleRoot()) {
+    throw new Error(
+      "hive update works for installed releases; this copy runs from source (git pull && npm run build)",
+    );
+  }
+  const cur = currentVersion() ?? "dev";
+
+  if (values.rollback) {
+    const version = rollback();
+    process.stdout.write(`hive: back on ${version}\n`);
+    return 0;
+  }
+
+  const rel = await fetchRelease();
+  if (values.check) {
+    if (compareVersions(rel.version, cur) > 0) {
+      process.stdout.write(`hive ${rel.version} is available (you have ${cur})\n`);
+    } else {
+      process.stdout.write(`hive ${cur} is up to date\n`);
+    }
+    return 0;
+  }
+
+  if (compareVersions(rel.version, cur) <= 0) {
+    process.stdout.write(`hive ${cur} is up to date\n`);
+    return 0;
+  }
+  await installRelease(rel);
+  activate(rel.version);
+  prune();
+  process.stdout.write(`hive: updated ${cur} → ${rel.version}\n`);
+  return 0;
+}
+
 /**
  * The user's git config value for `key`, or undefined. Local copy of gitConfigIdentity(): the
  * identity has to be in the environment before ./config.ts is first imported.
@@ -297,6 +451,20 @@ async function main(): Promise<void> {
     }
   }
 
+  // A release bundle carries its own launcher and tells us which rootfs it needs. Set these
+  // before ./config.ts is first imported; the launcher/rootfs env vars win over the defaults.
+  const bundleRoot = process.env.HIVE_BUNDLE_ROOT;
+  if (bundleRoot) {
+    process.env.HIVE_VM_BIN ||= join(bundleRoot, "libexec/hive-vm");
+    try {
+      const rver = readFileSync(join(bundleRoot, "ROOTFS_VERSION"), "utf8").trim();
+      const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
+      process.env.HIVE_ROOTFS ||= join(dataHome, "agent-hive/rootfs", rver);
+    } catch {
+      // No ROOTFS_VERSION in the bundle: leave HIVE_ROOTFS to its source default.
+    }
+  }
+
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === "--help" || cmd === "-h") {
     process.stdout.write(USAGE);
@@ -324,6 +492,15 @@ async function main(): Promise<void> {
       return;
     case "clean":
       process.exitCode = await cmdClean(rest);
+      return;
+    case "setup":
+      process.exitCode = await cmdSetup(rest);
+      return;
+    case "doctor":
+      process.exitCode = await cmdDoctor(rest);
+      return;
+    case "update":
+      process.exitCode = await cmdUpdate(rest);
       return;
     default:
       process.stderr.write(USAGE);

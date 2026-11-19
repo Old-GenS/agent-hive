@@ -6,3 +6,4 @@ ui/dist/
 ui/node_modules/
 vm/hive-vm
 __pycache__/
+release/

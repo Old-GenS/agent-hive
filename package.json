@@ -4,14 +4,19 @@
   "description": "Self-hosted coding agent server: pi in throwaway microVMs, behind a small Fastify API",
   "type": "module",
   "main": "dist/index.js",
-  "bin": { "hive": "dist/cli.js" },
-  "engines": { "node": ">=20" },
+  "bin": {
+    "hive": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "build:ui": "cd ui && npm ci && npm run build",
     "build:image": "podman build -t localhost/agent-hive-sandbox:latest image/",
     "build:vm": "bash vm/build.sh",
     "build:rootfs": "bash vm/build-rootfs.sh",
+    "release": "bash scripts/build-release.sh",
     "test": "npm run build && node --test 'test/*.test.mjs'",
     "start": "node dist/index.js",
     "dev": "tsc --watch & node --watch dist/index.js"
@@ -25,6 +30,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
+    "esbuild": "0.25.10",
     "typescript": "^5.9.3"
   }
 }

@@ -37,6 +37,17 @@ isolation still need porting.
 
 ## Install
 
+### From a release
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
+```
+
+This needs `/dev/kvm`, and the system's libkrun and pasta for now (Fedora:
+`sudo dnf install libkrun passt`).
+
+### From source
+
 ```bash
 git clone https://github.com/ogsapps/agent-hive.git && cd agent-hive
 npm ci && npm run build && npm run build:image && npm run build:vm && npm run build:rootfs
@@ -78,6 +89,9 @@ hive push --pr --base main
 | `hive push [run]` | Put the run's commits on a new branch and push it with your own git credentials. `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for the PR's base. Never forced. |
 | `hive list` | List runs, newest first. |
 | `hive clean <run>` | Delete a run. `--all` deletes every finished run. |
+| `hive setup` | Download the VM filesystem (rootfs) the installed release needs. |
+| `hive doctor` | Show what's available: `/dev/kvm`, libkrun, pasta, the launcher and the rootfs. |
+| `hive update [--check \| --rollback]` | Verify and install the latest release (`--check` only reports), or go back to the previous version (`--rollback`). |
 
 `[run]` defaults to the newest run.
 
@@ -107,6 +121,9 @@ All optional. Put them in `~/.config/agent-hive/env` or export them.
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | The run is stopped after this many minutes |
 | `HIVE_NPM_CACHE` | `~/.cache/agent-hive/npm` | npm download cache shared between runs; empty disables it |
 | `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
+| `HIVE_NO_UPDATE_CHECK` | — | Set to `1` to stop the once-a-day "new version available" notice |
+| `HIVE_RELEASE_REPO` | `ogsapps/agent-hive` | GitHub repo releases are looked up in |
+| `GH_TOKEN` / `GITHUB_TOKEN` | — | Used for release lookups when set |
 
 ### Run directories
 
