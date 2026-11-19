@@ -54,7 +54,7 @@ td code { font-size: 12px; }
   <p>Self-hosted coding agent server. Send tasks, get a branch back. Every task runs in its own throwaway microVM.</p>
   <div class="hero-btns">
     <a href="/ui" class="btn btn-primary">Open App →</a>
-    <a href="https://github.com/stansz/agent-hive" class="btn btn-secondary">GitHub</a>
+    <a href="https://github.com/ogsapps/agent-hive" class="btn btn-secondary">GitHub</a>
   </div>
 </div>
 
@@ -204,16 +204,16 @@ hive_snippet(prompt="rename foo to bar", code="let foo = 1;")</code></pre>
 <section id="hosting">
   <h2>Self-Host</h2>
   <p>Needs Linux, Node.js 20+, git and rootless podman. With <code>/dev/kvm</code> and krun, tasks run in microVMs; without, in rootless containers (see the README for what that means).</p>
-  <pre><code>curl -sL https://raw.githubusercontent.com/stansz/agent-hive/main/install.sh | bash
+  <pre><code>curl -sL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.sh | bash
 cd ~/agent-hive &amp;&amp; nano .env   # API_TOKEN + one provider key
 node dist/index.js</code></pre>
-  <p>See <a href="https://github.com/stansz/agent-hive">GitHub</a> for systemd, Cloudflare Tunnel and deploy-key setup.</p>
+  <p>See <a href="https://github.com/ogsapps/agent-hive">GitHub</a> for systemd, Cloudflare Tunnel and deploy-key setup.</p>
 </section>
 
 </div>
 
 <div class="footer">
-  <p>Agent Hive · <a href="https://github.com/stansz/agent-hive">GitHub</a> · Built with <a href="https://pi.dev">pi</a> · <a href="https://modelcontextprotocol.io">MCP Protocol</a></p>
+  <p>Agent Hive · <a href="https://github.com/ogsapps/agent-hive">GitHub</a> · Built with <a href="https://pi.dev">pi</a> · <a href="https://modelcontextprotocol.io">MCP Protocol</a></p>
 </div>
 
 </body>

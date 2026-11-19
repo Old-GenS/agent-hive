@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # install.sh - Agent Hive installer
-# Run: curl -sL https://raw.githubusercontent.com/stansz/agent-hive/main/install.sh | bash
+# Run: curl -sL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.sh | bash
 
 set -euo pipefail
 
 APP_DIR="${HOME}/agent-hive"
-REPO="https://github.com/stansz/agent-hive.git"
+REPO="https://github.com/ogsapps/agent-hive.git"
 
 echo ""
 echo "  Agent Hive Installer"

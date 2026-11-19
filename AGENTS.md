@@ -2,10 +2,15 @@
 
 ## What this is
 
-A self-hosted coding agent server. A task clones a GitHub repo on the host, runs
-[pi](https://pi.dev) on a copy of it inside a throwaway podman sandbox (a krun microVM when the
-host has KVM), and pushes the agent's commits to a new `hive/<id>` branch. REST API, a web UI at
-`/ui/`, and MCP via the separate [hive-mcp](https://github.com/stansz/hive-mcp) package.
+A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
+
+- **The main interface is the `hive` CLI** (`src/cli.ts`, `src/runs.ts`). It clones the current
+  repo, or a remote with `--repo`, and boots a libkrun VM with `vm/hive-vm` under pasta. The
+  prompt goes in as a file, the agent's events come out as a log file, and its commits come back
+  as patches. You then apply them, or push a branch and open a PR.
+- **The same core also runs as an optional HTTP server** (`src/index.ts`, `src/tasks.ts`) with a
+  REST API, a web UI at `/ui/`, and MCP via the separate
+  [hive-mcp](https://github.com/stansz/hive-mcp) package.
 
 ## Layout
 
@@ -17,8 +22,8 @@ host has KVM), and pushes the agent's commits to a new `hive/<id>` branch. REST 
 | `src/tasks.ts` | Task lifecycle: queue → clone → agent run → review cycles → export → push; idle cleanup |
 | `src/sandbox.ts` | `podman run` / `pasta` + `hive-vm` wrapper, runtime detection (libkrun / krun / runsc / plain container), JSONL parsing |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, `git am` the patches, push |
-| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/list/clean) |
-| `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply |
+| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/push/list/clean); sets the commit identity from the user's git config |
+| `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply, push (never forced) and `gh pr create` |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`) |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
 | `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/abort`, `/session`, `/files`, `/events` |
@@ -88,10 +93,20 @@ Commits made in the sandbox use `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from `.en
 
 ## Status
 
-**Done:** sandboxed runs (libkrun/podman krun/runsc/container), branch push, review cycles with an
-optional second model, follow-ups in the same session, WebSocket streaming with replay, snippet
-endpoint, web UI, a shared npm cache and per-task token/cost totals.
+**Done, CLI:** `hive run` on a local repo or `--repo`, with live progress. Also `log`, `diff`,
+`apply`, `push` (branch, never forced), `push --pr` (GitHub PR via `gh`), `list` and `clean`.
+Settings come from env vars or `~/.config/agent-hive/env`, and nothing is tied to an account.
+Tested on Linux with KVM: real runs in libkrun VMs, a push to a branch, and a PR opened on
+GitHub.
 
-**Not built yet:** PR creation, persistence across restarts (sessions are in memory; task dirs
-are swept at startup), a comprehensive test suite (only the launcher CLI and sandbox command
-building are covered), a per-task network allowlist for the sandbox.
+**Done, server:** sandboxed runs (libkrun/podman krun/runsc/container), branch push, review cycles
+with an optional second model, follow-ups in the same session, WebSocket streaming with replay,
+snippet endpoint, web UI, a shared npm cache and per-task token/cost totals.
+
+**Not built yet:**
+- `hive mcp` (stdio MCP for handing work to hive from other agents)
+- `hive serve` (the server on top of the CLI core)
+- macOS: the launcher build for Apple silicon, and network isolation without pasta
+- follow-up prompts and review cycles in the CLI
+- server persistence across restarts
+- a per-run network allowlist
