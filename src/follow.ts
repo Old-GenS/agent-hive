@@ -16,7 +16,8 @@ export function followJsonl(
   const poll = () => {
     let fd: number;
     try {
-      fd = fs.openSync(path, "r");
+      // O_NOFOLLOW: the VM controls this folder; never follow a symlink it put there onto a host file.
+      fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
     } catch {
       return; // not created yet
     }

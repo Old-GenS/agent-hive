@@ -1191,3 +1191,49 @@ td.provider-name {
   border: 0;
   color: inherit;
 }
+
+/* Status steps in the timeline: a check when done, a pulsing dot while current, red on failure. */
+.timeline > li.item-status[data-step="done"]::before {
+  left: 2px;
+  top: 5px;
+  width: 11px;
+  height: 11px;
+  background: var(--ok);
+}
+
+.timeline > li.item-status[data-step="done"]::after {
+  content: "";
+  position: absolute;
+  left: 5.5px;
+  top: 7px;
+  width: 3px;
+  height: 5px;
+  border: solid var(--surface);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.timeline > li.item-status[data-step="current"] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.timeline > li.item-status[data-step="current"]::before {
+  background: var(--accent);
+  animation: step-pulse 1.6s ease-in-out infinite;
+}
+
+.timeline > li.item-status[data-step="failed"]::before {
+  background: var(--danger);
+}
+
+@keyframes step-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  50% { box-shadow: 0 0 0 5px var(--accent-soft); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline > li.item-status[data-step="current"]::before {
+    animation: none;
+  }
+}

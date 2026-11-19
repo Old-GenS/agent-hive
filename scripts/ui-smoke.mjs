@@ -121,6 +121,7 @@ try {
   let demoSocket = null;
   await page.routeWebSocket(/\/events\/demo-session/, (ws) => {
     demoSocket = ws;
+    ws.send(JSON.stringify({ type: "hive_status", status: "queued", running: 0, max: 2 }));
     ws.send(JSON.stringify({ type: "hive_status", status: "running" }));
     ws.send(JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "npm test" } }));
   });
@@ -141,11 +142,21 @@ try {
   );
   const headerBees = await page.$$eval(".header-bee", (nodes) => nodes.length);
   assert(headerBees === 1, `header shows one bee while the run is busy (got ${headerBees})`);
+  const stepsWorking = await page.$$eval(".item-status[data-step]", (nodes) => nodes.map((n) => n.dataset.step));
+  assert(
+    JSON.stringify(stepsWorking) === JSON.stringify(["done", "current"]),
+    `queued is ticked off and running is current (got ${JSON.stringify(stepsWorking)})`,
+  );
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-run-working.png") });
 
   demoSocket.send(JSON.stringify({ type: "hive_done", status: "idle", usage: { cost: 0.0123 } }));
   await page.waitForSelector('.bee-indicator[data-state="done"]');
+  const stepsDone = await page.$$eval(".item-status[data-step]", (nodes) => nodes.map((n) => n.dataset.step));
+  assert(
+    JSON.stringify(stepsDone) === JSON.stringify(["done", "done"]),
+    `every step is ticked off when the run is done (got ${JSON.stringify(stepsDone)})`,
+  );
   const headerBeesDone = await page.$$eval(".header-bee", (nodes) => nodes.length);
   assert(headerBeesDone === 0, `header bee is removed when the run is done (got ${headerBeesDone})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-run-done.png") });

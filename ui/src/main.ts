@@ -90,6 +90,13 @@ interface AssistantItem {
   text: string;
 }
 
+/** A timeline status line; hive_status steps carry `step` so earlier ones tick off. */
+interface StatusItem {
+  kind: "status";
+  text: string;
+  step?: "current" | "done" | "failed";
+}
+
 interface ToolItem {
   kind: "tool";
   name: string;
@@ -98,7 +105,7 @@ interface ToolItem {
 }
 
 type RunItem =
-  | { kind: "status"; text: string }
+  | StatusItem
   | { kind: "user"; text: string }
   | AssistantItem
   | ToolItem
@@ -117,6 +124,7 @@ interface RunState {
   items: RunItem[];
   ws: WebSocket | null;
   currentAssistant: AssistantItem | null;
+  currentStep: StatusItem | null;
   lastTool: ToolItem | null;
 }
 
@@ -653,6 +661,7 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     items: [],
     ws: null,
     currentAssistant: null,
+    currentStep: null,
     lastTool: null,
   };
   runUi = null;
@@ -664,6 +673,8 @@ function fillItem(li: HTMLElement, item: RunItem): void {
   switch (item.kind) {
     case "status":
       li.textContent = item.text;
+      if (item.step) li.dataset.step = item.step;
+      else delete li.dataset.step;
       break;
     case "user":
       li.textContent = item.text;
@@ -840,7 +851,16 @@ function handleEvent(event: any): void {
       else if (status === "running") text = "Agent working in the VM";
       else if (status === "reviewing") text = `Review cycle ${event.cycle ?? "?"} of ${event.of ?? "?"}`;
       else if (status === "pushing") text = "Pushing changes";
-      if (text) appendItem({ kind: "status", text });
+      if (text) {
+        // The previous step is finished once the next one starts.
+        if (run.currentStep) {
+          run.currentStep.step = "done";
+          updateItem(run.currentStep);
+        }
+        const step: StatusItem = { kind: "status", text, step: "current" };
+        run.currentStep = step;
+        appendItem(step);
+      }
       if (status === "cloning" && event.newProject) runUi?.bee.set("working", "Setting up the new project");
       break;
     }
@@ -887,6 +907,11 @@ function handleEvent(event: any): void {
 function finishRun(event: any): void {
   if (!run) return;
   const status = String(event.status ?? "");
+  if (run.currentStep) {
+    run.currentStep.step = status === "idle" ? "done" : "failed";
+    updateItem(run.currentStep);
+    run.currentStep = null;
+  }
   let item: RunItem;
   if (status === "idle") {
     const parts: string[] = [];

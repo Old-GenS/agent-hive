@@ -170,6 +170,7 @@ export class Task extends EventEmitter {
       mounts,
       env: { [PROVIDERS[this.provider].sandboxEnv]: key, ...gitIdentity() },
       command: ["hive-agent", ...pi],
+      ioDir: join(this.dir, "io"),
       onEvent: (event) => {
         // Bulky and only useful to a live tool view; the final result arrives in tool_execution_end.
         if (event.type === "tool_execution_update") return;
@@ -215,6 +216,7 @@ export class Task extends EventEmitter {
       ],
       env: gitIdentity(),
       command: ["hive-export", this.baseSha!],
+      ioDir: join(this.dir, "io"),
     });
     const r = await exp.done;
     if (r.code !== 0) throw new Error(`Exporting changes failed: ${(r.stderr || r.stdout).trim().slice(-2000)}`);

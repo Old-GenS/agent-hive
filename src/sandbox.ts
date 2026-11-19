@@ -5,10 +5,11 @@
  * mounts and env vars passed in; the host's SSH keys, gh login and .env never enter it.
  */
 import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import { config } from "./config.js";
+import { followJsonl } from "./follow.js";
 
 export type Isolation = "microvm" | "gvisor" | "container";
 
@@ -109,6 +110,12 @@ export interface SandboxOptions {
   command: string[];
   /** called for each stdout line that parses as JSON */
   onEvent?: (event: any) => void;
+  /**
+   * libkrun only: a host folder mounted at /io. The command's stdout and stderr go to
+   * /io/events.jsonl and /io/stderr.log, and onEvent follows that file, because the VM console
+   * doesn't carry pi's JSONL stream reliably (the CLI does the same).
+   */
+  ioDir?: string;
 }
 
 export interface SandboxHandle {
@@ -187,7 +194,31 @@ function killGroup(pid: number | undefined, signal: NodeJS.Signals) {
 export function runSandbox(opts: SandboxOptions): SandboxHandle {
   const { sandbox } = config;
   const libkrun = runtimeInfo.runtime === "libkrun";
-  const child = libkrun ? spawnLibkrun(opts) : spawnPodman(opts);
+  let launch = opts;
+  let follower: { poll(): void; stop(): void } | undefined;
+  const ioDir = libkrun ? opts.ioDir : undefined;
+  if (ioDir) {
+    rmSync(ioDir, { recursive: true, force: true });
+    mkdirSync(ioDir, { recursive: true });
+    writeFileSync(join(ioDir, "events.jsonl"), "");
+    writeFileSync(join(ioDir, "stderr.log"), "");
+    launch = {
+      ...opts,
+      mounts: [...opts.mounts, { host: ioDir, container: "/io" }],
+      command: ["bash", "-c", 'exec "$@" > /io/events.jsonl 2> /io/stderr.log', "hive-io", ...opts.command],
+    };
+    if (opts.onEvent) {
+      const onEvent = opts.onEvent;
+      follower = followJsonl(join(ioDir, "events.jsonl"), (event) => {
+        try {
+          onEvent(event);
+        } catch (err) {
+          console.error("sandbox onEvent handler failed:", err);
+        }
+      });
+    }
+  }
+  const child = libkrun ? spawnLibkrun(launch) : spawnPodman(launch);
 
   let stdoutTail = "";
   let stderrTail = "";
@@ -232,10 +263,14 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
   const done = new Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }>((resolve) => {
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
+      follower?.stop();
       resolve({ code: 127, stdout: stdoutTail, stderr: `${stderrTail}\n${err.message}`, timedOut: false });
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
+      // stop() does a last poll, so events written just before exit still arrive.
+      follower?.stop();
+      if (ioDir) stderrTail = keep(stderrTail, readTail(join(ioDir, "stderr.log"), MAX_KEPT_OUTPUT));
       if (pending.length) stdoutTail = keep(stdoutTail, pending.toString("utf8"));
       const timedOut = hitTimeout || (code !== 0 && Date.now() - started >= sandbox.timeoutMin * 60_000);
       resolve({ code: code ?? 1, stdout: stdoutTail, stderr: stderrTail, timedOut });
@@ -267,6 +302,25 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
   };
 
   return { done, stop };
+}
+
+/** The last `max` bytes of a file the VM wrote, without following symlinks; "" if unreadable. */
+function readTail(path: string, max: number): string {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return "";
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, max);
+    const buf = Buffer.alloc(len);
+    const n = readSync(fd, buf, 0, len, size - len);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Startup self-check: the chosen runtime's launcher/image present. Returns problems found. */
