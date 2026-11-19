@@ -92,6 +92,21 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   `docs/GUI.md`.
 - **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor
   from step 3 where there's no KVM.
+- **`hive serve` front end:** follow opencode's split (the agent as a local server, every UI a
+  client over HTTP and server-sent events) and borrow OpenHands' UI patterns (action timeline,
+  interrupt button, file-changes view). Notes and licenses in `docs/RESEARCH.md`.
+
+### Workflow improvements
+
+Roughly in order of value (from `docs/RESEARCH.md`):
+
+1. **A cost or time limit per run,** e.g. "stop at $0.50". Token costs are already tracked.
+2. **A per-run network allowlist:** the VM can reach only the LLM API and package registries.
+3. **Automatic checks:** run the repo's tests in the VM after the agent finishes, and show pass or
+   fail in the summary.
+4. **The same task on two models side by side,** then pick the better diff.
+5. **Notifications** to the desktop or phone when a run finishes.
+6. **Per-repo caches** for faster starts, extending the npm cache to pip and others.
 
 ## Isolation backends considered
 
