@@ -3,7 +3,10 @@
 Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine,
 on one branch (`main`).
 
-## Step 1 — Releases, `hive update`, system libkrun *(in progress)*
+## Step 1 — Releases, `hive update`, system libkrun *(code done; first release not published)*
+
+Built and tested (`test/release.test.mjs`). To ship: generate the signing key, paste its public key
+into `src/release-key.ts`, then publish the first release as `docs/RELEASING.md` describes.
 
 - **Release build** (`scripts/build-release.sh`): an app bundle containing `bin/hive`, a bundled
   Node, the `hive-vm` launcher and the CLI as one bundled file. The VM filesystem (rootfs) ships as
@@ -74,6 +77,20 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   - network isolation without pasta (pasta is Linux-only);
   - code signing with the hypervisor entitlement (needs an Apple Developer account).
 - **Packages:** `.rpm` and `.deb` for system updates; a signed `.pkg` or Homebrew on macOS.
+- **Stall detection:** stop a run when the agent stops making progress, not only at
+  `HIVE_SANDBOX_TIMEOUT_MIN`. Signal: no file in `work/` changed for N minutes (default 15,
+  configurable). Event gaps alone aren't enough, since a model can think for minutes before
+  writing. dsh-vm does this already (`DSH_VM_STALL_MIN`).
+- **Agent adapters (pi and dsh):** one adapter per harness. Each starts its agent in the VM
+  (pi: `pi --mode json`; dsh: `dsh --profile headless --json - < /io/prompt.md`) and turns its
+  events into common ones (text, tool started or failed, usage, done) for `render.ts` and the
+  cost totals. dsh's `--session-id` makes `hive continue` work for it too. The rootfs ships both.
+- **Web search for the agent:** a search key passed like the LLM key (Tavily or Exa free tiers),
+  or a keyless fallback; pi supports search through plug-in packages.
+- **GUI with onboarding:** first run (welcome, the `hive doctor` checks with a rootfs download,
+  adding a model key) and key management, following the clickable mockup made for it.
+- **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor
+  from step 3 where there's no KVM.
 
 ## Isolation backends considered
 
