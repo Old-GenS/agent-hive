@@ -268,10 +268,10 @@ try {
   assert(checkRows >= 2, `this computer lists its checks (got ${checkRows})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-computer.png") });
 
-  // ── theme toggle: System -> Light -> Dark -> System ──
+  // ── theme toggle: light <-> dark, remembered; the user name is a tooltip on Log out ──
   const themeAttr = () => page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-  await page.click("#themeBtn");
-  assert((await themeAttr()) === "light", "theme toggle switches to light");
+  await page.emulateMedia({ colorScheme: "light" });
+  assert((await themeAttr()) === null, "with no choice saved, the theme follows the device");
   await page.click("#themeBtn");
   assert((await themeAttr()) === "dark", "theme toggle switches to dark");
   const darkBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
@@ -281,7 +281,10 @@ try {
   assert((await themeAttr()) === "dark", "the theme choice survives a reload");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-dark.png") });
   await page.click("#themeBtn");
-  assert((await themeAttr()) === null, "theme toggle returns to following the system");
+  assert((await themeAttr()) === "light", "theme toggle switches back to light");
+  const logoutTitle = await page.getAttribute("#logoutBtn", "title");
+  assert(logoutTitle === "Current user: Admin", `Log out shows the current user on hover (got ${logoutTitle})`);
+  assert((await page.$$(".user-name")).length === 0, "the user name is no longer in the header");
 
   // ── phone: runs view at 390 px ──
   await page.setViewportSize({ width: 390, height: 844 });

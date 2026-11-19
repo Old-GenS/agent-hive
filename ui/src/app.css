@@ -1459,9 +1459,3 @@ a.btn {
 .theme-btn svg {
   flex-shrink: 0;
 }
-
-@media (max-width: 640px) {
-  .theme-label {
-    display: none;
-  }
-}
