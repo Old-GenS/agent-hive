@@ -17,6 +17,10 @@ host has KVM), and pushes the agent's commits to a new `hive/<id>` branch. REST 
 | `src/tasks.ts` | Task lifecycle: queue → clone → agent run → review cycles → export → push; idle cleanup |
 | `src/sandbox.ts` | `podman run` / `pasta` + `hive-vm` wrapper, runtime detection (libkrun / krun / runsc / plain container), JSONL parsing |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, `git am` the patches, push |
+| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/list/clean) |
+| `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply |
+| `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`) |
+| `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
 | `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/abort`, `/session`, `/files`, `/events` |
 | `src/routes/github.ts` | `gh`-backed repo list, search, fork for the UI |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
@@ -45,6 +49,9 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 6. **The npm cache is the one thing shared between tasks.** `HIVE_NPM_CACHE` (default
    `~/.cache/agent-hive/npm`) is mounted read-write at `/root/.npm` in every agent sandbox, so it
    must never hold credentials or task data; it only caches packages.
+7. **The CLI's host git runs only in the user's repo** (rev-parse, status, clone source, apply/am
+   of exported patches), never in a run's `work/`. Text crosses into and out of the VM only as
+   files in `io/` and patches in `out/`.
 
 ## Two-account GitHub model
 

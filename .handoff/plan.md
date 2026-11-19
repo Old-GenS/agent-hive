@@ -1,298 +1,283 @@
 ## Goal
 
-Add a third sandbox backend to agent-hive, `libkrun`, for Linux: a small C launcher `vm/hive-vm` that boots each task in its own libkrun microVM directly (no podman at run time), on a read-only shared root filesystem exported once from the existing sandbox image, with a throwaway writable overlay inside the guest, inside a pasta network namespace that cannot reach the host. It becomes the preferred backend when available; the podman backends (krun, runsc, crun/runc) keep working unchanged. Also add two things carried over from pi-vm: a persistent npm cache shared into sandboxes, and per-task token/cost totals.
+Add a `hive` command-line tool to agent-hive that runs a coding agent on the current local git
+repo inside a throwaway libkrun microVM, the same way pi-vm and dsh-vm work:
 
-The repo is a Node 20+ TypeScript ESM server (Fastify). Read `src/sandbox.ts`, `src/tasks.ts`, `src/config.ts`, `image/Containerfile`, `image/hive-agent` before starting.
+- `hive run "<prompt>"` clones the current repo with `--no-hardlinks` into a run dir, boots a VM
+  with the existing launcher (`runSandbox()` in `src/sandbox.ts`, libkrun backend), passes the
+  prompt as a file, shows the agent's progress live by following a JSONL log file that pi writes
+  inside the VM, then exports the agent's commits as patch files.
+- `hive log`, `hive diff`, `hive apply`, `hive list`, `hive clean` manage runs.
+- Text moves between host and VM only through files in shared folders. Never parse the VM's
+  stdout.
+
+The server code (`src/index.ts`, `src/auth.ts`, `src/routes/`, `src/tasks.ts`, `ui/`) stays
+exactly as it is.
 
 ## Files to touch
 
-New:
-- `vm/hive-vm.c` — the launcher
-- `vm/build.sh` — builds `vm/hive-vm`
-- `vm/build-rootfs.sh` — exports the sandbox image to a rootfs directory
-- `image/hive-vm-init` — runs first inside the guest
-- `test/hive-vm.test.mjs` — launcher CLI tests
-- `test/sandbox.test.mjs` — server-side command-building tests
-
-Modified:
-- `image/Containerfile`
-- `src/config.ts`, `src/sandbox.ts`, `src/tasks.ts`
-- `ui/src/main.ts`
-- `package.json`, `install.sh`, `.gitignore`, `README.md`, `AGENTS.md`
+- `src/cli.ts` (new)
+- `src/runs.ts` (new)
+- `src/follow.ts` (new)
+- `src/render.ts` (new)
+- `src/config.ts`
+- `src/git.ts`
+- `package.json`
+- `README.md`
+- `AGENTS.md`
+- `test/cli.test.mjs` (new)
+- `.handoff/report.md`
 
 ## Steps
 
-### 0. Setup
-1. `npm ci` in the repo root.
+1. Run `npm ci`.
 
-### 1. Launcher `vm/hive-vm.c`
+2. `src/config.ts`:
+   - Replace `dotenv.config();` with
+     `dotenv.config(process.env.HIVE_DOTENV_PATH ? { path: process.env.HIVE_DOTENV_PATH } : undefined);`
+   - Add to the `config` object: `runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),`
 
-Single C file, C11, no libkrun header. It loads libkrun at run time with `dlopen()` and `dlsym()`, so it builds with any C compiler and `--dry-run` works without libkrun installed. Library path: env `HIVE_LIBKRUN`, default `libkrun.so.1`. Declare these function pointer types locally, exactly:
+3. `src/git.ts`, add these exports (all use the existing `git()` helper):
+   - `repoTop(cwd: string): Promise<string>`: `git rev-parse --show-toplevel` in `cwd`. Throws
+     `Error("not in a git repo")` on failure.
+   - `isDirty(repo: string): Promise<boolean>`: true when `git status --porcelain` in `repo` prints
+     anything.
+   - `prepareLocal(repo: string, work: string): Promise<string>`: `base = git rev-parse HEAD` in
+     `repo`; `git clone -q --no-hardlinks -- <repo> <work>`; in `work`: `git remote remove origin`,
+     `git config user.name <config.git.authorName>`, `git config user.email <config.git.authorEmail>`.
+     Returns `base`.
+   - `gitIdentity(): Record<string, string>`: the same four `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+     entries as the private `gitIdentity()` in `src/tasks.ts` (leave that one in place).
 
-```c
-int32_t krun_set_log_level(uint32_t level);
-int32_t krun_create_ctx(void);
-int32_t krun_free_ctx(uint32_t ctx_id);
-int32_t krun_set_vm_config(uint32_t ctx_id, uint8_t num_vcpus, uint32_t ram_mib);
-int32_t krun_add_virtiofs3(uint32_t ctx_id, const char *c_tag, const char *c_path, uint64_t shm_size, bool read_only);
-int32_t krun_set_workdir(uint32_t ctx_id, const char *workdir_path);
-int32_t krun_set_exec(uint32_t ctx_id, const char *exec_path, const char *const argv[], const char *const envp[]);
-int32_t krun_set_rlimits(uint32_t ctx_id, const char *const rlimits[]);
-int32_t krun_set_port_map(uint32_t ctx_id, const char *const port_map[]);
-int32_t krun_start_enter(uint32_t ctx_id);
-```
+4. `src/follow.ts`, export
+   `followJsonl(path: string, onEvent: (event: any) => void, intervalMs = 250): { poll(): void; stop(): void }`:
+   - Keeps a byte offset into the file. `poll()` opens the file and reads every byte after the
+     offset with `fs.openSync` / `fs.readSync`, then closes it. A missing file is a no-op.
+   - Splits on byte 10 (LF) only. Keeps an incomplete last line in a buffer until its LF arrives.
+     Strips a trailing `\r`. Calls `onEvent(JSON.parse(line))` for each non-empty line and skips
+     lines that don't parse. An exception thrown by `onEvent` is caught and printed with
+     `console.error`.
+   - Starts a `setInterval(poll, intervalMs)`. `stop()` clears the interval and calls `poll()` one
+     last time.
+   - Polling only, no `fs.watch`. The file sits on a virtiofs share.
 
-CLI:
+5. `src/render.ts`, export:
+   - `renderEvent(e: any): string | undefined`:
+     - `e.type === "message_end"` and `e.message.role === "assistant"`: join the `text` of the
+       content blocks whose `type === "text"`. If `e.message.errorMessage` is set, return
+       `"error: " + errorMessage`. Otherwise return the joined text, or `undefined` when it is empty.
+     - `e.type === "tool_execution_start"`: return `"  → " + e.toolName + " " + summary`, where
+       `summary` is `e.args.command` for `bash`, `e.args.path` for `read`, `edit` and `write`, and
+       `JSON.stringify(e.args)` for anything else. Collapse whitespace runs to one space and trim.
+       If `summary` is longer than 100 characters, cut it to 99 and append `…`.
+     - `e.type === "tool_execution_end"` and `e.isError === true`: return `"  ✗ " + e.toolName + " failed"`.
+     - Anything else: `undefined`.
+   - `type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }`
+     and `emptyUsage(): Usage`.
+   - `addUsage(total: Usage, e: any): void`: for `message_end` with an assistant message, add
+     `usage.input`, `usage.output`, `usage.cacheRead`, `usage.cacheWrite` and `usage.cost.total`,
+     treating missing numbers as 0 (same fields as `runAgent` in `src/tasks.ts`).
+   - No ANSI colours anywhere.
 
-```
-hive-vm --check
-hive-vm [--dry-run] --rootfs DIR [--cpus N] [--memory MIB] [--share HOST:GUEST[:ro]]...
-        [--env NAME]... [--setenv NAME=VALUE]... [--workdir PATH] [--dns ADDR]
-        [--log-level N] -- COMMAND [ARGS...]
-```
+6. `src/runs.ts`:
+   - Run dir: `<config.runsDir>/<basename of repo>-<YYYYMMDD-HHMMSS>` in local time. If it exists,
+     append `-2`, `-3` and so on. Subfolders:
+     - `work/`: the agent's copy, mounted at `/work`
+     - `io/`: mounted at `/io`; holds `prompt.md`, `system.md`, `events.jsonl`, `stderr.log`
+     - `session/`: pi's session, mounted at `/session`
+     - `out/`: patches, mounted at `/out` by the export step only
+   - `meta.json`:
+     `{ repo, base, provider, model, thinking, prompt (first 200 chars), status ("running" | "done" | "failed" | "aborted"), pid, commits, usage, error?, createdAt, finishedAt? }`.
+     Write it atomically (write `meta.json.tmp`, then `renameSync`).
+   - `export interface RunMeta` with those fields; `readMeta(dir)`, `writeMeta(dir, meta)`.
+   - `isLive(meta)`: `status === "running"` and `process.kill(meta.pid, 0)` doesn't throw.
+   - `resolveRun(arg?: string): string`:
+     - With no `arg`, return the run with the newest `createdAt`, or throw `Error("no runs")`.
+     - Otherwise treat `arg` as a name under `config.runsDir` if it has no `/`, or as a path if it
+       does. Its `realpathSync` must have a `dirname` equal to `realpathSync(config.runsDir)` and
+       contain `meta.json`, or throw `Error("not a run: " + arg)`.
+   - `listRuns(): { name: string; dir: string; meta: RunMeta }[]`, newest first. Skip dirs without a
+     readable `meta.json`. Return `[]` when `config.runsDir` doesn't exist.
+   - `cleanRun(dir)`: throw `Error("run is still going: <name>")` if `isLive`; otherwise
+     `rmSync(dir, { recursive: true, force: true })`.
+   - `startRun(o: { repo: string; prompt: string; provider?: string; model?: string; thinking?: string; onEvent: (e: any) => void; signal: AbortSignal }): Promise<{ dir: string; meta: RunMeta }>`.
+     It throws only on errors before the VM starts. After that it records the outcome in `meta.json`
+     and returns:
+     1. Resolve the provider, key, model and thinking level the same way `createTask` in
+        `src/tasks.ts` does, using `resolveProvider`, `providerKey`, `PROVIDERS`,
+        `config.defaultModel` and `config.defaultThinking`, with the same error messages. Valid
+        thinking levels: `off minimal low medium high xhigh`.
+     2. Create the run dir and its four subfolders. `base = await prepareLocal(repo, <dir>/work)`.
+        Write `io/prompt.md` (the prompt) and `io/system.md` (`config.systemPrompt`). Write
+        `meta.json` with `status: "running"`, `pid: process.pid`, `commits: 0` and `emptyUsage()`.
+     3. `mounts`: `work`→`/work`, `io`→`/io`, `session`→`/session`. Add the npm cache exactly as
+        `runAgent` in `src/tasks.ts` does (`mkdirSync`, then `shared: true`, at `/root/.npm`) when
+        `config.sandbox.npmCache` is non-empty.
+     4. Call `runSandbox({ name: "hive-" + <run dir basename>, mounts, env: { [PROVIDERS[provider].sandboxEnv]: key, ...gitIdentity() }, command })`
+        with no `onEvent`, where `command` is:
+        `["bash", "-c", 'exec hive-agent "$@" > /io/events.jsonl 2> /io/stderr.log', "hive-agent", "-p", "--provider", provider, "--model", model, "--thinking", thinking, "--session-dir", "/session", "--append-system-prompt", "/io/system.md", "@/io/prompt.md", "Do the task described in the attached file prompt.md."]`
+     5. `followJsonl(<dir>/io/events.jsonl, e => { addUsage(meta.usage, e); o.onEvent(e); })`.
+        When `o.signal` fires, call the handle's `stop()`.
+     6. `await handle.done`, then call the follower's `stop()`. Set the outcome:
+        - signal aborted → `"aborted"`
+        - `timedOut` → `"failed"` with error `timed out after <config.sandbox.timeoutMin> minutes`
+        - `code !== 0` → `"failed"` with error `agent exited <code>: ` plus the last 2000 characters
+          of `io/stderr.log` (or of the handle's `stderr` when that file is missing or empty)
+     7. When `code === 0` and not aborted: `runSandbox({ name: "hive-" + <basename> + "-export", mounts: [work→/work, out→/out], env: gitIdentity(), command: ["hive-export", base] })`.
+        A non-zero exit → `"failed"` with error `export failed (exit <code>)`. Otherwise
+        `commits` = the number of `*.patch` files in `out/` and status `"done"`.
+     8. Set `finishedAt`, write `meta.json`, return `{ dir, meta }`.
+   - `patchFiles(dir): string[]`: absolute paths of `out/*.patch`, sorted.
+   - `diffRun(dir: string, stat: boolean): Promise<string>`: `""` when there are no patches. With
+     `stat`, the stdout of `git apply --stat <patches…>` run with `cwd: dir`. Otherwise the patch
+     files' contents joined in order.
+   - `applyRun(dir: string, repo: string, branch?: string): Promise<string>`:
+     - `meta.status` must be `"done"` (else throw `run is <status>; nothing to apply`) and
+       `commits > 0` (else throw `nothing to apply`).
+     - `realpathSync(repo)` must equal `realpathSync(meta.repo)` (else throw
+       `this run belongs to <meta.repo>`).
+     - `isDirty(repo)` → throw `repo has uncommitted changes; commit or stash first`.
+     - Without `branch`: `git rev-parse HEAD` in `repo` must equal `meta.base` (else throw
+       `repo HEAD moved since the run; use --branch`). Run `git apply <all patches in one call>` in
+       `repo`. Return the output of `git status --short`.
+     - With `branch`: `validateBranch(branch)`. If `git rev-parse --verify --quiet refs/heads/<branch>`
+       succeeds, throw `branch <branch> already exists`. Run `git switch -q -c <branch> <meta.base>`,
+       then `git am -q --keep-cr <patches…>`. If `git am` fails, run `git am --abort` and rethrow.
+       Return `on branch <branch>: <commits> commit(s)`.
 
-Parsing and validation (any failure: message on stderr starting `hive-vm: `, exit code 2):
-- `--rootfs`: required, absolute path, must be an existing directory; store its `realpath()`.
-- `--cpus`: integer 1–16, default 1. `--memory`: integer MiB 128–65536, default 1024.
-- `--share HOST:GUEST[:ro]`: up to 8. HOST must be an existing directory, stored as `realpath()`. GUEST must be absolute, must not contain `..` components, `:` or `,`. Optional suffix `:ro` marks it read-only. Shares get tags `hive0`, `hive1`, … in order.
-- `--env NAME`: copy NAME's value from the launcher's own environment into the guest env; silently skipped if unset. NAME must match `[A-Za-z_][A-Za-z0-9_]*`.
-- `--setenv NAME=VALUE`: set an explicit guest env var (same NAME rule).
-- `--workdir`: absolute guest path, default `/`.
-- `--dns`: IPv4 address string, optional.
-- `--log-level`: 0–5, default 1.
-- `--` then COMMAND (required) and its ARGS.
+7. `src/cli.ts`:
+   - First line `#!/usr/bin/env node`.
+   - Before importing anything from `./config.js`, `./sandbox.js`, `./runs.js` or `./git.js`
+     (import them with `await import(...)` inside `main()`):
+     - set `process.env.HIVE_DOTENV_PATH` to `<XDG_CONFIG_HOME or ~/.config>/agent-hive/env` if unset;
+     - if `HIVE_RUNTIME` is set to anything other than `libkrun`, print
+       `hive: the CLI only supports HIVE_RUNTIME=libkrun` and exit 1; otherwise set it to `libkrun`.
+   - Parse arguments with `parseArgs` from `node:util`. Usage text, printed by `--help`, `-h` or no
+     arguments (exit 0), and on stderr for an unknown command (exit 1):
+     ```
+     hive run [-m model] [-p provider] [-t thinking] [--json] "<prompt>"
+     hive run [-m model] [-p provider] [-t thinking] [--json] -f <prompt-file>
+     hive log [run] [--json]
+     hive diff [run] [--stat]
+     hive apply [run] [--branch <name>]
+     hive list
+     hive clean <run> | --all
+     ```
+     `[run]` defaults to the newest run.
+   - `run`:
+     1. `repo = repoTop(process.cwd())`. The prompt comes from the positional argument, or
+        `readFileSync(-f)`. A missing or empty prompt is an error.
+     2. If `libkrunAvailable()` is false, print `hive: can't start a VM:` followed by each line of
+        `checkSandbox()` and the line `hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)`, then exit 1.
+     3. If `isDirty(repo)`, print to stderr
+        `hive: uncommitted changes are not included; the agent works on HEAD`.
+     4. `AbortController`. The first SIGINT prints `hive: stopping…` and aborts; a second SIGINT
+        exits 130 at once.
+     5. `startRun`. Print `hive: run <name>` on stderr once the run dir exists (pass a callback or
+        print after `listRuns()`; either is fine). `onEvent`: with `--json` write
+        `JSON.stringify(e)` plus a newline to stdout; otherwise write `renderEvent(e)` plus a
+        newline when it returns a string.
+     6. At the end, print to stderr:
+        - `done`: `hive: done, <commits> commit(s), $<cost.toFixed(4)>, <input> in / <output> out tokens`,
+          then `hive diff <name>` and `hive apply <name>` on two lines. Exit 0.
+        - `failed`: `hive: failed: <error>`. Exit 1.
+        - `aborted`: `hive: aborted`. Exit 130.
+   - `log`: `resolveRun`. Follow `io/events.jsonl` from the start with the same rendering (`--json`
+     prints raw lines). If the run isn't live, `poll()` once, `stop()`, and print the status line.
+     Otherwise check `meta.json` every 500 ms until the run isn't live, then `stop()` and print
+     `hive: <status>`.
+   - `diff`: print `diffRun(dir, stat)`, or `hive: no changes` on stderr when it is empty.
+   - `apply`: `applyRun(resolveRun(arg), await repoTop(process.cwd()), branch)` and print the result.
+   - `list`: one line per run, `<name>  <status>  <commits> commit(s)  $<cost.toFixed(4)>  <repo>`,
+     or `no runs`.
+   - `clean`: `clean <run>` → `cleanRun`. `clean --all` → `cleanRun` every run that isn't live and
+     print `hive: kept <name> (still running)` for each live one.
+   - Wrap `main()` so that any thrown `Error` prints `hive: <message>` on stderr and exits 1.
 
-Guest environment (`envp`, NULL-terminated, only these entries): the `--env` and `--setenv` vars, plus
-`HIVE_SHARES=<tag>:<guest>[:ro],...` (comma-separated, in order; omit the variable when there are no shares), `HIVE_WORKDIR=<workdir>`, and `HIVE_DNS=<addr>` when `--dns` was given.
+8. `package.json`: add `"bin": { "hive": "dist/cli.js" }`. Change no existing script or dependency.
 
-`--dry-run`: print one line of JSON to stdout and exit 0, without loading libkrun:
-```json
-{"rootfs":"/abs","cpus":2,"memory":1024,"shares":[{"tag":"hive0","host":"/abs","guest":"/work","ro":false}],"env":["NAME", "..."],"workdir":"/work","dns":"169.254.1.53","exec":"/usr/local/bin/hive-vm-init","argv":["COMMAND","ARGS..."]}
-```
-`env` lists only variable NAMES that will be passed (from `--env` that were set, and `--setenv`), never values. `dns` is `null` when not given. JSON-escape all strings correctly (quotes, backslashes, control characters).
+9. `README.md`: add a section `## Command line (hive)` near the top, covering:
+   - setup: `npm ci && npm run build && npm run build:image && npm run build:vm && npm run build:rootfs && npm link`
+   - keys go in `~/.config/agent-hive/env` (for example `OPENROUTER_API_KEY=...`)
+   - each command with a one-line description
+   - the run dir layout
+   
+   `AGENTS.md`: add rows for `src/cli.ts`, `src/runs.ts`, `src/follow.ts` and `src/render.ts` to the
+   Layout table. Under the security model, add: "The CLI's host git runs only in the user's repo
+   (rev-parse, status, clone source, apply/am of exported patches), never in a run's `work/`. Text
+   crosses into and out of the VM only as files in `io/` and patches in `out/`."
 
-Normal run (not dry-run):
-1. Check `/dev/kvm` is readable and writable; otherwise `hive-vm: /dev/kvm is not usable`, exit 1.
-2. `dlopen(lib, RTLD_NOW)` and resolve every symbol above; on failure print the `dlerror()` text and exit 1.
-3. `krun_set_log_level(level)`; `ctx = krun_create_ctx()`; `krun_set_vm_config(ctx, cpus, memory)`.
-4. Root: `krun_add_virtiofs3(ctx, "/dev/root", rootfs, 0, true)` (read-only).
-5. Each share: `krun_add_virtiofs3(ctx, tag, host, 0, ro)`.
-6. `krun_set_rlimits(ctx, (const char*[]){"7=65536:65536", NULL})` (RLIMIT_NOFILE).
-7. `krun_set_port_map(ctx, (const char*[]){NULL})` — an EMPTY array, so no guest port is exposed to the host. Never pass NULL here (NULL exposes every listening guest port).
-8. `krun_set_workdir(ctx, "/")`.
-9. `krun_set_exec(ctx, "/usr/local/bin/hive-vm-init", argv, envp)` where `argv` is COMMAND followed by ARGS (NOT including the exec path), NULL-terminated.
-10. `krun_start_enter(ctx)`. It only returns on error: print `hive-vm: krun_start_enter failed: <n>` and exit 1. Any other krun_* call returning < 0: print the function name and the value, exit 1.
-
-`--check`: dlopen + resolve all symbols, `krun_create_ctx()` then `krun_free_ctx()`, and the `/dev/kvm` check. Print `ok` and exit 0, or the reason and exit 1.
-
-Must compile cleanly with `cc -std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE` (add `-ldl` only if the linker needs it; glibc ≥ 2.34 does not).
-
-### 2. `vm/build.sh`
-
-`#!/usr/bin/env bash`, `set -euo pipefail`, runs from any cwd (resolve the repo root from the script's own path). Compile `vm/hive-vm.c` to `vm/hive-vm` with the flags above. If `cc` is on PATH use it; otherwise run the compile inside the sandbox image: `podman run --rm --log-driver none -v "<repo>/vm:/src:Z" -w /src "${HIVE_IMAGE:-localhost/agent-hive-sandbox:latest}" cc <flags> -o hive-vm hive-vm.c`. If neither `cc` nor podman exists, print an error and exit 1. Print the output path at the end.
-
-### 3. Guest init `image/hive-vm-init`
-
-Bash, `set -euo pipefail`, executable. Runs as root as the first workload process in the guest (libkrun's own init has already mounted /proc, /sys, /dev). Steps, in order:
-1. `R=/run/hive/root`. `mount -t tmpfs -o mode=0755,size="${HIVE_TMPFS_SIZE:-50%}" hive-tmp /run/hive`, then `mkdir -p /run/hive/upper /run/hive/work "$R"`.
-2. `mount -t overlay overlay -o lowerdir=/,upperdir=/run/hive/upper,workdir=/run/hive/work "$R"` — the guest's writable root; all writes outside shares live in RAM and vanish with the VM.
-3. `for d in proc sys dev; do mount --rbind "/$d" "$R/$d"; done`
-4. For each comma-separated entry `tag:guest[:ro]` in `HIVE_SHARES` (may be unset/empty): `mkdir -p "$R$guest"`; `mount -t virtiofs [-o ro] "$tag" "$R$guest"`.
-5. If `HIVE_DNS` is set: `rm -f "$R/etc/resolv.conf"` and write `nameserver $HIVE_DNS` into it.
-6. Export `HOME=/root`, `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0` (image `ENV` lines do not apply in this backend).
-7. `exec chroot "$R" /usr/bin/env --chdir="${HIVE_WORKDIR:-/}" "$@"`.
-
-### 4. `image/Containerfile`
-
-Change the `COPY hive-agent hive-export /usr/local/bin/` line to also copy `hive-vm-init`. No other changes.
-
-### 5. `vm/build-rootfs.sh`
-
-Bash, `set -euo pipefail`. Exports the sandbox image to a plain directory the launcher uses as root.
-- `IMAGE=${HIVE_IMAGE:-localhost/agent-hive-sandbox:latest}`; `BASE=${HIVE_ROOTFS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs}`; `mkdir -p "$BASE"`.
-- `id=$(podman image inspect --format '{{.Id}}' "$IMAGE" | cut -c1-12)`; `dest="$BASE/$id"`.
-- If `$dest/.complete` exists: point `$BASE/current` at it (`ln -sfn "$id" "$BASE/current"`), print `$dest`, exit 0.
-- Otherwise: `tmp=$(mktemp -d "$BASE/.tmp-XXXXXX")`; `cid=$(podman create "$IMAGE" true)`; a trap removes the container and `$tmp` on failure; `podman export "$cid" | tar -x -C "$tmp" --exclude='dev/*'`; `podman rm "$cid"`; `mv "$tmp" "$dest"`; `touch "$dest/.complete"`; remember the old `current` target, then `ln -sfn "$id" "$BASE/current"`.
-- Delete every other directory in `$BASE` except `$id`, the previous `current` target, and names starting with `.` — so a task still running on the previous root keeps it.
-- Fail with a clear message if `$dest/usr/local/bin/hive-vm-init` is missing (image built before step 4).
-- Print `$dest`.
-
-### 6. `src/config.ts`
-
-Add to `config.sandbox`:
-- `vmBin`: `process.env.HIVE_VM_BIN` or `<repo root>/vm/hive-vm`, where repo root is `resolve(dirname(fileURLToPath(import.meta.url)), "..")`.
-- `rootfs`: `process.env.HIVE_ROOTFS` or `${XDG_DATA_HOME || ~/.local/share}/agent-hive/rootfs/current`.
-- `libkrun`: `process.env.HIVE_LIBKRUN` or `"libkrun.so.1"`.
-- `npmCache`: `process.env.HIVE_NPM_CACHE` if defined (empty string disables), else `${XDG_CACHE_HOME || ~/.cache}/agent-hive/npm`.
-
-Update the `runtime` comment to list `auto | libkrun | krun | runsc | crun | runc`.
-
-### 7. `src/sandbox.ts`
-
-- `RuntimeInfo.runtime` may now be `"libkrun"` (isolation `"microvm"`).
-- Export `parseMemoryMiB(s: string): number`: `"512m"`→512, `"1g"`→1024, `"2G"`→2048, bare `"768"`→768 (MiB). Throws on anything else.
-- Export `hostNameserver(resolvConf: string): string`: the first `nameserver` line whose address is IPv4; `"1.1.1.1"` if none. Use the contents of `/etc/resolv.conf` at call time (empty string if unreadable).
-- Export `libkrunAvailable(): boolean`: `/dev/kvm` usable, `config.sandbox.vmBin` exists, `<realpath of rootfs>/usr/local/bin/hive-vm-init` exists, `pasta` on PATH, and `execFileSync(vmBin, ["--check"], { env: {...process.env, HIVE_LIBKRUN: config.sandbox.libkrun} })` exits 0. Any exception → false.
-- `detectRuntime()`: `HIVE_RUNTIME=libkrun` → `{ runtime: "libkrun", isolation: "microvm" }`. `auto` order: libkrun if `libkrunAvailable()`, then podman krun (existing check), then the existing container fallback. Update the error message listing valid values.
-- Export `buildLibkrunCommand(opts: SandboxOptions, p: { vmBin: string; rootfs: string; cpus: number; memoryMiB: number; hostDns: string }): { file: string; args: string[] }` returning exactly:
-  - `file`: `"pasta"`
-  - `args`: `["--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw", "--dns-forward", "169.254.1.53", "--dns-host", p.hostDns, "--", p.vmBin, "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB), ...for each mount: "--share", `${host}:${container}` + (ro ? ":ro" : ""), ...for each env NAME (Object.keys(opts.env)): "--env", NAME, "--dns", "169.254.1.53", "--workdir", "/work", "--", ...opts.command]`
-  - It never puts env VALUES in `args`.
-- `runSandbox()`: when `runtimeInfo.runtime === "libkrun"`, spawn `buildLibkrunCommand(...)` (rootfs = `realpathSync(config.sandbox.rootfs)` resolved at spawn; cpus = `parseInt(config.sandbox.cpus)`; memoryMiB = `parseMemoryMiB(config.sandbox.memory)`; hostDns from `/etc/resolv.conf`) with `env: {...process.env, ...opts.env, HIVE_LIBKRUN: config.sandbox.libkrun}`, `stdio: ["ignore", "pipe", "pipe"]`, `detached: true`. Keep the same stdout JSONL parsing, stderr tail and `done` result shape. Timeout: a timer of `timeoutMin` minutes that sets `timedOut = true` and sends SIGKILL to the process group (`process.kill(-child.pid, "SIGKILL")`); clear it on close. `stop()`: SIGTERM to the process group, then SIGKILL to the group after 3 s if still running. Wrap group kills in try/catch (ESRCH). The podman path stays as it is.
-- `checkSandbox()`: in libkrun mode, report missing `vmBin` (`build it with: npm run build:vm`) or missing rootfs (`create it with: npm run build:rootfs`) instead of the podman checks; podman mode unchanged.
-
-### 8. `src/tasks.ts`
-
-- npm cache (from pi-vm): in `runAgent` only (not export), when `config.sandbox.npmCache` is non-empty, `mkdirSync(..., { recursive: true })` it and add the mount `{ host: config.sandbox.npmCache, container: "/root/.npm" }`.
-- Usage totals (from pi-vm's summary): add `usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }` to `Task`. On every `message_end` whose `message.role === "assistant"`, add `message.usage.input`, `.output`, `.cacheRead`, `.cacheWrite` and `message.usage.cost.total` (treat missing as 0). Include `usage` in `toJSON()` and in both `hive_done` events.
-
-### 9. `ui/src/main.ts`
-
-In the `hive_done` handler for status `idle`, append ` · $<cost>` to the done line when `e.usage?.cost > 0`, formatted with 4 decimals; escape like the rest.
-
-### 10. `package.json`, `install.sh`, `.gitignore`
-
-- Scripts: add `"build:vm": "bash vm/build.sh"`, `"build:rootfs": "bash vm/build-rootfs.sh"`, `"test": "npm run build && node --test 'test/*.test.mjs'"` (a bare `test/` directory argument does not work on Node 24).
-- `install.sh`: after `npm run build:image`, if `uname` is Linux, `/dev/kvm` is readable and writable, `pasta` is on PATH and `ldconfig -p` lists `libkrun.so.1`: run `npm run build:vm` and `npm run build:rootfs` and echo `Isolation: libkrun microVMs (no podman at run time) ✓`. Otherwise keep the existing isolation messages.
-- `.gitignore`: add `vm/hive-vm`.
-
-### 11. Tests
-
-`test/hive-vm.test.mjs` (node:test, spawnSync `vm/hive-vm`; fail, don't skip, if the binary is missing). Create temp dirs with `mkdtempSync`. Cases:
-1. Dry run with `--rootfs <tmpA> --cpus 2 --memory 2048 --share <tmpB>:/work --share <tmpC>:/session:ro --env SECRET_KEY --setenv FOO=bar --dns 169.254.1.53 --workdir /work -- hive-agent --model x`, with `SECRET_KEY=sk-test-123` in the env: exit 0; parsed JSON has `cpus` 2, `memory` 2048, `shares[0]` = `{tag:"hive0", host: realpath(tmpB), guest:"/work", ro:false}`, `shares[1].ro === true`, `env` deep-equals `["SECRET_KEY","FOO"]`, `exec === "/usr/local/bin/hive-vm-init"`, `argv` deep-equals `["hive-agent","--model","x"]`; stdout does not contain `sk-test-123`.
-2. `--env UNSET_VAR_XYZ` (unset) is omitted from `env`.
-3. Exit 2 for each: relative `--rootfs`; missing `--rootfs`; nonexistent share host dir; guest path `/a/../b`; guest path `relative`; `--memory 64`; `--cpus 0`; no command after `--`; `--setenv 1BAD=x`.
-4. `dns` is `null` when `--dns` is absent.
-
-`test/sandbox.test.mjs` imports `../dist/sandbox.js`:
-1. `parseMemoryMiB`: `"512m"`→512, `"1g"`→1024, `"2G"`→2048, `"768"`→768; throws on `"lots"`.
-2. `hostNameserver`: `"nameserver 127.0.0.53\n"`→`"127.0.0.53"`; `"nameserver fe80::1\nnameserver 10.0.0.1\n"`→`"10.0.0.1"`; `""`→`"1.1.1.1"`.
-3. `buildLibkrunCommand` with mounts `[{host:"/h/work",container:"/work"},{host:"/h/s",container:"/session",ro:true}]`, env `{OPENROUTER_API_KEY:"sk-or-secret"}`, command `["hive-agent","--model","m"]`, params `{vmBin:"/opt/hive-vm", rootfs:"/r", cpus:1, memoryMiB:1024, hostDns:"127.0.0.53"}`: `file === "pasta"`; `args` deep-equals the exact array specified in step 7; `args.join(" ")` does not contain `sk-or-secret`.
-
-### 12. Docs
-
-- `README.md`: in "Isolation levels", add a first row for `libkrun` (auto when `/dev/kvm`, libkrun, pasta, `vm/hive-vm` and the rootfs are present): own guest kernel, no podman at run time, read-only shared root with an in-RAM writable layer, network namespace that blocks the host's loopback, gateway and own addresses. Add `npm run build:vm` / `npm run build:rootfs` to the setup notes, and `HIVE_VM_BIN`, `HIVE_ROOTFS`, `HIVE_LIBKRUN`, `HIVE_NPM_CACHE` to the configuration table. Note that after `npm run build:image` you must re-run `npm run build:rootfs`.
-- `AGENTS.md`: add `vm/` to the layout table, mention the libkrun backend and the npm cache in the security invariants (the shared npm cache is the one thing shared between tasks), and the `npm test` command.
+10. `test/cli.test.mjs` (`node:test` and `node:assert/strict`; import from `../dist/…` with
+    `await import` after setting `process.env.HIVE_RUNS_DIR` to a fresh `mkdtempSync` dir at the top
+    of the file):
+    - `followJsonl`: write `{"a":1}\n{"b"` to a temp file → `poll()` gives 1 event. Append `:2}\n`
+      → 2 events, the second `{ b: 2 }`. Append `garbage\n` → still 2. Then `stop()`.
+    - `renderEvent`:
+      - `{type:"tool_execution_start",toolName:"bash",args:{command:"npm   test"}}` → `"  → bash npm test"`
+      - `read` with `args.path:"a.txt"` → `"  → read a.txt"`
+      - a 300-character bash command → length ≤ 109 and ends with `…`
+      - an assistant `message_end` with content `[{type:"thinking",thinking:"x"},{type:"text",text:"hi"}]` → `"hi"`
+      - a `user` `message_end` → `undefined`
+      - `{type:"tool_execution_end",toolName:"bash",isError:true}` → `"  ✗ bash failed"`
+    - `addUsage`: two assistant `message_end` events with
+      `usage:{input:10,output:5,cacheRead:1,cacheWrite:2,cost:{total:0.5}}` → totals
+      `20/10/2/4/1`.
+    - `resolveRun`:
+      - creates `<runsDir>/r1` and `<runsDir>/r2` with `meta.json` (`createdAt` 1 and 2)
+      - `resolveRun("r1")` ends with `/r1`
+      - `resolveRun()` ends with `/r2`
+      - `resolveRun("/etc")` and `resolveRun("../x")` throw
+    - `applyRun`, all with `git -c user.name=t -c user.email=t@t`:
+      - make a temp repo with one commit holding `f.txt`
+      - clone it to a temp dir, change `f.txt`, add `new.txt`, commit `"agent change"`
+      - `git format-patch -o <runsDir>/r3/out <base>..HEAD`
+      - write `<runsDir>/r3/meta.json` with `status:"done"`, `commits:1`, `repo`, `base`, `createdAt:3`
+      - `applyRun(r3, repo)`: HEAD is unchanged, `git status --porcelain` shows ` M f.txt` and
+        `?? new.txt`, and a second `applyRun` throws `/uncommitted/`
+      - `git checkout -- . && git clean -fdq`, then `applyRun(r3, repo, "hive/t")`: the current
+        branch is `hive/t` and `git log -1 --format=%s` is `agent change`
+    - CLI, via `execFileSync(process.execPath, ["dist/cli.js", ...])` with `cwd` the agent-hive repo:
+      - `--help` exits 0, and its output contains `hive run`, `hive log`, `hive diff`, `hive apply`,
+        `hive list` and `hive clean`
+      - `list` with `HIVE_RUNS_DIR` set to a new empty temp dir prints `no runs`
+      - `bogus` exits 1
 
 ## Acceptance
 
-Run in the executor VM (no /dev/kvm there; nothing here boots a VM):
 1. `npm ci` exits 0.
 2. `npm run build` exits 0.
-3. `bash vm/build.sh` exits 0 and `test -x vm/hive-vm` succeeds.
-4. `cc -std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE -fsyntax-only vm/hive-vm.c` exits 0.
-5. `bash -n image/hive-vm-init && bash -n vm/build.sh && bash -n vm/build-rootfs.sh && bash -n install.sh` exits 0.
-6. `node --test "test/*.test.mjs"` exits 0 and its summary shows `ℹ fail 0`.
-7. `npm test` exits 0.
-8. `test -x image/hive-vm-init` succeeds.
-9. `grep -c 'hive-vm-init' image/Containerfile` prints `1`.
-10. `cd ui && npm ci && npm run build` exits 0.
-
-Host-only checks (the planner runs these after the run; the executor skips them and says so in the report):
-11. `npm run build:image && npm run build:vm && npm run build:rootfs` exit 0.
-12. With `HIVE_RUNTIME=libkrun`, the server logs `sandbox isolation: microvm (--runtime libkrun)`, `/snippet` returns a result, and a repo task with `reviewCycles: 1` pushes a `hive/<id>` branch.
-13. From inside a libkrun guest, a server on the host's `127.0.0.1` is unreachable and `https://openrouter.ai` is reachable.
-14. `/abort` during a run leaves no `hive-vm` or `pasta` process behind.
+3. `npm test` exits 0, and its output shows the new tests from `test/cli.test.mjs` passing, with `fail 0`.
+4. `node dist/cli.js --help` exits 0 and prints lines starting with `hive run`, `hive log`, `hive diff`, `hive apply`, `hive list` and `hive clean`.
+5. `HIVE_RUNS_DIR=$(mktemp -d) node dist/cli.js list` prints `no runs`.
+6. `head -1 dist/cli.js` prints `#!/usr/bin/env node`.
+7. `git diff --quiet HEAD -- src/index.ts src/auth.ts src/routes src/tasks.ts src/sandbox.ts ui image vm` exits 0.
+8. `R=$PWD; T=$(mktemp -d); cd $T && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m x && node $R/dist/cli.js run "hi"; echo "exit=$?"; cd $R` prints `exit=1`, and stderr contains `hive: can't start a VM:` (this machine has no /dev/kvm).
+9. `grep -c '"hive": "dist/cli.js"' package.json` prints `1`.
 
 ## Parallel work
 
-Two workstreams; they share no files.
-
-**Workstream A — launcher and guest side.** Owns: `vm/hive-vm.c`, `vm/build.sh`, `vm/build-rootfs.sh`, `image/hive-vm-init`, `image/Containerfile`, `test/hive-vm.test.mjs`. Steps 1–5 and test file 1 of step 11. Acceptance: `bash vm/build.sh && node --test test/hive-vm.test.mjs` exits 0, plus Acceptance items 4, 5 (first three scripts), 8, 9.
-
-**Workstream B — server and UI.** Owns: `src/config.ts`, `src/sandbox.ts`, `src/tasks.ts`, `ui/src/main.ts`, `test/sandbox.test.mjs`. Steps 6–9 and test file 2 of step 11. It relies only on the hive-vm CLI contract written in step 1. Acceptance: `npm run build && node --test test/sandbox.test.mjs` exits 0, and `cd ui && npm run build` exits 0 (after `cd ui && npm ci`).
-
-**Lead, after both finish:** steps 10 and 12 (`package.json`, `install.sh`, `.gitignore`, `README.md`, `AGENTS.md`), then run the full Acceptance list 1–10.
+None — do it sequentially.
 
 ## Constraints
 
-- Do not commit, push, or switch branches. Do not touch files outside **Files to touch** except `.handoff/report.md`. Installing system packages and temporary files outside the repo are fine.
-- Do not change `image/hive-agent` or `image/hive-export`, the podman code path in `runSandbox`, or the task pipeline beyond step 8.
-- No new npm dependencies. No libkrun header in the build; `vm/hive-vm.c` must not `#include <libkrun.h>`.
-- Never place API key values on any command line, in dry-run output, or in logs.
-- podman and /dev/kvm are not available in the executor VM: do not try to run `vm/build-rootfs.sh`, `hive-vm` without `--dry-run`, or `--check` expecting success.
-- Keep the existing code style: ES modules, 2-space indent, comments only where they explain why.
+- Do not commit, push, or switch branches. Do not touch files outside **Files to touch** except
+  `.handoff/report.md`. Installing dependencies and temporary files outside the repo are fine.
+- No new npm dependencies.
+- Don't change `src/sandbox.ts`, `src/tasks.ts`, `src/index.ts`, `src/auth.ts`, `src/routes/`,
+  `ui/`, `image/` or `vm/`.
+- The CLI never calls podman, and never reads events from the VM's stdout. Events come only from
+  `io/events.jsonl`.
+- The host never runs git inside a run's `work/` after `prepareLocal` returns.
+- API keys go to `runSandbox` only through its `env` object, never in `command` or in any file.
+- Strict TypeScript (the existing `tsconfig.json`), ES modules, Node 24 built-ins only.
 
 ## Out of scope
 
-- macOS support, Windows, packaging/installers, a desktop shell.
-- Local-folder repos, keychain storage, localhost Host/Origin hardening.
-- OpenRouter provider routing and generated `models.json` from pi-vm.
-- Blocking private LAN ranges other than the host's own addresses.
-- Changing default memory/CPU values.
+`hive serve`, `hive mcp`, review cycles, follow-up prompts on an existing run, macOS support,
+pushing to GitHub, a desktop app, and any change to the server, the web UI, the image or the
+launcher.
 
 ## If blocked
 
-- If `cc` in the executor VM lacks something the launcher needs, `dnf -y install` it; if the code cannot meet `-Werror` because of a libc warning you cannot fix, stop and report the exact warning.
-- If any step's instruction contradicts the existing code (a function or field it names does not exist), stop and report which one instead of guessing.
-- If a workstream fails its own acceptance, do not paper over it in the other workstream; report it.
-
-## Amendments
-
-### Amendment 1 — status of this plan
-
-Steps 0–12 are already implemented in the working tree (commit "WIP: libkrun backend"). Do not redo them. Apply only Amendments 2–7 below, then run the full **Acceptance** list 1–10 again. Testing on a real host found the problems these amendments fix. The affected files are all already in **Files to touch**.
-
-### Amendment 2 — pass argv and env through a control directory (overrides step 1 "Guest environment" and "Normal run" step 9, and step 3)
-
-libkrun passes `krun_set_exec` argv/envp to the guest on the kernel command line: about 2 KB at most, and embedded quotes break arguments. agent-hive passes whole prompts as arguments, so argv and env must not go through `krun_set_exec`.
-
-In `vm/hive-vm.c`, normal run (not `--dry-run`, not `--check`), after the `/dev/kvm` check and before loading libkrun:
-1. Control dir: base is `$XDG_RUNTIME_DIR` if it is set and is a directory, else `/tmp`. `mkdtemp("<base>/hive-vm-XXXXXX")`.
-2. Write `<ctl>/argv`: COMMAND then each ARG, every one followed by a single NUL byte. Write `<ctl>/env`: every guest env entry from step 1 (`NAME=VALUE` for `--env`/`--setenv`, plus `HIVE_SHARES`, `HIVE_WORKDIR`, `HIVE_DNS` as before), every one followed by a NUL byte. Create both with `open(path, O_WRONLY|O_CREAT|O_EXCL, 0600)` and check every write. On any failure, remove what was created and exit 1 with a message.
-3. `fork()`. Both processes stay in the same process group (do not call setpgid/setsid).
-   - Parent: install handlers for SIGTERM, SIGINT and SIGHUP that forward the signal to the child; `waitpid` the child (retry on EINTR); then `unlink` `<ctl>/argv` and `<ctl>/env` (ignore ENOENT) and `rmdir` `<ctl>`; exit with the child's exit status, or `128 + signal` if the child was killed by a signal.
-   - Child: load libkrun and configure exactly as in step 1, with these differences: also `krun_add_virtiofs3(ctx, "hivectl", ctl, 0, false)` (not counted in the 8-share limit, not listed in `HIVE_SHARES`); and call `krun_set_exec(ctx, "/usr/local/bin/hive-vm-init", (const char*[]){NULL}, (const char*[]){"HIVE_CTL=hivectl", NULL})` (empty argv array, never NULL; envp holds only `HIVE_CTL`).
-4. `--dry-run` and `--check` are unchanged and create no control dir.
-
-In `image/hive-vm-init`, right after the existing `mount -t tmpfs ... hive-run /run` line and before anything else:
-```bash
-mkdir -p /run/hivectl
-mount -t virtiofs "$HIVE_CTL" /run/hivectl
-while IFS= read -r -d '' kv; do export "$kv"; done </run/hivectl/env
-mapfile -d '' -t HIVE_ARGV </run/hivectl/argv
-rm -f /run/hivectl/env /run/hivectl/argv
-umount /run/hivectl
-unset HIVE_CTL
-if (( ${#HIVE_ARGV[@]} == 0 )); then echo "hive-vm-init: no command" >&2; exit 127; fi
-```
-The final exec uses `"${HIVE_ARGV[@]}"` instead of `"$@"` (see Amendment 4 for its exact form).
-
-### Amendment 3 — start the launcher through /usr/bin/env (overrides the `args` array in step 7)
-
-Fedora's SELinux policy for pasta forbids executing files under `$HOME`; pasta may only exec system binaries. In `buildLibkrunCommand`, the element after `"--"` is now `"/usr/bin/env"`, followed by `p.vmBin` and the rest unchanged:
-`[..., "--dns-host", p.hostDns, "--", "/usr/bin/env", p.vmBin, "--rootfs", ...]`.
-Update the expected array in `test/sandbox.test.mjs` to match.
-
-### Amendment 4 — no-ipv6 for the whole guest workload (overrides step 3, item 7)
-
-libkrun's TSI networking stalls on IPv6, so curl, npm and git hang. The image already has `/usr/local/bin/no-ipv6` (it makes AF_INET6 sockets fail, so programs fall back to IPv4; children inherit it). The final line of `image/hive-vm-init` becomes:
-```bash
-exec chroot "$R" /usr/local/bin/no-ipv6 /usr/bin/env --chdir="${HIVE_WORKDIR:-/}" "${HIVE_ARGV[@]}"
-```
-
-### Amendment 5 — vm/build-rootfs.sh safety (overrides step 5's delete rule)
-
-- The cleanup loop deletes only directories whose name matches `^[0-9a-f]{12}$`, still skipping `$id` and the previous `current` target. It never touches anything else in `$BASE`.
-- `podman rm "$cid"` output goes to `/dev/null`, so the script's only stdout line is `$dest`.
-
-### Amendment 6 — vm/build.sh must not relabel the repo (overrides step 2's podman command)
-
-In the podman fallback, replace `-v "<repo>/vm:/src:Z"` with `--security-opt label=disable -v "<repo>/vm:/src"`.
-
-### Amendment 7 — shared npm cache label on the podman backend (adds to steps 7 and 8)
-
-- In `src/sandbox.ts`, the mount type in `SandboxOptions.mounts` gains an optional `shared?: boolean`. `spawnPodman` uses the SELinux suffix `z` for a shared mount and `Z` otherwise (e.g. `host:/root/.npm:z`, `host:/work:Z`, read-only stays `ro,` before the letter). `buildLibkrunCommand` ignores `shared`.
-- In `src/tasks.ts`, the npm cache mount gets `shared: true`.
-
-### Amendment 8 — Acceptance additions
-
-Executor (runnable in the VM):
-15. `grep -c '"/usr/bin/env",' src/sandbox.ts` prints a number ≥ 1, and `node --test 'test/*.test.mjs'` still passes with the updated expected array.
-16. `grep -c 'no-ipv6 /usr/bin/env' image/hive-vm-init` prints `1`; `grep -c 'HIVE_ARGV' image/hive-vm-init` prints a number ≥ 2.
-17. `grep -cE '\^\[0-9a-f\]\{12\}\$' vm/build-rootfs.sh` prints `1`.
-18. `grep -c 'label=disable' vm/build.sh` prints `1`.
-
-Host-only (the planner runs these):
-19. A guest run of `python3 -c 'import sys,json; print(json.dumps(sys.argv[1:]))'` with arguments `'one two'`, `'q"uote'`, `"it's"` and a 300 000-character argument prints them intact (lengths match).
-20. After any run, no `hive-vm-*` directory is left in `$XDG_RUNTIME_DIR`.
+If a step is wrong or impossible as written, stop. Write what blocked you and where in
+`.handoff/report.md`, and don't improvise around it.

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-dotenv.config();
+dotenv.config(process.env.HIVE_DOTENV_PATH ? { path: process.env.HIVE_DOTENV_PATH } : undefined);
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
@@ -52,6 +52,7 @@ export const config = {
   systemPrompt:
     process.env.HIVE_SYSTEM_PROMPT ||
     "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so.",
+  runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
   sandbox: {
     image: process.env.HIVE_IMAGE || "localhost/agent-hive-sandbox:latest",
     runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun | krun | runsc | crun | runc

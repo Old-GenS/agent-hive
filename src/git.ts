@@ -106,3 +106,40 @@ export async function applyAndPush(dir: string, base: string, resultBranch: stri
   await git(["push", "-q", "--force", "origin", `HEAD:refs/heads/${resultBranch}`], origin, 120_000);
   return patches.length;
 }
+
+// ── CLI host-side git ──
+// These run against the user's own repo (rev-parse, status, clone source, apply/am of exported
+// patches), never against a run's work/ copy.
+
+/** Absolute top of the work tree containing `cwd`. */
+export async function repoTop(cwd: string): Promise<string> {
+  try {
+    return await git(["rev-parse", "--show-toplevel"], cwd);
+  } catch {
+    throw new Error("not in a git repo");
+  }
+}
+
+/** True when `repo` has staged, unstaged or untracked changes. */
+export async function isDirty(repo: string): Promise<boolean> {
+  return (await git(["status", "--porcelain"], repo)) !== "";
+}
+
+/** Clone `repo` at HEAD into `work` (no hardlinks, no remote) and return the base SHA. */
+export async function prepareLocal(repo: string, work: string): Promise<string> {
+  const base = await git(["rev-parse", "HEAD"], repo);
+  await git(["clone", "-q", "--no-hardlinks", "--", repo, work], undefined, 120_000);
+  await git(["remote", "remove", "origin"], work);
+  await git(["config", "user.name", config.git.authorName], work);
+  await git(["config", "user.email", config.git.authorEmail], work);
+  return base;
+}
+
+/** Commits made in the sandbox use the configured identity (env beats git config). */
+export function gitIdentity(): Record<string, string> {
+  const { authorName, authorEmail } = config.git;
+  return {
+    GIT_AUTHOR_NAME: authorName, GIT_AUTHOR_EMAIL: authorEmail,
+    GIT_COMMITTER_NAME: authorName, GIT_COMMITTER_EMAIL: authorEmail,
+  };
+}

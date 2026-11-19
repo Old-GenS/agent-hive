@@ -67,6 +67,43 @@ npx github:stansz/hive-mcp
 
 See [stansz/hive-mcp](https://github.com/stansz/hive-mcp).
 
+## Command line (hive)
+
+`hive` runs an agent on the **current local git repository** in a throwaway libkrun microVM and
+exports its commits as patch files — the local-repo counterpart of the server. Build everything,
+then link the binary:
+
+```bash
+npm ci && npm run build && npm run build:image && npm run build:vm && npm run build:rootfs && npm link
+```
+
+Keys go in `~/.config/agent-hive/env` (same variables as the server, e.g.
+`OPENROUTER_API_KEY=sk-or-...`; optional `DEFAULT_PROVIDER`, `DEFAULT_MODEL`, `DEFAULT_THINKING`).
+The CLI only supports the libkrun backend, so it needs `/dev/kvm`, libkrun, `pasta`, the launcher
+and the rootfs. Run it inside any git repo; it works on `HEAD`, so uncommitted changes are not
+included.
+
+| Command | What it does |
+|---------|--------------|
+| `hive run "<prompt>"` | Clone the current repo into a new run, run the agent in a VM, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--json`, `-f <prompt-file>`. |
+| `hive log [run]` | Replay a run's event log; follows it live while the run is going. `--json` prints raw events. |
+| `hive diff [run]` | Show the run's changes; `--stat` gives a summary. |
+| `hive apply [run]` | Apply the run's patches to the current repo (clean, at the run's base), or `--branch <name>` to put them on a new branch. |
+| `hive list` | List runs, newest first. |
+| `hive clean <run>` | Delete a run; `--all` deletes every finished run (live runs are kept). |
+
+`[run]` defaults to the newest run. Runs live under `~/.cache/agent-hive/runs` (`HIVE_RUNS_DIR`
+overrides it), one directory per run:
+
+```
+<runsDir>/<repo>-<YYYYMMDD-HHMMSS>/
+  work/      the agent's copy, mounted at /work
+  io/        prompt.md, system.md, events.jsonl, stderr.log (mounted at /io)
+  session/   pi's session (mounted at /session)
+  out/       exported patches (mounted at /out by the export step only)
+  meta.json  repo, base, provider/model, status, commits, usage, timings
+```
+
 ## Isolation levels
 
 | Runtime | When | Boundary |
