@@ -228,6 +228,13 @@ try {
   assert(defaultPills === 1, `settings table has one Default pill (got ${defaultPills})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-settings.png") });
 
+  // ── desktop: settings > this computer ──
+  await page.click("#settings-computer");
+  await page.waitForSelector("#isolationCard");
+  const checkRows = await page.$$eval("#checksTable tbody tr", (nodes) => nodes.length);
+  assert(checkRows >= 2, `this computer lists its checks (got ${checkRows})`);
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-computer.png") });
+
   // ── phone: runs view at 390 px ──
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${BASE}/ui/#runs`);

@@ -323,6 +323,71 @@ function readTail(path: string, max: number): string {
   }
 }
 
+export interface SystemCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** What the server runs sandboxes with, plus the checks behind it, for the UI's "This computer". */
+export function systemInfo(): {
+  isolation: RuntimeInfo["isolation"];
+  runtime: string;
+  warning?: string;
+  checks: SystemCheck[];
+} {
+  const checks: SystemCheck[] = [];
+  const runtime = runtimeInfo.runtime ?? "crun";
+  if (runtime === "libkrun") {
+    let kvm = "ok";
+    try {
+      accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
+    } catch (err) {
+      kvm = (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "no access";
+    }
+    checks.push({ name: "Hardware virtualization", ok: kvm === "ok", detail: kvm === "ok" ? "/dev/kvm" : `/dev/kvm: ${kvm}` });
+    const launcher = existsSync(config.sandbox.vmBin);
+    let libkrun = false;
+    if (launcher) {
+      try {
+        execFileSync(config.sandbox.vmBin, ["--check"], {
+          env: { ...process.env, HIVE_LIBKRUN: config.sandbox.libkrun },
+          stdio: "ignore",
+        });
+        libkrun = true;
+      } catch {
+        libkrun = false;
+      }
+    }
+    checks.push({ name: "libkrun (starts the VM)", ok: libkrun, detail: config.sandbox.libkrun });
+    checks.push({ name: "pasta (network isolation)", ok: onPath("pasta"), detail: "VMs reach the internet, not this computer or the local network" });
+    checks.push({ name: "VM launcher", ok: launcher, detail: config.sandbox.vmBin });
+    let rootfs = config.sandbox.rootfs;
+    let rootfsOk = false;
+    try {
+      rootfs = realpathSync(config.sandbox.rootfs);
+      rootfsOk = existsSync(join(rootfs, "usr/local/bin/hive-vm-init"));
+    } catch {
+      rootfsOk = false;
+    }
+    checks.push({ name: "VM filesystem", ok: rootfsOk, detail: rootfs });
+  } else {
+    const podman = onPath("podman");
+    checks.push({ name: "podman", ok: podman, detail: podman ? "installed" : "not installed" });
+    let image = false;
+    if (podman) {
+      try {
+        execFileSync("podman", ["image", "exists", config.sandbox.image], { stdio: "ignore" });
+        image = true;
+      } catch {
+        image = false;
+      }
+    }
+    checks.push({ name: "Sandbox image", ok: image, detail: config.sandbox.image });
+  }
+  return { isolation: runtimeInfo.isolation, runtime, warning: runtimeInfo.warning, checks };
+}
+
 /** Startup self-check: the chosen runtime's launcher/image present. Returns problems found. */
 export function checkSandbox(): string[] {
   const problems: string[] = [];

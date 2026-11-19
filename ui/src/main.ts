@@ -330,7 +330,7 @@ function renderApp(user: { name: string }): void {
 
 function route(): void {
   if (!mainEl || !navRunsEl || !navSettingsEl) return;
-  const view = location.hash === "#settings" ? "settings" : "runs";
+  const view = location.hash.startsWith("#settings") ? "settings" : "runs";
   if (view === "runs") {
     navRunsEl.setAttribute("aria-current", "page");
     navSettingsEl.removeAttribute("aria-current");
@@ -342,7 +342,8 @@ function route(): void {
   } else {
     navSettingsEl.setAttribute("aria-current", "page");
     navRunsEl.removeAttribute("aria-current");
-    if (!settingsEl) settingsEl = buildSettings();
+    // Rebuilt each time: the sub-page follows the hash and "This computer" reloads its checks.
+    settingsEl = buildSettings(location.hash === "#settings/computer" ? "computer" : "keys");
     mainEl.replaceChildren(settingsEl);
   }
 }
@@ -1112,9 +1113,18 @@ function buildKeysTable(): HTMLElement {
   return el("div", { class: "table-wrap" }, table);
 }
 
-function buildSettings(): HTMLElement {
-  const apiKeysBtn = el("button", { class: "settings-nav-btn", type: "button", "aria-current": "page" }, "API keys");
-  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn);
+function buildSettings(page: "keys" | "computer"): HTMLElement {
+  const apiKeysBtn = el("button", { class: "settings-nav-btn", type: "button" }, "API keys");
+  const computerBtn = el("button", { id: "settings-computer", class: "settings-nav-btn", type: "button" }, "This computer");
+  (page === "keys" ? apiKeysBtn : computerBtn).setAttribute("aria-current", "page");
+  apiKeysBtn.onclick = () => {
+    location.hash = "#settings";
+  };
+  computerBtn.onclick = () => {
+    location.hash = "#settings/computer";
+  };
+  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn, computerBtn);
+  if (page === "computer") return el("div", { class: "settings-layout" }, nav, buildComputerPage());
 
   const content = el(
     "section",
@@ -1145,6 +1155,102 @@ function buildSettings(): HTMLElement {
   );
 
   return el("div", { class: "settings-layout" }, nav, content);
+}
+
+interface SystemInfo {
+  isolation: string;
+  runtime: string;
+  warning?: string;
+  checks: { name: string; ok: boolean; detail: string }[];
+  vm: { memory: string; cpus: string; timeoutMin: number };
+  capacity: { running: number; queued: number; max: number };
+  gitProtocol: string;
+  npmCache: boolean;
+  version: string;
+}
+
+const ISOLATION_TEXT: Record<string, string> = {
+  microvm: "MicroVM",
+  gvisor: "gVisor sandbox",
+  container: "Plain container",
+};
+
+const RUNTIME_TEXT: Record<string, string> = {
+  libkrun: "libkrun, started directly (no podman)",
+  krun: "podman with the krun runtime",
+  runsc: "podman with gVisor (runsc)",
+  crun: "podman (crun)",
+  runc: "podman (runc)",
+};
+
+/** Settings > This computer: what runs are isolated with, and the checks behind it. */
+function buildComputerPage(): HTMLElement {
+  const body = el("div", { class: "computer-body" }, el("p", { class: "cell-muted" }, "Checking this computer…"));
+  const content = el(
+    "section",
+    { class: "settings-content", "aria-labelledby": "settings-title" },
+    el("h1", { id: "settings-title" }, "This computer"),
+    el("p", { class: "settings-lead" }, "What each run is isolated with, and what it may use."),
+    body,
+  );
+  void (async () => {
+    try {
+      const res = await api("/api/system");
+      if (!res.ok) throw new Error(String(res.status));
+      body.replaceChildren(...computerSections((await res.json()) as SystemInfo));
+    } catch {
+      body.replaceChildren(el("p", { class: "alert alert-danger" }, "Couldn't load this computer's setup."));
+    }
+  })();
+  return content;
+}
+
+function computerSections(info: SystemInfo): HTMLElement[] {
+  const strong = info.isolation === "microvm";
+  const summary = el(
+    "div",
+    { class: `card isolation-card ${strong ? "isolation-ok" : "isolation-warn"}`, id: "isolationCard" },
+    el(
+      "div",
+      { class: "isolation-head" },
+      el("span", { class: "isolation-label" }, "Runs are isolated in a"),
+      el("span", { class: "isolation-value" }, ISOLATION_TEXT[info.isolation] ?? info.isolation),
+      el("span", { class: `pill ${strong ? "pill-ok" : "pill-warn"}` }, strong ? "Strong isolation" : "Weaker isolation"),
+    ),
+    el("p", { class: "isolation-runtime" }, RUNTIME_TEXT[info.runtime] ?? info.runtime),
+  );
+  if (info.warning) summary.append(el("p", { class: "alert alert-warn" }, info.warning));
+
+  const table = el("table", { id: "checksTable" });
+  table.append(
+    el("thead", {}, el("tr", {}, el("th", { scope: "col" }, "Check"), el("th", { scope: "col" }, "Status"), el("th", { scope: "col" }, "Detail"))),
+  );
+  const tbody = el("tbody");
+  for (const check of info.checks) {
+    tbody.append(
+      el(
+        "tr",
+        {},
+        el("td", { class: "provider-name" }, check.name),
+        el("td", {}, el("span", { class: `pill ${check.ok ? "pill-ok" : "pill-danger"}` }, check.ok ? "Ready" : "Missing")),
+        el("td", { class: "cell-detail" }, check.detail),
+      ),
+    );
+  }
+  table.append(tbody);
+
+  const facts: [string, string][] = [
+    ["VM size", `${info.vm.memory} memory, ${info.vm.cpus} CPU${info.vm.cpus === "1" ? "" : "s"}`],
+    ["Time limit per run", `${info.vm.timeoutMin} minutes`],
+    ["Runs at once", `${info.capacity.running} running of ${info.capacity.max}, ${info.capacity.queued} queued`],
+    ["GitHub access", info.gitProtocol === "ssh" ? "SSH (deploy keys)" : "HTTPS (the server's gh login)"],
+    ["Shared npm cache", info.npmCache ? "On" : "Off"],
+    ["hive version", info.version],
+  ];
+  const list = el("dl", { class: "facts" });
+  for (const [term, value] of facts) list.append(el("div", { class: "fact" }, el("dt", {}, term), el("dd", {}, value)));
+
+  return [summary, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
 }
 
 // ── boot ──

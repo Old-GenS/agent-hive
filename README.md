@@ -218,6 +218,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |
 | WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` |
 | GET | `/capacity` | Running / queued sandboxes |
+| GET | `/api/system` | Sandbox setup (microVM via libkrun, podman with krun or gVisor, or plain containers), its checks, VM size, capacity and git transport |
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
 | GET | `/api/models?provider=` | Models to offer for a provider (OpenRouter's live list, a fixed list for the others) |
 | GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
