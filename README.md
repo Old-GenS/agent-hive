@@ -133,7 +133,7 @@ has a key: DeepSeek, Z.AI, OpenRouter, Anthropic, OpenAI. The model is `-m` if g
 
 | Provider | Default model |
 |----------|---------------|
-| DeepSeek | `deepseek-v4-pro` |
+| DeepSeek | `deepseek-flash` |
 | Z.AI | `glm-5.3` |
 | OpenRouter | `xiaomi/mimo-v2.6-flash` |
 | Anthropic | none — `-m` or `DEFAULT_MODEL` is required |

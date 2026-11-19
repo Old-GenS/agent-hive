@@ -6,7 +6,7 @@
 import { PROVIDERS, effectiveModel } from "./config.js";
 
 export const STATIC_MODELS: Record<string, string[]> = {
-  deepseek: ["deepseek-v4-pro", "deepseek-flash"],
+  deepseek: ["deepseek-flash", "deepseek-v4-pro"],
   zai: ["glm-5.3"],
   anthropic: [],
   openai: [],

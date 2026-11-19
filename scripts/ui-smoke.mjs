@@ -95,7 +95,7 @@ try {
   });
 
   const placeholder = await page.$eval("#model", (node) => node.placeholder);
-  assert(placeholder === "deepseek-v4-pro", `#model placeholder is deepseek-v4-pro (got ${JSON.stringify(placeholder)})`);
+  assert(placeholder === "deepseek-flash", `#model placeholder is deepseek-flash (got ${JSON.stringify(placeholder)})`);
 
   const hasEmoji = await page.evaluate(() => /\p{Extended_Pictographic}/u.test(document.body.innerText));
   assert(!hasEmoji, "no element text contains an emoji");

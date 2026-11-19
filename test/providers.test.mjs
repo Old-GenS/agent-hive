@@ -24,7 +24,7 @@ test("providerInfo falls back to the first provider with a key", () => {
   assert.deepEqual(info.default, {
     provider: "deepseek",
     providerSource: "first provider with a key",
-    model: "deepseek-v4-pro",
+    model: "deepseek-flash",
     modelSource: "provider default",
     thinking: "low",
   });

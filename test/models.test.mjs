@@ -14,7 +14,7 @@ delete process.env.DEFAULT_MODEL;
 const { clearModelCache, listModels } = await import("../dist/models.js");
 
 test("deepseek returns its fixed model list", async () => {
-  assert.deepEqual(await listModels("deepseek"), ["deepseek-v4-pro", "deepseek-flash"]);
+  assert.deepEqual(await listModels("deepseek"), ["deepseek-flash", "deepseek-v4-pro"]);
 });
 
 test("openrouter returns the live list sorted, de-duplicated, with the default first", async () => {

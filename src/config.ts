@@ -25,7 +25,7 @@ export const PROVIDERS: Record<
   deepseek: {
     hostEnv: ["DEEPSEEK_API_KEY"],
     sandboxEnv: "DEEPSEEK_API_KEY",
-    defaultModel: "deepseek-v4-pro",
+    defaultModel: "deepseek-flash",
     label: "DeepSeek",
   },
   zai: { hostEnv: ["ZAI_API_KEY", "ZAI_CODE"], sandboxEnv: "ZAI_API_KEY", defaultModel: "glm-5.3", label: "Z.AI" },
