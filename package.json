@@ -17,7 +17,7 @@
     "build:vm": "bash vm/build.sh",
     "build:rootfs": "bash vm/build-rootfs.sh",
     "release": "bash scripts/build-release.sh",
-    "test": "npm run build && node --test 'test/*.test.mjs'",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "start": "node dist/index.js",
     "dev": "tsc --watch & node --watch dist/index.js"
   },
