@@ -1,216 +1,344 @@
 ## Goal
 
-Extend the `hive` CLI (`src/cli.ts`, `src/runs.ts`) with git-host support, with nothing tied to any
-particular user or account:
+Step 1 of `docs/ROADMAP.md`: make `hive` installable from a release and updatable.
 
-- `hive run --repo <ref> [--ref <branch>] "<prompt>"` runs on a remote repo without a local checkout.
-- `hive push [run] [--branch <name>] [--remote <name>] [--pr] [--base <branch>]` puts the run's
-  patches on a new branch, pushes it with the user's own git credentials, and with `--pr` opens a
-  GitHub pull request through the user's `gh`.
-- Settings come from env vars, which can live in `~/.config/agent-hive/env`. The commit identity
-  defaults to the user's own git identity.
-- Remove the maintainer's personal accounts and domain from `AGENTS.md` and `public/landing.html`.
+- `scripts/build-release.sh` builds a signed release: an app bundle with Node, the CLI as one
+  bundled file and the VM launcher, plus a separate VM rootfs download.
+- `install-cli.sh` installs the latest release.
+- New commands: `hive setup` (fetches the rootfs), `hive doctor` (shows what's available),
+  `hive update` (`--check`, `--rollback`) that verifies a signature and checksums and switches
+  versions atomically, and a once-a-day "new version available" notice.
+- libkrun and pasta still come from the system in this step.
 
 ## Files to touch
 
+- `src/release.ts` (new)
+- `src/release-key.ts` (new)
 - `src/cli.ts`
-- `src/runs.ts`
-- `src/git.ts`
-- `src/config.ts`
+- `scripts/build-release.sh` (new)
+- `scripts/keygen.mjs` (new)
+- `scripts/sign.mjs` (new)
+- `install-cli.sh` (new)
+- `package.json`, `package-lock.json`
+- `.gitignore`
 - `README.md`
-- `AGENTS.md`
-- `public/landing.html`
-- `test/push.test.mjs` (new)
+- `docs/RELEASING.md` (new)
+- `test/release.test.mjs` (new)
 - `.handoff/report.md`
 
 ## Steps
 
-1. Run `npm ci`.
+1. Run `npm ci`, then `npm install --save-dev --save-exact esbuild@0.25.10`.
 
-2. `src/config.ts`: in the `git` block, add `pushRemote: process.env.HIVE_PUSH_REMOTE || "origin",`.
+2. `.gitignore`: add a line `release/`.
 
-3. `src/git.ts`:
-   - Change `applyAndPush(dir, base, resultBranch)` to
-     `applyAndPush(dir: string, base: string, resultBranch: string, force = true)`. When `force` is
-     false, the push command has no `--force`. Everything else stays the same, and the existing
-     caller in `src/tasks.ts` keeps working unchanged.
-   - Add `normalizeCliRepo(input: string): { url: string; name: string }`:
-     - trim `input`
-     - `owner/name` (the existing `OWNER_REPO` regex) → url `https://github.com/<owner>/<name>.git`,
-       name `<name>`
-     - starts with `https://`, `http://`, `ssh://`, or matches `/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:/`
-       → url as given, with trailing `/` removed
-     - name: the last path segment, split on `/` and `:`, with a trailing `.git` removed. Empty →
-       `"repo"`
-     - anything else, including strings starting with `-` → throw
-       `Error("repo must be owner/name or a git URL")`
-   - Add `githubSlug(url: string): string | undefined`. It returns `owner/name`, without `.git`, for
-     `https://github.com/owner/name(.git)(/)`, `ssh://git@github.com/owner/name(.git)` and
-     `git@github.com:owner/name(.git)`. Anything else returns `undefined`.
-   - Add `gitConfigIdentity(cwd: string): { name?: string; email?: string }`. It uses
-     `execFileSync("git", ["config", "--get", "user.name"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })`,
-     and the same for `user.email`. Trim each value. A failing command or empty output leaves that
-     field undefined.
+3. `src/release-key.ts`:
+   ```ts
+   /** ed25519 public key (SPKI PEM) that signs release SHA256SUMS files. Empty: updates can't be verified. */
+   export const RELEASE_PUBLIC_KEY = "";
+   ```
 
-4. `src/runs.ts`:
-   - `RunMeta` gains:
-     - `source: "local" | "remote"`
-     - `summary?: string`
-     - `pushed?: { branch: string; url: string; at: number }`
-     - `prUrl?: string`
+4. `scripts/keygen.mjs` (Node ESM, built-ins only):
+   - `node scripts/keygen.mjs <private-key-path>`
+   - Refuses (exit 1) if the path exists.
+   - `crypto.generateKeyPairSync("ed25519")`. Writes the private key as PKCS8 PEM with mode
+     `0o600` (create the parent dir if needed). Prints the public key as SPKI PEM to stdout.
+
+5. `scripts/sign.mjs` (Node ESM, built-ins only):
+   - `node scripts/sign.mjs <private-key-path> <file>`
+   - Writes `<file>.sig`, containing the base64 of `crypto.sign(null, readFileSync(file), privateKey)`
+     followed by a newline.
+
+6. `src/release.ts`. Compute every path at call time from the environment, never at import time:
+   - `dataDir()` = `<XDG_DATA_HOME or ~/.local/share>/agent-hive`
+   - `versionsDir()` = `<dataDir>/versions`
+   - `currentLink()` = `<dataDir>/current`
+   - `previousLink()` = `<dataDir>/previous`
+   - `rootfsDir()` = `<dataDir>/rootfs`
+   - `binLink()` = `<homedir()>/.local/bin/hive`
+   - `cacheFile()` = `<XDG_CACHE_HOME or ~/.cache>/agent-hive/update-check.json`
+   
+   `homedir()` from `node:os`, which honours `HOME`.
+
+   Exports:
+   - `compareVersions(a: string, b: string): -1 | 0 | 1`. Strips a leading `v`, compares
+     dot-separated integers numerically, and treats missing parts as 0. Throws
+     `Error("bad version: <x>")` if any part isn't a non-negative integer.
+   - `bundleRoot(): string | undefined` = `process.env.HIVE_BUNDLE_ROOT || undefined`.
+   - `currentVersion(): string | undefined`: the trimmed `<bundleRoot>/VERSION` when bundled,
+     else `undefined`.
+   - `parseSums(text: string): Map<string, string>`: lines `<64 hex>  <name>` (also accept a
+     `*` before the name). Skips other lines.
+   - `verifySums(sums: Buffer, sigBase64: string, publicKeyPem: string): boolean`: wraps
+     `crypto.verify(null, sums, publicKeyPem, Buffer.from(sigBase64.trim(), "base64"))` and
+     returns `false` on any exception.
+   - `sha256File(path: string): Promise<string>`: hex, streamed.
+   - `type ReleaseAsset = { name: string; url: string; downloadUrl: string }` and
+     `type Release = { version: string; assets: ReleaseAsset[] }`.
+   - `fetchRelease(tag?: string, timeoutMs = 30_000): Promise<Release>`:
+     - GET `${HIVE_RELEASE_API || "https://api.github.com"}/repos/${HIVE_RELEASE_REPO || "ogsapps/agent-hive"}/releases/latest`,
+       or `…/releases/tags/<tag>` when `tag` is given.
+     - Headers: `Accept: application/vnd.github+json`, `User-Agent: agent-hive`, and
+       `Authorization: Bearer <token>` when `GH_TOKEN` or `GITHUB_TOKEN` is set.
+     - Use global `fetch` with `AbortSignal.timeout(timeoutMs)`. A non-2xx response throws
+       `Error("release lookup failed: HTTP <status>")`.
+     - `version` = `tag_name` without a leading `v`. Assets map `name`, `url` (the API URL) and
+       `browser_download_url` to `downloadUrl`.
+   - `download(asset: ReleaseAsset, dest: string, timeoutMs = 600_000): Promise<void>`:
+     - With a token: GET `asset.url` with `Accept: application/octet-stream` plus the
+       `Authorization` and `User-Agent` headers.
+     - Without one: GET `asset.downloadUrl` with `User-Agent`.
+     - Stream the body to `dest` (`Readable.fromWeb` + `pipeline`). Non-2xx throws
+       `Error("download failed: <name>: HTTP <status>")`.
+   - `installRelease(rel: Release, o: { publicKey?: string } = {}): Promise<string>`:
+     1. `key = o.publicKey ?? RELEASE_PUBLIC_KEY`. If empty, throw
+        `Error("this build has no release signing key, so updates can't be verified")`.
+     2. `app = "hive-<rel.version>-linux-x86_64.tar.gz"`. Look up the assets `SHA256SUMS`,
+        `SHA256SUMS.sig` and `app`. If any is missing, throw
+        `Error("release v<version> has no linux-x86_64 build")`.
+     3. Make `<dataDir>/.tmp-XXXXXX` (`mkdtempSync`, after `mkdirSync(dataDir, { recursive: true })`).
+        Always remove it in `finally`.
+     4. Download `SHA256SUMS` and `SHA256SUMS.sig`. If `!verifySums`, throw
+        `Error("release signature check failed")`.
+     5. Download `app`. If its `sha256File` isn't equal to `parseSums(...).get(app)` (including
+        a missing entry), throw `Error("checksum mismatch: <app>")`.
+     6. If `<versionsDir>/<version>/VERSION` already exists, skip extraction. Otherwise run
+        `tar -xzf <app> -C <tmp>/x` (create `x` first), which must produce `<tmp>/x/hive-<version>/VERSION`
+        (else throw `Error("bad app bundle")`). Then `mkdirSync(versionsDir, { recursive: true })`,
+        `rmSync(<versionsDir>/<version>, { recursive: true, force: true })`, and `renameSync` it into
+        place.
+     7. `rver` = the trimmed `<versionsDir>/<version>/ROOTFS_VERSION`. If `rver !== "none"`, call
+        `ensureRootfs(rel, rver, sums, tmp)` (below).
+     8. Return `<versionsDir>/<version>`.
+   - `ensureRootfs(rel: Release, rver: string, sums: Map<string, string>, tmp: string): Promise<void>`
+     (exported):
+     1. If `<rootfsDir>/<rver>/.complete` exists, return.
+     2. `name = "hive-rootfs-<rver>-linux-x86_64.tar.gz"`. Find the asset (missing → throw
+        `Error("release has no rootfs <rver>")`), download it into `tmp`, and check its sha256
+        against `sums` (mismatch → `checksum mismatch: <name>`).
+     3. `dir = <rootfsDir>/.tmp-<rver>`. `rmSync` it, `mkdirSync` it, then
+        `tar -xzf <file> -C <dir> --no-same-owner`.
+     4. `<dir>/usr/local/bin/hive-vm-init` must exist (else throw `Error("bad rootfs archive")`).
+     5. Write an empty `<dir>/.complete`, then `renameSync(dir, <rootfsDir>/<rver>)`.
+   - `setupRootfs(o: { publicKey?: string } = {}): Promise<string>`:
+     - Bundled only (else throw `Error("not an installed release")`).
+     - `rver` from `<bundleRoot>/ROOTFS_VERSION`. If `.complete` exists, return its path.
+     - Otherwise `fetchRelease("v" + currentVersion())`, download and verify `SHA256SUMS` and its
+       signature as in `installRelease`, and call `ensureRootfs` with a temp dir under `dataDir`,
+       removed in `finally`. Return `<rootfsDir>/<rver>`.
+   - `activate(version: string): void`:
+     - `target = <versionsDir>/<version>`.
+     - Read the old `current` target with `readlinkSync` (if any).
+     - Point `current` at `target` atomically: `symlinkSync(target, current + ".tmp")`, then
+       `renameSync` over `current`, after removing a stale `.tmp`.
+     - If there was an old target and it differs from `target`, point `previous` at it the same
+       way.
+     - Then `mkdirSync(dirname(binLink()), { recursive: true })`. If `binLink()` doesn't exist or
+       is a symlink, point it at `<currentLink>/bin/hive` (atomic as above). If it exists and
+       isn't a symlink, leave it and print `hive: <binLink> exists and isn't a symlink; not changing it`
+       to stderr.
+   - `rollback(): string`:
+     - Throws `Error("no previous version to roll back to")` when `previous` is missing.
+     - Swaps the `current` and `previous` targets atomically and returns the new current version
+       (the basename of its target).
+   - `prune(): void`:
+     - Removes every entry in `versionsDir` that isn't the basename of the `current` or
+       `previous` target.
+     - Removes every dir in `rootfsDir` whose name matches `/^[0-9a-f]{12}$/` and isn't listed in
+       the `ROOTFS_VERSION` of the current or previous version.
+     - Never touches symlinks, names starting with `.`, or anything else.
+   - `updateNotice(): Promise<string | undefined>`:
+     - Returns `undefined` unless bundled and `HIVE_NO_UPDATE_CHECK !== "1"`.
+     - Reads `cacheFile()` (`{ checkedAt: number, latest: string }`). If it was checked within
+       the last 24 h, use its `latest`. Otherwise `fetchRelease(undefined, 3000)`, save
+       `{ checkedAt: Date.now(), latest }` (mkdir as needed), and use that.
+     - If `compareVersions(latest, current) > 0`, return
+       `hive: version <latest> is available (you have <current>); run hive update`.
+     - Any error → `undefined`.
+
+7. `src/cli.ts`:
+   - **Prelude**, before any dynamic import and after the existing env setup. If
+     `process.env.HIVE_BUNDLE_ROOT` is set:
+     - `process.env.HIVE_VM_BIN ||= <root>/libexec/hive-vm`;
+     - `process.env.HIVE_ROOTFS ||= <XDG_DATA_HOME or ~/.local/share>/agent-hive/rootfs/<trimmed <root>/ROOTFS_VERSION>`.
      
-     For remote runs, `repo` holds the remote URL.
-   - `StartRunOptions`: `repo` becomes optional, and `remote?: { url: string; name: string; ref?: string }`
-     is added. Exactly one of the two must be given (else throw `Error("startRun needs repo or remote")`).
-   - `startRun`:
-     - Local runs behave exactly as now, with `source: "local"`.
-     - Remote runs: the run dir name uses `remote.name` in place of `basename(repo)`. Instead of
-       `prepareLocal`, run `base = await prepareRepo(dir, remote.url, remote.ref)` (the existing
-       function: it clones into `<dir>/origin` and `<dir>/work`). Then `meta.repo = remote.url` and
-       `source: "remote"`.
-     - In the follower callback, when `e.type === "message_end"` and `e.message.role === "assistant"`,
-       save the joined text of its `type === "text"` blocks, if non-empty, as the latest summary.
-     - When writing the final `meta.json`, set `meta.summary` to the latest summary, cut to 60000
-       characters, when there is one.
-   - `applyRun`: right after reading `meta`, if `meta.source === "remote"`, throw
-     `Error("this run is from " + meta.repo + "; use hive push")`. Treat a missing `source` as
-     `"local"`.
-   - Add `pushRun(dir: string, o: { branch?: string; remote?: string } = {}): Promise<{ branch: string; url: string; commits: number }>`:
-     1. Read `meta`. `status` must be `"done"` (else throw `run is <status>; nothing to push`) and
-        `commits > 0` (else throw `nothing to push`).
-     2. `branch = validateBranch(o.branch ?? config.git.branchPrefix + basename(dir))`.
-     3. Remote runs: `url = await git(["remote", "get-url", "origin"], join(dir, "origin"))`.
-     4. Local runs:
-        - `remoteName = o.remote ?? config.git.pushRemote`.
-        - `url = await git(["remote", "get-url", "--push", remoteName], meta.repo)`. On failure
-          throw `repo <meta.repo> has no remote "<remoteName>"`.
-        - `rmSync(join(dir, "origin"), { recursive: true, force: true })`.
-        - `git clone -q --no-hardlinks -- <meta.repo> <dir>/origin`.
-        - In `<dir>/origin`: `git remote set-url origin <url>`.
-        - In `<dir>/origin`: `git cat-file -e <meta.base>^{commit}`. On failure throw
-          `the run's base commit is no longer in <meta.repo>`.
-     5. `commits = await applyAndPush(dir, meta.base, branch, false)`. If it throws, rethrow
-        `Error(<its message> + " (check your git credentials for " + url + ")")`.
-     6. `meta.pushed = { branch, url, at: Date.now() }`. `writeMeta`. Return `{ branch, url, commits }`.
-   - Add `patchSubject(patchText: string): string`. It takes the first line starting with
-     `Subject: `, removes `Subject: ` and a leading `[PATCH...] ` group (regex `/^\[PATCH[^\]]*\]\s*/`),
-     and trims. Returns `""` when there is no such line.
-   - Add `prArgs(o: { slug: string; branch: string; title: string; body: string; base?: string }): string[]`.
-     It returns `["pr", "create", "--repo", slug, "--head", branch, "--title", title, "--body", body]`,
-     plus `["--base", base]` when `base` is set.
-   - Add `openPr(dir: string, o: { base?: string } = {}): Promise<string>`:
-     1. Read `meta`. If there is no `meta.pushed`, throw `push the run first`.
-     2. `slug = githubSlug(meta.pushed.url)`. If undefined, throw
-        `pull requests need a github.com remote (pushed to <url>)`.
-     3. `title` = `patchSubject` of the first patch file. If empty, use `meta.prompt` cut to 70
-        characters.
-     4. `body` = `meta.summary` if set, else `title`.
-     5. Run `execFile("gh", prArgs({ slug, branch: meta.pushed.branch, title, body, base: o.base }), { timeout: 120_000 })`
-        via `promisify`. An `ENOENT` error → throw
-        `gh is not installed; install the GitHub CLI and run gh auth login to open pull requests`.
-        Any other error → throw `gh pr create failed: <stderr or message, trimmed>`.
-     6. `prUrl` = the last non-empty line of stdout, trimmed. Save it to `meta.prUrl` and `writeMeta`.
-        Return it.
-
-5. `src/cli.ts`:
-   - In `main()`, after the existing env setup and before the first dynamic import: if
-     `process.env.GIT_AUTHOR_NAME` is unset, read `user.name` and `user.email` with a small local
-     helper in `cli.ts` that does the same as `gitConfigIdentity` (`execFileSync("git", ["config", "--get", key], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })`,
-     trimmed, with failures treated as unset). Don't import `./git.js` for this: `config.ts` reads
-     the env when it is first imported, so the identity must be set before that. If both values are
-     found, set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
-     `GIT_COMMITTER_EMAIL` from them.
-   - `run` gains the options `--repo` (string) and `--ref` (string):
-     - With `--repo`: don't call `repoTop` and don't check for a dirty tree.
-       `remote = { ...normalizeCliRepo(values.repo), ref: values.ref }`. Pass `remote` to `startRun`
-       in place of `repo`. `--ref` without `--repo` is an error: `--ref needs --repo`.
-     - Keep the order: parse the prompt, then resolve local or remote, then `libkrunAvailable()`, then
-       `startRun`.
-     - The final `done` lines print `hive push <name>` in place of `hive apply <name>` when the run
-       is remote; local runs print both `hive apply <name>` and `hive push <name>`.
-   - New command `push`: options `--branch` (string), `--remote` (string), `--pr` (boolean) and
-     `--base` (string).
-     - `dir = resolveRun(positionals[0])`, then `pushRun(dir, { branch, remote })`. Print
-       `hive: pushed <commits> commit(s) to <branch> on <url>` to stdout.
-     - With `--pr`: `openPr(dir, { base })` and print the URL on its own line.
-     - `--base` without `--pr` is an error: `--base needs --pr`.
-   - Usage text: add these lines after the `hive apply` line, and change both `hive run` lines to
-     include `[--repo <owner/name|url> [--ref <branch>]]` after `[--json]`:
+     Read the file with `readFileSync`, and ignore a missing file.
+   - **`run`:** right after the `libkrunAvailable()` check passes, `const notice = await updateNotice()`
+     (from `./release.js`), and print it to stderr if set. In bundled mode, when
+     `libkrunAvailable()` is false and `HIVE_ROOTFS` doesn't exist, add the line
+     `hive: run hive setup to download the VM filesystem`.
+   - **New command `setup`:**
+     - Bundled: `setupRootfs()`, print `hive: VM filesystem ready: <path>`, then run `doctor`
+       and return its exit code.
+     - From source: print
+       `hive: running from source; build the VM filesystem with npm run build:image && npm run build:rootfs`,
+       then run `doctor`.
+   - **New command `doctor`:** prints these lines to stdout and exits 0 only if every check is ok:
      ```
-     hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
+     hive <currentVersion() or "dev (from source)">
+     /dev/kvm: ok | missing | no access
+     libkrun: ok (<HIVE_LIBKRUN or libkrun.so.1>) | not found — install your distro's libkrun package (Fedora: sudo dnf install libkrun)
+     pasta: ok (<path from command -v>) | not found — install passt (Fedora: sudo dnf install passt)
+     launcher: ok (<vmBin>) | missing (<vmBin>)
+     rootfs: ok (<realpath>) | missing (<path>) — run hive setup
+     isolation: microvm (system libkrun) | unavailable
+     ```
+     - `/dev/kvm`: `accessSync` R|W.
+     - libkrun: the launcher `--check` with `HIVE_LIBKRUN` in env, which is how
+       `libkrunAvailable` does it. Report it as `not found` if the launcher is missing.
+     - rootfs: ok when `<rootfs>/usr/local/bin/hive-vm-init` exists.
+     - Use `config.sandbox` for the paths.
+   - **New command `update`:** options `--check` and `--rollback` (booleans).
+     - Not bundled: throw `Error("hive update works for installed releases; this copy runs from source (git pull && npm run build)")`.
+     - `--rollback`: `rollback()`, print `hive: back on <version>`.
+     - `--check`: `fetchRelease()`. Print `hive <cur> is up to date` or
+       `hive <latest> is available (you have <cur>)`.
+     - Default: `fetchRelease()`. If not newer, print `hive <cur> is up to date`. Otherwise
+       `installRelease(rel)`, `activate(rel.version)`, `prune()`, and print
+       `hive: updated <cur> → <latest>`.
+   - **Usage text:** add after the `hive clean` line:
+     ```
+     hive setup
+     hive doctor
+     hive update [--check | --rollback]
      ```
 
-6. `README.md`, in the `## Command line (hive)` section:
-   - Document `--repo` and `--ref`, and `hive push` with `--branch`, `--remote`, `--pr` and `--base`.
-   - Say that pushing uses the user's own git credentials (SSH key, credential helper, or `gh auth setup-git`), and `--pr` uses their `gh` login.
-   - Add a settings table: `HIVE_RUNS_DIR`, `HIVE_BRANCH_PREFIX` (default `hive/`), `HIVE_PUSH_REMOTE`
-     (default `origin`), `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` (default: your git `user.name` and
-     `user.email`), `DEFAULT_PROVIDER`, `DEFAULT_MODEL`, the provider key variables from `PROVIDERS`,
-     `HIVE_SANDBOX_MEMORY`, `HIVE_SANDBOX_CPUS` and `HIVE_SANDBOX_TIMEOUT_MIN`. Each row gets a
-     one-line meaning, and the table says the variables can go in `~/.config/agent-hive/env`.
+8. `scripts/build-release.sh` (bash, `set -euo pipefail`, run from the repo root):
+   - `version` = `node -p "require('./package.json').version"`.
+   - `NODE_VERSION=${HIVE_NODE_VERSION:-24.18.0}`.
+   - `key=${HIVE_SIGNING_KEY:-$HOME/.config/agent-hive/release-signing-key.pem}`. If it's
+     missing, exit 1 with `build-release: signing key <key> not found (create it with node scripts/keygen.mjs <key>)`.
+   - `out=release/$version`. `rm -rf "$out"`, then `mkdir -p "$out"`. `stage=$(mktemp -d)`, with
+     a trap that removes it.
+   - `npm run build` and `npm run build:vm`.
+   - Rootfs: unless `HIVE_RELEASE_SKIP_ROOTFS=1`, run `npm run build:image` and
+     `npm run build:rootfs`, and set `rootfs=$(realpath "${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs/current")`
+     and `rver=$(basename "$rootfs")`. Then
+     `tar -C "$rootfs" --exclude=./.complete -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .`.
+     With `HIVE_RELEASE_SKIP_ROOTFS=1`, `rver=none`.
+   - App bundle at `$stage/hive-$version/`:
+     - `bin/hive` (mode 755):
+       ```sh
+       #!/bin/sh
+       root=$(dirname "$(dirname "$(readlink -f "$0")")")
+       HIVE_BUNDLE_ROOT=$root exec "$root/libexec/node" "$root/lib/hive.mjs" "$@"
+       ```
+     - `lib/hive.mjs`:
+       `npx esbuild dist/cli.js --bundle --platform=node --format=esm --target=node24 --outfile=<that path> --banner:js="import { createRequire as __hiveRequire } from 'node:module'; const require = __hiveRequire(import.meta.url);"`
+     - `libexec/node`: download
+       `https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.gz` and its
+       `SHASUMS256.txt` into `$stage`. Check with `grep " node-v$NODE_VERSION-linux-x64.tar.gz\$" SHASUMS256.txt | sha256sum -c -`
+       (run in `$stage`). Extract only `node-v$NODE_VERSION-linux-x64/bin/node` and copy it.
+     - `libexec/hive-vm`: copied from `vm/hive-vm`.
+     - `VERSION` (`$version`) and `ROOTFS_VERSION` (`$rver`), each one line.
+   - `tar -C "$stage" -czf "$out/hive-$version-linux-x86_64.tar.gz" "hive-$version"`.
+   - `(cd "$out" && sha256sum hive-*.tar.gz > SHA256SUMS)`, then
+     `node scripts/sign.mjs "$key" "$out/SHA256SUMS"`.
+   - Print `ls -l "$out"`.
+   - `package.json`: add the script `"release": "bash scripts/build-release.sh"`.
 
-7. `AGENTS.md`:
-   - Rename the section `## Two-account GitHub model` to `## GitHub access (server)`.
-   - Replace `stansz` with `<owner>` and `oatclaw88` with `<bot>` everywhere in that section and in
-     `### Commit author`, and drop the sentence about keeping the old attribution.
-   - Add one line under the section: "The `hive` CLI needs none of this: it uses the user's own git
-     credentials and `gh` login on the host; nothing is passed into the VM."
-   - Keep the `hive-mcp` link on line 8 as it is.
+9. `install-cli.sh` (POSIX `sh`, `set -eu`):
+   - `REPO=${HIVE_RELEASE_REPO:-ogsapps/agent-hive}`, `API=${HIVE_RELEASE_API:-https://api.github.com}`.
+   - If `uname -m` isn't `x86_64`, exit 1 with `hive: only linux x86_64 releases exist for now`.
+   - Require `curl`, `tar` and `sha256sum` (`command -v`), naming any that's missing.
+   - Fetch `$API/repos/$REPO/releases/latest`. Get `ver` from `"tag_name"` (strip a leading `v`)
+     and the `browser_download_url` values with `sed`/`grep`.
+   - Download `SHA256SUMS` and `hive-$ver-linux-x86_64.tar.gz` into a `mktemp -d` dir (removed on
+     exit). Verify with `grep " hive-$ver-linux-x86_64.tar.gz\$" SHA256SUMS | sha256sum -c -`.
+   - `data=${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive`. Extract into the temp dir. If
+     `$data/versions/$ver` doesn't exist, move `hive-$ver` there.
+   - `ln -sfn "$data/versions/$ver" "$data/current"`, `mkdir -p "$HOME/.local/bin"`,
+     `ln -sfn "$data/current/bin/hive" "$HOME/.local/bin/hive"`.
+   - Run `"$data/current/bin/hive" setup || true`, then print
+     `hive $ver installed; make sure $HOME/.local/bin is on your PATH` (a plain message, no
+     colours).
+   - A comment at the top says this script checks the SHA256SUMS checksum over HTTPS, and that
+     `hive update` also verifies the release signature.
 
-8. `public/landing.html`: replace every `https://hive.ogsapps.cc` with `https://hive.example.com`.
-   Keep the links to the project's GitHub repo.
+10. `README.md`:
+    - In `## Install`, add a first subsection `### From a release`:
+      `curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh`,
+      plus one line saying it needs `/dev/kvm` and the system's libkrun and pasta for now
+      (Fedora: `sudo dnf install libkrun passt`).
+    - Rename the existing build steps `### From source`.
+    - Add `hive setup`, `hive doctor` and `hive update [--check | --rollback]` rows to the commands
+      table.
+    - Add `HIVE_NO_UPDATE_CHECK` (set to 1 to stop the daily update notice), `HIVE_RELEASE_REPO`
+      (default `ogsapps/agent-hive`) and `GH_TOKEN`/`GITHUB_TOKEN` (used for release lookups when
+      set) to the settings table.
+    
+    `docs/RELEASING.md`:
+    1. one-time `node scripts/keygen.mjs ~/.config/agent-hive/release-signing-key.pem`, then paste
+       the printed key into `src/release-key.ts` and commit;
+    2. bump `version` in `package.json`;
+    3. `npm run release`;
+    4. `gh release create v<version> release/<version>/* --title v<version> --notes "<notes>"`;
+    
+    plus what each file in a release is.
 
-9. `test/push.test.mjs` (`node:test` and `node:assert/strict`):
-   - Set `process.env.HIVE_RUNS_DIR` to a fresh `mkdtempSync` dir, plus `GIT_AUTHOR_NAME`,
-     `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` to `t` / `t@t`, before any
-     `await import("../dist/…")`.
-   - `normalizeCliRepo`:
-     - `"a/b"` → `{ url: "https://github.com/a/b.git", name: "b" }`
-     - `"https://gitlab.com/x/y.git/"` → url `https://gitlab.com/x/y.git`, name `y`
-     - `"git@github.com:a/b.git"` → name `b`
-     - `"-x"`, `"/tmp/repo"` and `"b"` throw
-   - `githubSlug`:
-     - the https, ssh:// and scp forms of `github.com/a/b(.git)` → `"a/b"`
-     - `https://gitlab.com/a/b.git` → `undefined`
-   - `patchSubject`: `"From x\nSubject: [PATCH 2/3] fix calc\n\n"` → `"fix calc"`; text with no
-     subject → `""`.
-   - `prArgs` with and without `base`: exact arrays.
-   - `gitConfigIdentity`: in a temp repo with `git config user.name n` and `user.email e@e`, it
-     returns `{ name: "n", email: "e@e" }`.
-   - `pushRun` (local run):
-     - Make a bare repo `remote.git`. Clone it to `local`, commit `f.txt` and push `main`. The bare
-       repo also gets a remote named `upstream` (a second bare repo `up.git`) in `local`.
-     - Clone `local` to a temp dir, change `f.txt`, commit `agent change`, and
-       `git format-patch -o <runsDir>/r1/out <base>..HEAD`.
-     - Write `<runsDir>/r1/meta.json`:
-       `{ source:"local", status:"done", commits:1, repo:<local>, base:<base>, createdAt:1, prompt:"p", usage:{input:0,output:0,cacheRead:0,cacheWrite:0,cost:0}, pid:1, provider:"x", model:"y", thinking:"low" }`
-     - `pushRun(r1)`: returns `branch` `hive/r1` and `commits` 1, and
-       `git --git-dir remote.git log -1 --format=%s hive/r1` prints `agent change`. `meta.json` now
-       has `pushed.branch === "hive/r1"`.
-     - `pushRun(r1, { branch: "feat/x", remote: "upstream" })` puts `feat/x` in `up.git` with the
-       same subject.
-     - `pushRun(r1, { branch: "bad..name" })` throws.
-     - A run with `status:"failed"` throws `/nothing to push|failed/`.
-   - `pushRun` (remote run): `prepareRepo(<runsDir>/r2, <path of remote.git>)` returns `base`.
-     Create a commit in a separate clone of `remote.git` (not pushed), and `format-patch` it into
-     `<runsDir>/r2/out`. Write meta with `source:"remote"`, `repo:<remote.git path>`, `base`,
-     `status:"done"`, `commits:1`. `pushRun(r2)` puts `hive/r2` in `remote.git`.
-   - `applyRun` on the remote run throws `/use hive push/`.
-   - `openPr` on a run without `pushed` throws `/push the run first/`. A run whose `pushed.url` is
-     `https://gitlab.com/a/b.git` throws `/github.com remote/`.
+11. `test/release.test.mjs` (`node:test` and `node:assert/strict`):
+    - Before any `await import("../dist/…")`, set `HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` to
+      fresh temp dirs, and `HIVE_RELEASE_API` to a local server URL (start the server first),
+      `HIVE_RELEASE_REPO=o/r`, and delete `GH_TOKEN` and `GITHUB_TOKEN`.
+    - **Test key:** `crypto.generateKeyPairSync("ed25519")`, with the public key exported as SPKI
+      PEM.
+    - **Helper `makeRelease(version, rver, { tamper })`:**
+      - builds `hive-<v>/` with `VERSION`, `ROOTFS_VERSION`, and a `bin/hive` holding
+        `#!/bin/sh\necho hive`;
+      - `tar -czf` it, plus `hive-rootfs-<rver>-linux-x86_64.tar.gz` containing
+        `usr/local/bin/hive-vm-init`;
+      - writes a `SHA256SUMS` over both, signed with the test key.
+      
+      With `tamper: "app"`, the app tarball gets a byte appended after the sums are written. With
+      `tamper: "sig"`, the signature is made with a different key.
+    - **Server** (`node:http`, `127.0.0.1:0`):
+      - `/repos/o/r/releases/latest` and `/repos/o/r/releases/tags/v<x>` serve
+        `{ tag_name, assets: [{ name, url: <base>/api/<name>, browser_download_url: <base>/dl/<name> }] }`
+        for the release currently set by the test;
+      - `/dl/<name>` serves the file;
+      - it counts requests per path.
+    - **Tests:**
+      - `compareVersions`: `1.2.0` vs `1.10.0` → -1; `v1.2` vs `1.2.0` → 0; `2.0.0` vs `1.9.9` → 1;
+        `1.x` throws.
+      - `verifySums`: true with the right key, false with the wrong key or a tampered body.
+      - Install 1.1.0 (rootfs `aaaaaaaaaaaa`) with `installRelease(await fetchRelease(), { publicKey })`,
+        then `activate("1.1.0")`:
+        - `versions/1.1.0/VERSION` exists;
+        - `readlinkSync(current)` ends with `/versions/1.1.0`;
+        - `rootfs/aaaaaaaaaaaa/.complete` exists;
+        - `<HOME>/.local/bin/hive` is a symlink.
+      - Install 1.2.0 with the same rootfs version: the rootfs `/dl/` path count stays at 1. Then
+        `activate("1.2.0")`: `previous` → `1.1.0` and `current` → `1.2.0`. `rollback()` returns
+        `"1.1.0"` and swaps them.
+      - `tamper: "app"` (1.3.0) rejects with `/checksum mismatch/`, and `current` is unchanged.
+      - `tamper: "sig"` (1.4.0) rejects with `/signature/`.
+      - An empty `publicKey: ""` rejects with `/signing key/`.
+      - `prune()`: create `versions/0.9.0` and `rootfs/bbbbbbbbbbbb`. After `prune()` both are gone,
+        and the current and previous versions plus `rootfs/aaaaaaaaaaaa` remain.
+      - `updateNotice`: set `HIVE_BUNDLE_ROOT` to a temp dir whose `VERSION` is `1.1.0`, with the
+        server's latest at 1.2.0. The result contains `1.2.0`. A second call makes no new request
+        to `/releases/latest`. With `HIVE_NO_UPDATE_CHECK=1` it returns `undefined`. Unset both
+        afterwards.
+      - CLI (`execFileSync(process.execPath, ["dist/cli.js", ...])`, with `HIVE_BUNDLE_ROOT`
+        unset):
+        - `update` exits 1 with stderr containing `runs from source`;
+        - `doctor`'s stdout starts with `hive dev (from source)` (any exit code);
+        - `--help` contains `hive update`.
 
 ## Acceptance
 
-1. `npm ci` exits 0.
+1. `npm ci` exits 0, and `npx esbuild --version` prints `0.25.10`.
 2. `npm run build` exits 0.
-3. `npm test` exits 0. Its output shows the tests from `test/push.test.mjs` passing and `fail 0`.
-4. `node dist/cli.js --help` exits 0. Its output contains a line starting with `hive push` and the text `--repo`.
-5. `git grep -n 'ogsapps' -- public src` exits 1 (no matches).
-6. `git grep -nE 'oatclaw88|stansz' -- src AGENTS.md` prints only the `hive-mcp` link line in `AGENTS.md`.
-7. `git diff --quiet HEAD -- src/index.ts src/auth.ts src/routes src/tasks.ts src/sandbox.ts ui image vm` exits 0.
-8. `R=$PWD; T=$(mktemp -d); cd $T && node $R/dist/cli.js run --repo a/b "hi"; echo "exit=$?"; cd $R` prints `exit=1`. Stderr contains `hive: can't start a VM:` and does not contain `not in a git repo`.
-9. `node dist/cli.js push nope; echo "exit=$?"` prints `exit=1`, and stderr contains `not a run`.
-10. `node dist/cli.js run --ref main "hi"; echo "exit=$?"` (run from the repo root) prints `exit=1`, and stderr contains `--ref needs --repo`.
+3. `npm test` exits 0. Its output shows the tests from `test/release.test.mjs` passing and `fail 0`.
+4. `node dist/cli.js --help` contains lines starting with `hive setup`, `hive doctor` and `hive update`.
+5. `node dist/cli.js update; echo "exit=$?"` prints `exit=1`, and stderr contains `runs from source`.
+6. `K=$(mktemp -d)/k.pem && node scripts/keygen.mjs $K > /tmp/pub.pem && HIVE_RELEASE_SKIP_ROOTFS=1 HIVE_SIGNING_KEY=$K npm run release` exits 0. `release/<version>/` (version from `package.json`) contains `hive-<version>-linux-x86_64.tar.gz`, `SHA256SUMS` and `SHA256SUMS.sig`.
+7. `T=$(mktemp -d) && tar -xzf release/*/hive-*-linux-x86_64.tar.gz -C $T && $T/hive-*/bin/hive --help` prints the usage text, including `hive update`. This runs the bundled Node and bundled CLI.
+8. `(cd release/* && sha256sum -c SHA256SUMS)` exits 0, and
+   `node -e "const c=require('crypto'),f=require('fs'),d=process.argv[1];process.exit(c.verify(null,f.readFileSync(d+'/SHA256SUMS'),f.readFileSync('/tmp/pub.pem'),Buffer.from(f.readFileSync(d+'/SHA256SUMS.sig','utf8').trim(),'base64'))?0:1)" release/*`
+   exits 0.
+9. `sh -n install-cli.sh` and `bash -n scripts/build-release.sh` exit 0.
+10. `git diff --quiet HEAD -- src/index.ts src/auth.ts src/routes src/tasks.ts src/sandbox.ts src/runs.ts src/git.ts ui image vm` exits 0.
 
 ## Parallel work
 
@@ -220,21 +348,20 @@ None — do it sequentially.
 
 - Do not commit, push, or switch branches. Do not touch files outside **Files to touch** except
   `.handoff/report.md`. Installing dependencies and temporary files outside the repo are fine.
-- No new npm dependencies.
-- Don't change `src/sandbox.ts`, `src/tasks.ts`, `src/index.ts`, `src/auth.ts`, `src/routes/`,
-  `ui/`, `image/` or `vm/`.
-- No user names, account names, domains or tokens in code or tests. Defaults come from env vars or
-  the user's git config.
-- Git credentials and the `gh` login are used only by host-side commands. Nothing new is mounted or
-  passed into the VM.
-- The host never runs git in a run's `work/` after it is cloned. Pushing uses `<dir>/origin` only.
-- Pushes are never forced from the CLI.
-- Strict TypeScript, ES modules, Node 24 built-ins only.
+- The only new dependency is the devDependency `esbuild@0.25.10`. Runtime code uses Node
+  built-ins only.
+- Don't change `src/sandbox.ts`, `src/runs.ts`, `src/git.ts`, `src/tasks.ts`, `src/index.ts`,
+  `src/auth.ts`, `src/routes/`, `ui/`, `image/` or `vm/`.
+- No private keys anywhere in the repo. `src/release-key.ts` stays an empty string. Tests generate
+  their own keys.
+- Updates never leave a half-installed version in place: extract into temp dirs and `rename` into
+  place. Symlinks are switched by renaming a temp symlink over the old one.
+- Strict TypeScript, ES modules.
 
 ## Out of scope
 
-Review cycles, forks and cross-repo PRs, PR updates, `hive serve`, `hive mcp`, macOS, and any change
-to the server, the web UI, the image or the launcher.
+Bundling libkrun, libkrunfw or pasta (step 2), gVisor (step 3), arm64 and macOS, rpm and deb
+packages, publishing a release, and any change to the server or the VM launcher.
 
 ## If blocked
 
