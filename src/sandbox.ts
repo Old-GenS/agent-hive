@@ -102,8 +102,8 @@ export const runtimeInfo = detectRuntime();
 
 export interface SandboxOptions {
   name: string;
-  /** host path → container path; ro mounts get ":ro" */
-  mounts: { host: string; container: string; ro?: boolean }[];
+  /** host path → container path; ro mounts get ":ro", shared mounts the SELinux ":z" label */
+  mounts: { host: string; container: string; ro?: boolean; shared?: boolean }[];
   /** env vars to pass in, name → value. Passed via the child's env, never on the command line. */
   env: Record<string, string>;
   command: string[];
@@ -126,7 +126,7 @@ export function buildLibkrunCommand(
   const args = [
     "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
     "--dns-forward", "169.254.1.53", "--dns-host", p.hostDns,
-    "--", p.vmBin,
+    "--", "/usr/bin/env", p.vmBin,
     "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
   ];
   for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
@@ -165,7 +165,8 @@ function spawnPodman(opts: SandboxOptions) {
     // The output is read from the attached stdout; don't also copy transcripts into journald.
     "--log-driver", "none",
   );
-  for (const m of opts.mounts) args.push("-v", `${m.host}:${m.container}:${m.ro ? "ro," : ""}Z`);
+  // A shared mount needs the ":z" label: the npm cache is mounted into several sandboxes at once.
+  for (const m of opts.mounts) args.push("-v", `${m.host}:${m.container}:${m.ro ? "ro," : ""}${m.shared ? "z" : "Z"}`);
   for (const name of Object.keys(opts.env)) args.push("-e", name);
   args.push("-w", "/work", sandbox.image, ...opts.command);
   return spawn("podman", args, {

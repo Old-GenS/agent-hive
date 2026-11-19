@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { config, PROVIDERS, providerKey, resolveProvider } from "./config.js";
-import { runSandbox, runtimeInfo, type SandboxHandle } from "./sandbox.js";
+import { runSandbox, runtimeInfo, type SandboxHandle, type SandboxOptions } from "./sandbox.js";
 import { applyAndPush, normalizeRepo, prepareRepo, validateBranch } from "./git.js";
 
 export type TaskStatus = "queued" | "cloning" | "running" | "reviewing" | "pushing" | "idle" | "failed" | "aborted";
@@ -140,14 +140,14 @@ export class Task extends EventEmitter {
     let lastText = "";
     let lastError = "";
     const key = providerKey(this.provider)!;
-    const mounts = [
+    const mounts: SandboxOptions["mounts"] = [
       { host: join(this.dir, "work"), container: "/work" },
       { host: join(this.dir, "session"), container: "/session" },
     ];
     // The npm cache is shared by every task (and survives sandboxes); export runs don't need it.
     if (config.sandbox.npmCache) {
       mkdirSync(config.sandbox.npmCache, { recursive: true });
-      mounts.push({ host: config.sandbox.npmCache, container: "/root/.npm" });
+      mounts.push({ host: config.sandbox.npmCache, container: "/root/.npm", shared: true });
     }
     this.sandbox = runSandbox({
       name: `hive-${this.id.slice(0, 8)}-${++this.runs}`,

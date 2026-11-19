@@ -35,7 +35,7 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
     "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
     "--dns-forward", "169.254.1.53",
     "--dns-host", "127.0.0.53",
-    "--", "/opt/hive-vm",
+    "--", "/usr/bin/env", "/opt/hive-vm",
     "--rootfs", "/r",
     "--cpus", "1",
     "--memory", "1024",

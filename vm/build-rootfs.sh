@@ -28,7 +28,7 @@ trap cleanup EXIT
 
 cid=$(podman create "$IMAGE" true)
 podman export "$cid" | tar -x -C "$tmp" --exclude='dev/*'
-podman rm "$cid"
+podman rm "$cid" >/dev/null
 cid=""
 
 if [[ ! -f "$tmp/usr/local/bin/hive-vm-init" ]]; then
@@ -44,10 +44,12 @@ trap - EXIT
 prev=$(readlink "$BASE/current" 2>/dev/null || true)
 ln -sfn "$id" "$BASE/current"
 
+# Only rootfs directories are ours to delete: anything else in $BASE is left alone.
 for path in "$BASE"/*; do
   [[ -L "$path" ]] && continue
   [[ -d "$path" ]] || continue
   name=$(basename "$path")
+  [[ "$name" =~ ^[0-9a-f]{12}$ ]] || continue
   [[ "$name" == "$id" ]] && continue
   [[ -n "$prev" && "$name" == "$prev" ]] && continue
   rm -rf "$path"

@@ -14,6 +14,8 @@
 #include <ctype.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -21,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define MAX_SHARES 8
@@ -335,6 +338,81 @@ static char **build_envp(const Options *o) {
   return envp;
 }
 
+/* ---- control directory ---------------------------------------------------- */
+
+/*
+ * argv and env travel to the guest as files in a virtiofs-shared control directory: libkrun
+ * puts krun_set_exec's argv/envp on the kernel command line, which holds only a couple of KB
+ * and breaks arguments containing quotes. The guest init reads the files before it execs.
+ */
+
+static char *make_ctl_dir(void) {
+  const char *base = getenv("XDG_RUNTIME_DIR");
+  struct stat st;
+  if (!base || !*base || stat(base, &st) != 0 || !S_ISDIR(st.st_mode)) base = "/tmp";
+  char *tmpl = NULL;
+  if (asprintf(&tmpl, "%s/hive-vm-XXXXXX", base) < 0) oom();
+  if (!mkdtemp(tmpl)) fail_runtime("mkdtemp(\"%s\") failed: %s", tmpl, strerror(errno));
+  return tmpl;
+}
+
+/* Each item is written followed by one NUL byte. Returns 0, or -1 with errno set. */
+static int write_nul_file(const char *dir, const char *name, char *const *items) {
+  char *path = NULL;
+  if (asprintf(&path, "%s/%s", dir, name) < 0) oom();
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) {
+    int err = errno;
+    free(path);
+    errno = err;
+    return -1;
+  }
+  for (size_t i = 0; items[i]; i++) {
+    const char *p = items[i];
+    size_t len = strlen(p) + 1; /* include the terminating NUL */
+    while (len > 0) {
+      ssize_t n = write(fd, p, len);
+      if (n < 0) {
+        if (errno == EINTR) continue;
+        int err = errno;
+        close(fd);
+        free(path);
+        errno = err;
+        return -1;
+      }
+      p += n;
+      len -= (size_t)n;
+    }
+  }
+  if (close(fd) != 0) {
+    int err = errno;
+    free(path);
+    errno = err;
+    return -1;
+  }
+  free(path);
+  return 0;
+}
+
+/* Remove the control directory and the two files in it; individual failures are ignored. */
+static void remove_ctl(const char *ctl) {
+  char *path = NULL;
+  if (asprintf(&path, "%s/argv", ctl) < 0) oom();
+  (void)unlink(path);
+  free(path);
+  if (asprintf(&path, "%s/env", ctl) < 0) oom();
+  (void)unlink(path);
+  free(path);
+  (void)rmdir(ctl);
+}
+
+static volatile sig_atomic_t signal_child = -1;
+
+static void forward_signal(int signo) {
+  pid_t child = (pid_t)signal_child;
+  if (child > 0) kill(child, signo);
+}
+
 /* ---- libkrun loading and invocation --------------------------------------- */
 
 static void *load_libkrun(void) {
@@ -467,6 +545,53 @@ int main(int argc, char **argv) {
 
   /* Normal run: every step below is fatal on failure. */
   if (!kvm_usable()) fail_runtime("/dev/kvm is not usable");
+
+  char *ctl = make_ctl_dir();
+  char **envp = build_envp(&o);
+  if (write_nul_file(ctl, "argv", &argv[command_index]) != 0) {
+    int err = errno;
+    remove_ctl(ctl);
+    fail_runtime("cannot write %s/argv: %s", ctl, strerror(err));
+  }
+  if (write_nul_file(ctl, "env", envp) != 0) {
+    int err = errno;
+    remove_ctl(ctl);
+    fail_runtime("cannot write %s/env: %s", ctl, strerror(err));
+  }
+
+  pid_t child = fork();
+  if (child < 0) {
+    int err = errno;
+    remove_ctl(ctl);
+    fail_runtime("fork failed: %s", strerror(err));
+  }
+  if (child > 0) {
+    /* Parent: forward termination signals, then tear down the control directory. */
+    signal_child = (sig_atomic_t)child;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = forward_signal;
+    sigemptyset(&sa.sa_mask);
+    (void)sigaction(SIGTERM, &sa, NULL);
+    (void)sigaction(SIGINT, &sa, NULL);
+    (void)sigaction(SIGHUP, &sa, NULL);
+    int status = 0;
+    pid_t waited;
+    do {
+      waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) {
+      int err = errno;
+      remove_ctl(ctl);
+      fail_runtime("waitpid(%d) failed: %s", (int)child, strerror(err));
+    }
+    remove_ctl(ctl);
+    if (WIFEXITED(status)) exit(WEXITSTATUS(status));
+    if (WIFSIGNALED(status)) exit(128 + WTERMSIG(status));
+    exit(1);
+  }
+
+  /* Child: load libkrun, share the control directory and boot the VM. */
   void *lib = load_libkrun();
   Krun k;
   load_symbols(lib, &k);
@@ -482,15 +607,18 @@ int main(int argc, char **argv) {
     KRUN_CALL(k, krun_add_virtiofs3, (uint32_t)ctx, tag, o.shares[i].host, (uint64_t)0,
               o.shares[i].ro);
   }
+  /* The control directory is not a task share: no tag in HIVE_SHARES, no 8-share limit. */
+  KRUN_CALL(k, krun_add_virtiofs3, (uint32_t)ctx, "hivectl", ctl, (uint64_t)0, false);
   const char *rlimits[] = {"7=65536:65536", NULL};
   KRUN_CALL(k, krun_set_rlimits, (uint32_t)ctx, rlimits);
   /* Empty, not NULL: a NULL port map would expose every listening guest port to the host. */
   const char *port_map[] = {NULL};
   KRUN_CALL(k, krun_set_port_map, (uint32_t)ctx, port_map);
   KRUN_CALL(k, krun_set_workdir, (uint32_t)ctx, "/");
-  char **envp = build_envp(&o);
-  KRUN_CALL(k, krun_set_exec, (uint32_t)ctx, EXEC_PATH,
-            (const char *const *)&argv[command_index], (const char *const *)envp);
+  /* Empty argv (never NULL) and only HIVE_CTL: everything else comes from the files. */
+  const char *exec_argv[] = {NULL};
+  const char *exec_envp[] = {"HIVE_CTL=hivectl", NULL};
+  KRUN_CALL(k, krun_set_exec, (uint32_t)ctx, EXEC_PATH, exec_argv, exec_envp);
   int32_t rc = k.krun_start_enter((uint32_t)ctx);
   fail_runtime("krun_start_enter failed: %d", rc);
 }

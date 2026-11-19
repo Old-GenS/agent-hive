@@ -8,6 +8,16 @@ R=/run/hive/root
 # The guest root is a read-only virtiofs mount, so /run/hive cannot be created in place: put /run
 # on a tmpfs first (it exists in every image), then the writable state below it.
 mount -t tmpfs -o mode=0755,size="${HIVE_TMPFS_SIZE:-50%}" hive-run /run
+# argv and env arrive as files: libkrun's kernel command line is too small for prompts and
+# mangles quotes.
+mkdir -p /run/hivectl
+mount -t virtiofs "$HIVE_CTL" /run/hivectl
+while IFS= read -r -d '' kv; do export "$kv"; done </run/hivectl/env
+mapfile -d '' -t HIVE_ARGV </run/hivectl/argv
+rm -f /run/hivectl/env /run/hivectl/argv
+umount /run/hivectl
+unset HIVE_CTL
+if (( ${#HIVE_ARGV[@]} == 0 )); then echo "hive-vm-init: no command" >&2; exit 127; fi
 mkdir -p /run/hive
 mount -t tmpfs -o mode=0755,size="${HIVE_TMPFS_SIZE:-50%}" hive-tmp /run/hive
 mkdir -p /run/hive/upper /run/hive/work "$R"
@@ -41,4 +51,4 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PI_SKIP_VERSION_CHECK=1
 export PI_TELEMETRY=0
 
-exec chroot "$R" /usr/bin/env --chdir="${HIVE_WORKDIR:-/}" "$@"
+exec chroot "$R" /usr/local/bin/no-ipv6 /usr/bin/env --chdir="${HIVE_WORKDIR:-/}" "${HIVE_ARGV[@]}"

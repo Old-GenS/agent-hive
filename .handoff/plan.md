@@ -226,3 +226,73 @@ Two workstreams; they share no files.
 - If `cc` in the executor VM lacks something the launcher needs, `dnf -y install` it; if the code cannot meet `-Werror` because of a libc warning you cannot fix, stop and report the exact warning.
 - If any step's instruction contradicts the existing code (a function or field it names does not exist), stop and report which one instead of guessing.
 - If a workstream fails its own acceptance, do not paper over it in the other workstream; report it.
+
+## Amendments
+
+### Amendment 1 — status of this plan
+
+Steps 0–12 are already implemented in the working tree (commit "WIP: libkrun backend"). Do not redo them. Apply only Amendments 2–7 below, then run the full **Acceptance** list 1–10 again. Testing on a real host found the problems these amendments fix. The affected files are all already in **Files to touch**.
+
+### Amendment 2 — pass argv and env through a control directory (overrides step 1 "Guest environment" and "Normal run" step 9, and step 3)
+
+libkrun passes `krun_set_exec` argv/envp to the guest on the kernel command line: about 2 KB at most, and embedded quotes break arguments. agent-hive passes whole prompts as arguments, so argv and env must not go through `krun_set_exec`.
+
+In `vm/hive-vm.c`, normal run (not `--dry-run`, not `--check`), after the `/dev/kvm` check and before loading libkrun:
+1. Control dir: base is `$XDG_RUNTIME_DIR` if it is set and is a directory, else `/tmp`. `mkdtemp("<base>/hive-vm-XXXXXX")`.
+2. Write `<ctl>/argv`: COMMAND then each ARG, every one followed by a single NUL byte. Write `<ctl>/env`: every guest env entry from step 1 (`NAME=VALUE` for `--env`/`--setenv`, plus `HIVE_SHARES`, `HIVE_WORKDIR`, `HIVE_DNS` as before), every one followed by a NUL byte. Create both with `open(path, O_WRONLY|O_CREAT|O_EXCL, 0600)` and check every write. On any failure, remove what was created and exit 1 with a message.
+3. `fork()`. Both processes stay in the same process group (do not call setpgid/setsid).
+   - Parent: install handlers for SIGTERM, SIGINT and SIGHUP that forward the signal to the child; `waitpid` the child (retry on EINTR); then `unlink` `<ctl>/argv` and `<ctl>/env` (ignore ENOENT) and `rmdir` `<ctl>`; exit with the child's exit status, or `128 + signal` if the child was killed by a signal.
+   - Child: load libkrun and configure exactly as in step 1, with these differences: also `krun_add_virtiofs3(ctx, "hivectl", ctl, 0, false)` (not counted in the 8-share limit, not listed in `HIVE_SHARES`); and call `krun_set_exec(ctx, "/usr/local/bin/hive-vm-init", (const char*[]){NULL}, (const char*[]){"HIVE_CTL=hivectl", NULL})` (empty argv array, never NULL; envp holds only `HIVE_CTL`).
+4. `--dry-run` and `--check` are unchanged and create no control dir.
+
+In `image/hive-vm-init`, right after the existing `mount -t tmpfs ... hive-run /run` line and before anything else:
+```bash
+mkdir -p /run/hivectl
+mount -t virtiofs "$HIVE_CTL" /run/hivectl
+while IFS= read -r -d '' kv; do export "$kv"; done </run/hivectl/env
+mapfile -d '' -t HIVE_ARGV </run/hivectl/argv
+rm -f /run/hivectl/env /run/hivectl/argv
+umount /run/hivectl
+unset HIVE_CTL
+if (( ${#HIVE_ARGV[@]} == 0 )); then echo "hive-vm-init: no command" >&2; exit 127; fi
+```
+The final exec uses `"${HIVE_ARGV[@]}"` instead of `"$@"` (see Amendment 4 for its exact form).
+
+### Amendment 3 — start the launcher through /usr/bin/env (overrides the `args` array in step 7)
+
+Fedora's SELinux policy for pasta forbids executing files under `$HOME`; pasta may only exec system binaries. In `buildLibkrunCommand`, the element after `"--"` is now `"/usr/bin/env"`, followed by `p.vmBin` and the rest unchanged:
+`[..., "--dns-host", p.hostDns, "--", "/usr/bin/env", p.vmBin, "--rootfs", ...]`.
+Update the expected array in `test/sandbox.test.mjs` to match.
+
+### Amendment 4 — no-ipv6 for the whole guest workload (overrides step 3, item 7)
+
+libkrun's TSI networking stalls on IPv6, so curl, npm and git hang. The image already has `/usr/local/bin/no-ipv6` (it makes AF_INET6 sockets fail, so programs fall back to IPv4; children inherit it). The final line of `image/hive-vm-init` becomes:
+```bash
+exec chroot "$R" /usr/local/bin/no-ipv6 /usr/bin/env --chdir="${HIVE_WORKDIR:-/}" "${HIVE_ARGV[@]}"
+```
+
+### Amendment 5 — vm/build-rootfs.sh safety (overrides step 5's delete rule)
+
+- The cleanup loop deletes only directories whose name matches `^[0-9a-f]{12}$`, still skipping `$id` and the previous `current` target. It never touches anything else in `$BASE`.
+- `podman rm "$cid"` output goes to `/dev/null`, so the script's only stdout line is `$dest`.
+
+### Amendment 6 — vm/build.sh must not relabel the repo (overrides step 2's podman command)
+
+In the podman fallback, replace `-v "<repo>/vm:/src:Z"` with `--security-opt label=disable -v "<repo>/vm:/src"`.
+
+### Amendment 7 — shared npm cache label on the podman backend (adds to steps 7 and 8)
+
+- In `src/sandbox.ts`, the mount type in `SandboxOptions.mounts` gains an optional `shared?: boolean`. `spawnPodman` uses the SELinux suffix `z` for a shared mount and `Z` otherwise (e.g. `host:/root/.npm:z`, `host:/work:Z`, read-only stays `ro,` before the letter). `buildLibkrunCommand` ignores `shared`.
+- In `src/tasks.ts`, the npm cache mount gets `shared: true`.
+
+### Amendment 8 — Acceptance additions
+
+Executor (runnable in the VM):
+15. `grep -c '"/usr/bin/env",' src/sandbox.ts` prints a number ≥ 1, and `node --test 'test/*.test.mjs'` still passes with the updated expected array.
+16. `grep -c 'no-ipv6 /usr/bin/env' image/hive-vm-init` prints `1`; `grep -c 'HIVE_ARGV' image/hive-vm-init` prints a number ≥ 2.
+17. `grep -cE '\^\[0-9a-f\]\{12\}\$' vm/build-rootfs.sh` prints `1`.
+18. `grep -c 'label=disable' vm/build.sh` prints `1`.
+
+Host-only (the planner runs these):
+19. A guest run of `python3 -c 'import sys,json; print(json.dumps(sys.argv[1:]))'` with arguments `'one two'`, `'q"uote'`, `"it's"` and a 300 000-character argument prints them intact (lengths match).
+20. After any run, no `hive-vm-*` directory is left in `$XDG_RUNTIME_DIR`.
