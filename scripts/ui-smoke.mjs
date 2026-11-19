@@ -268,6 +268,21 @@ try {
   assert(checkRows >= 2, `this computer lists its checks (got ${checkRows})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-computer.png") });
 
+  // ── theme toggle: System -> Light -> Dark -> System ──
+  const themeAttr = () => page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  await page.click("#themeBtn");
+  assert((await themeAttr()) === "light", "theme toggle switches to light");
+  await page.click("#themeBtn");
+  assert((await themeAttr()) === "dark", "theme toggle switches to dark");
+  const darkBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  assert(darkBg === "rgb(15, 17, 21)", `dark theme applies its background (got ${darkBg})`);
+  await page.reload();
+  await page.waitForSelector("#themeBtn");
+  assert((await themeAttr()) === "dark", "the theme choice survives a reload");
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-dark.png") });
+  await page.click("#themeBtn");
+  assert((await themeAttr()) === null, "theme toggle returns to following the system");
+
   // ── phone: runs view at 390 px ──
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${BASE}/ui/#runs`);

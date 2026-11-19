@@ -24,8 +24,9 @@
   --radius-lg: 12px;
 }
 
+/* Dark theme: follows the system unless the viewer picked Light or Dark (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0F1115;
     --surface: #171A20;
     --surface-2: #1D2128;
@@ -45,7 +46,35 @@
     --danger-soft: #3A1714;
     --honey: #F2B53A;
     --honey-soft: #3A2C0E;
+    color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0F1115;
+  --surface: #171A20;
+  --surface-2: #1D2128;
+  --border: #2A2F38;
+  --border-strong: #3A404B;
+  --text: #ECEDEF;
+  --text-2: #B8BCC4;
+  --text-3: #8E939C;
+  --accent: #6B9BFF;
+  --accent-hover: #8DB2FF;
+  --accent-soft: #1C2A45;
+  --ok: #5CC98A;
+  --ok-soft: #15301F;
+  --warn: #F0B45A;
+  --warn-soft: #33270F;
+  --danger: #FF7A6E;
+  --danger-soft: #3A1714;
+  --honey: #F2B53A;
+  --honey-soft: #3A2C0E;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 *,
@@ -1418,4 +1447,21 @@ a.btn {
   padding: 0 18px;
   font-size: 14px;
   font-weight: 600;
+}
+
+/* Theme toggle in the header */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.theme-btn svg {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .theme-label {
+    display: none;
+  }
 }

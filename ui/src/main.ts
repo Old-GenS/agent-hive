@@ -420,7 +420,7 @@ function renderApp(user: { name: string }): void {
       { class: "header-inner" },
       el("div", { class: "brand" }, hiveLogo(), "hive"),
       el("nav", { "aria-label": "Main" }, navRunsEl, navSettingsEl),
-      el("div", { class: "header-user" }, el("span", { class: "user-name" }, user.name), logout),
+      el("div", { class: "header-user" }, el("span", { class: "user-name" }, user.name), themeButton(), logout),
     ),
   );
   mainEl = el("main", { class: "main" });
@@ -1374,6 +1374,81 @@ function computerSections(info: SystemInfo): HTMLElement[] {
 
   return [summary, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
 }
+
+// ── theme ──
+
+type Theme = "system" | "light" | "dark";
+const THEME_KEY = "hive_theme";
+const THEME_ORDER: Theme[] = ["system", "light", "dark"];
+const THEME_LABEL: Record<Theme, string> = { system: "System", light: "Light", dark: "Dark" };
+
+function readTheme(): Theme {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === "light" || saved === "dark") return saved;
+  } catch {
+    // Storage unavailable: follow the system.
+  }
+  return "system";
+}
+
+function applyTheme(theme: Theme): void {
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+}
+
+function themeIcon(theme: Theme): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.5");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  const d: Record<Theme, string> = {
+    // a monitor
+    system: "M2.5 3.5h11v7h-11z M6 13.5h4 M8 10.5v3",
+    // a sun
+    light: "M8 5.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z M8 1.5v1.5 M8 13v1.5 M1.5 8H3 M13 8h1.5 M3.4 3.4l1 1 M11.6 11.6l1 1 M3.4 12.6l1-1 M11.6 4.4l1-1",
+    // a moon
+    dark: "M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z",
+  };
+  path.setAttribute("d", d[theme]);
+  svg.append(path);
+  return svg;
+}
+
+/** Header button cycling System -> Light -> Dark; the choice is kept in this browser. */
+function themeButton(): HTMLButtonElement {
+  const button = el("button", { id: "themeBtn", class: "btn btn-small btn-ghost theme-btn", type: "button" });
+  const render = () => {
+    const theme = readTheme();
+    const next = THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length];
+    button.replaceChildren(themeIcon(theme), el("span", { class: "theme-label" }, THEME_LABEL[theme]));
+    button.setAttribute("aria-label", `Theme: ${THEME_LABEL[theme]}. Switch to ${THEME_LABEL[next]}`);
+    button.title = `Theme: ${THEME_LABEL[theme]} (click for ${THEME_LABEL[next]})`;
+  };
+  button.onclick = () => {
+    const theme = readTheme();
+    const next = THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length];
+    try {
+      if (next === "system") localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, next);
+    } catch {
+      // Not remembered, but still applied for this page.
+    }
+    applyTheme(next);
+    render();
+  };
+  render();
+  return button;
+}
+
+applyTheme(readTheme());
 
 // ── boot ──
 
