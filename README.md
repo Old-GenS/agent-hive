@@ -232,6 +232,7 @@ In addition to the provider and sandbox settings above:
 | `HIVE_RUNTIME` | `auto` | `auto`, `libkrun`, `krun`, `runsc`, `crun`, `runc` |
 | `HIVE_IMAGE` | `localhost/agent-hive-sandbox:latest` | Sandbox image |
 | `WORKSPACE` | `/tmp/hive-workspace` | Task directories |
+| `HIVE_GIT_PROTOCOL` | `https` | How the server clones and pushes `owner/name` repos: `https` uses the host's git credentials (e.g. `gh auth login`), `ssh` uses the host's SSH keys (per-repo deploy keys, handy across several VPSes) |
 
 ## Development
 

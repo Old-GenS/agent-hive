@@ -64,6 +64,9 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 
 The `hive` CLI needs none of this: it uses the user's own git credentials and `gh` login on the host; nothing is passed into the VM.
 
+The server clones and pushes over HTTPS by default, with the host's git credentials (a `gh`
+login is enough for a single box). For the deploy-key setup below, set `HIVE_GIT_PROTOCOL=ssh`.
+
 | Account | Role | Auth | Scope |
 |---------|------|------|-------|
 | **<owner>** | Repo owner | SSH deploy keys (per repo, write access) | Only repos with a key installed |

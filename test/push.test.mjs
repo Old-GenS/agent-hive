@@ -12,12 +12,13 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const runsDir = mkdtempSync(join(tmpdir(), "hive-push-test-"));
 process.env.HIVE_RUNS_DIR = runsDir;
 process.env.HIVE_RUNTIME = "libkrun";
+delete process.env.HIVE_GIT_PROTOCOL;
 process.env.GIT_AUTHOR_NAME = "t";
 process.env.GIT_AUTHOR_EMAIL = "t@t";
 process.env.GIT_COMMITTER_NAME = "t";
 process.env.GIT_COMMITTER_EMAIL = "t@t";
 
-const { normalizeCliRepo, githubSlug, gitConfigIdentity, prepareRepo } = await import("../dist/git.js");
+const { normalizeCliRepo, normalizeRepo, githubSlug, gitConfigIdentity, prepareRepo } = await import("../dist/git.js");
 const { applyRun, openPr, patchSubject, prArgs, pushRun } = await import("../dist/runs.js");
 
 const IDENT = ["-c", "user.name=t", "-c", "user.email=t@t"];
@@ -58,6 +59,18 @@ function writeMeta(dir, meta) {
     }),
   );
 }
+
+test("normalizeRepo (server) uses https by default and ssh with HIVE_GIT_PROTOCOL=ssh", () => {
+  assert.deepEqual(normalizeRepo("a/b"), { url: "https://github.com/a/b.git", name: "b" });
+  assert.equal(normalizeRepo("git@github.com:a/b.git").url, "https://github.com/a/b.git");
+  // config.ts reads HIVE_GIT_PROTOCOL at import time, so check ssh in a fresh process.
+  const out = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", 'const { normalizeRepo } = await import("./dist/git.js"); console.log(normalizeRepo("a/b").url);'],
+    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, HIVE_GIT_PROTOCOL: "ssh" } },
+  );
+  assert.equal(out.trim(), "git@github.com:a/b.git");
+});
 
 test("normalizeCliRepo accepts owner/name and git URLs, rejects option-like strings and paths", () => {
   assert.deepEqual(normalizeCliRepo("a/b"), { url: "https://github.com/a/b.git", name: "b" });

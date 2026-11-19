@@ -1,5 +1,5 @@
 /**
- * Host-side git. Everything here runs with the host's SSH keys, so it only ever touches the
+ * Host-side git. Everything here runs with the host's git credentials, so it only ever touches the
  * pristine clone (<task>/origin), which no sandbox mounts. The sandbox works on a separate copy
  * (<task>/work); its results come back as patch files and are applied here with `git am`, which
  * treats them as data (it refuses paths inside .git and writes through symlinks).
@@ -29,7 +29,8 @@ export async function git(args: string[], cwd?: string, timeout = 60_000) {
 const OWNER_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 /**
- * Normalise a repo reference to an SSH URL for deploy-key auth. Accepts owner/repo,
+ * Normalise a repo reference to a github.com URL: https (the host's git credential helper, e.g. a
+ * `gh` login) or, with HIVE_GIT_PROTOCOL=ssh, SSH (deploy keys). Accepts owner/repo,
  * https://github.com/owner/repo(.git) and git@github.com:owner/repo(.git). Anything else is
  * refused (file paths, other hosts, option-looking strings) unless HIVE_ALLOW_ANY_REPO_URL=1.
  */
@@ -44,7 +45,8 @@ export function normalizeRepo(input: string): { url: string; name: string } {
   if (path) {
     path = path.replace(/\.git$/, "");
     if (path.split("/").some((part) => part === "." || part === "..")) throw new Error(`Invalid repo: ${input}`);
-    return { url: `git@github.com:${path}.git`, name: path.split("/")[1] };
+    const url = config.git.protocol === "ssh" ? `git@github.com:${path}.git` : `https://github.com/${path}.git`;
+    return { url, name: path.split("/")[1] };
   }
   if (config.git.allowAnyRepoUrl && !s.startsWith("-")) {
     const name = s.replace(/\/+$/, "").replace(/\.git$/, "").split(/[/:]/).pop() || "repo";

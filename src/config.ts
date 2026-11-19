@@ -53,6 +53,12 @@ export function resolveProvider(explicit?: string): string | undefined {
   return Object.keys(PROVIDERS).find((p) => providerKey(p));
 }
 
+function gitProtocol(): "https" | "ssh" {
+  const raw = process.env.HIVE_GIT_PROTOCOL || "https";
+  if (raw !== "https" && raw !== "ssh") throw new Error(`HIVE_GIT_PROTOCOL must be https or ssh, got "${raw}"`);
+  return raw;
+}
+
 export const config = {
   port: int("PORT", 8080),
   host: process.env.HOST || "127.0.0.1",
@@ -84,6 +90,9 @@ export const config = {
     authorEmail: process.env.GIT_AUTHOR_EMAIL || "agent-hive@users.noreply.github.com",
     branchPrefix: process.env.HIVE_BRANCH_PREFIX || "hive/",
     pushRemote: process.env.HIVE_PUSH_REMOTE || "origin",
+    // How the server clones and pushes github.com repos: "https" uses the host's git credential
+    // helper (e.g. a `gh` login); "ssh" uses the host's SSH keys (per-repo deploy keys).
+    protocol: gitProtocol(),
     // Only for local testing: accept repo URLs other than github.com (file paths, other hosts).
     allowAnyRepoUrl: process.env.HIVE_ALLOW_ANY_REPO_URL === "1",
   },
