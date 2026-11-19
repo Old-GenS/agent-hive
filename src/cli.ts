@@ -7,15 +7,17 @@
  * HIVE_DOTENV_PATH and HIVE_RUNTIME are in place before ./config.ts reads them.
  */
 import { parseArgs } from "node:util";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
-const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--json] "<prompt>"
-hive run [-m model] [-p provider] [-t thinking] [--json] -f <prompt-file>
+const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
+hive run [-m model] [-p provider] [-t thinking] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
 hive log [run] [--json]
 hive diff [run] [--stat]
 hive apply [run] [--branch <name>]
+hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
 hive list
 hive clean <run> | --all
 `;
@@ -43,16 +45,26 @@ async function cmdRun(args: string[]): Promise<number> {
       thinking: { type: "string", short: "t" },
       json: { type: "boolean" },
       file: { type: "string", short: "f" },
+      repo: { type: "string" },
+      ref: { type: "string" },
     },
   });
-  const { repoTop, isDirty } = await import("./git.js");
+  const { normalizeCliRepo, repoTop, isDirty } = await import("./git.js");
   const { startRun, listRuns } = await import("./runs.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
   const { renderEvent } = await import("./render.js");
 
-  const repo = await repoTop(process.cwd());
   const prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[0] ?? "");
   if (!prompt.trim()) throw new Error("a prompt is required");
+  if (values.ref !== undefined && values.repo === undefined) throw new Error("--ref needs --repo");
+
+  let repo: string | undefined;
+  let remote: { url: string; name: string; ref?: string } | undefined;
+  if (values.repo !== undefined) {
+    remote = { ...normalizeCliRepo(values.repo), ref: values.ref };
+  } else {
+    repo = await repoTop(process.cwd());
+  }
 
   if (!libkrunAvailable()) {
     console.error("hive: can't start a VM:");
@@ -63,7 +75,7 @@ async function cmdRun(args: string[]): Promise<number> {
     return 1;
   }
 
-  if (await isDirty(repo)) {
+  if (repo !== undefined && (await isDirty(repo))) {
     console.error("hive: uncommitted changes are not included; the agent works on HEAD");
   }
 
@@ -91,6 +103,7 @@ async function cmdRun(args: string[]): Promise<number> {
   try {
     run = await startRun({
       repo,
+      remote,
       prompt,
       provider: values.provider,
       model: values.model,
@@ -112,7 +125,8 @@ async function cmdRun(args: string[]): Promise<number> {
       `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
     );
     console.error(`hive diff ${name}`);
-    console.error(`hive apply ${name}`);
+    if (meta.source !== "remote") console.error(`hive apply ${name}`);
+    console.error(`hive push ${name}`);
     return 0;
   }
   if (meta.status === "aborted") {
@@ -176,6 +190,26 @@ async function cmdApply(args: string[]): Promise<number> {
   return 0;
 }
 
+async function cmdPush(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      branch: { type: "string" },
+      remote: { type: "string" },
+      pr: { type: "boolean" },
+      base: { type: "string" },
+    },
+  });
+  if (values.base !== undefined && !values.pr) throw new Error("--base needs --pr");
+  const { openPr, pushRun, resolveRun } = await import("./runs.js");
+  const dir = resolveRun(positionals[0]);
+  const result = await pushRun(dir, { branch: values.branch, remote: values.remote });
+  process.stdout.write(`hive: pushed ${result.commits} commit(s) to ${result.branch} on ${result.url}\n`);
+  if (values.pr) process.stdout.write((await openPr(dir, { base: values.base })) + "\n");
+  return 0;
+}
+
 async function cmdList(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { listRuns } = await import("./runs.js");
@@ -217,6 +251,23 @@ async function cmdClean(args: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * The user's git config value for `key`, or undefined. Local copy of gitConfigIdentity(): the
+ * identity has to be in the environment before ./config.ts is first imported.
+ */
+function gitConfigValue(key: string): string | undefined {
+  try {
+    const value = execFileSync("git", ["config", "--get", key], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function main(): Promise<void> {
   process.env.HIVE_DOTENV_PATH ||= join(
     process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
@@ -229,6 +280,18 @@ async function main(): Promise<void> {
     return;
   }
   process.env.HIVE_RUNTIME = "libkrun";
+
+  // The commit identity defaults to the user's own git identity.
+  if (!process.env.GIT_AUTHOR_NAME) {
+    const name = gitConfigValue("user.name");
+    const email = gitConfigValue("user.email");
+    if (name && email) {
+      process.env.GIT_AUTHOR_NAME = name;
+      process.env.GIT_AUTHOR_EMAIL = email;
+      process.env.GIT_COMMITTER_NAME = name;
+      process.env.GIT_COMMITTER_EMAIL = email;
+    }
+  }
 
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === "--help" || cmd === "-h") {
@@ -248,6 +311,9 @@ async function main(): Promise<void> {
       return;
     case "apply":
       process.exitCode = await cmdApply(rest);
+      return;
+    case "push":
+      process.exitCode = await cmdPush(rest);
       return;
     case "list":
       process.exitCode = await cmdList(rest);

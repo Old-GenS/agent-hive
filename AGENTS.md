@@ -53,20 +53,22 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
    of exported patches), never in a run's `work/`. Text crosses into and out of the VM only as
    files in `io/` and patches in `out/`.
 
-## Two-account GitHub model
+## GitHub access (server)
+
+The `hive` CLI needs none of this: it uses the user's own git credentials and `gh` login on the host; nothing is passed into the VM.
 
 | Account | Role | Auth | Scope |
 |---------|------|------|-------|
-| **stansz** | Repo owner | SSH deploy keys (per repo, write access) | Only repos with a key installed |
-| **oatclaw88** | Hive's bot account | `gh` CLI login | Repo list/search, forks |
+| **<owner>** | Repo owner | SSH deploy keys (per repo, write access) | Only repos with a key installed |
+| **<bot>** | Hive's bot account | `gh` CLI login | Repo list/search, forks |
 
 If the server is compromised, the attacker gets the bot account and the per-repo deploy keys, not
 full access to the owner's GitHub. The sandbox gets neither.
 
-- **Your repos:** task with `repo=stansz/<repo>` → host clones via the deploy key → agent works in
+- **Your repos:** task with `repo=<owner>/<repo>` → host clones via the deploy key → agent works in
   the sandbox → host pushes `hive/<id>` via the deploy key. Merge or open a PR yourself.
-- **External repos:** fork into oatclaw88 (UI "Fork" button or `POST /api/github/fork`), then run
-  the task on `oatclaw88/<repo>`. PR creation is not built yet.
+- **External repos:** fork into <bot> (UI "Fork" button or `POST /api/github/fork`), then run
+  the task on `<bot>/<repo>`. PR creation is not built yet.
 
 ### Adding a repo
 
@@ -74,16 +76,15 @@ full access to the owner's GitHub. The sandbox gets neither.
 # on the server, as the user that runs agent-hive
 ssh-keygen -t ed25519 -f ~/.ssh/<repo>_deploy -N ""
 # from your machine (or repo Settings → Deploy keys → Allow write access)
-gh repo deploy-key add - --repo stansz/<repo> --title hive-$(date +%Y%m%d) --allow-write < <repo>_deploy.pub
+gh repo deploy-key add - --repo <owner>/<repo> --title hive-$(date +%Y%m%d) --allow-write < <repo>_deploy.pub
 # on the server: add  IdentityFile ~/.ssh/<repo>_deploy  to the Host github.com block in ~/.ssh/config
-git ls-remote git@github.com:stansz/<repo>.git   # test
+git ls-remote git@github.com:<owner>/<repo>.git   # test
 ```
 
 ### Commit author
 
 Commits made in the sandbox use `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from `.env` (default
-`agent-hive`). Set them to `oatclaw88` / `oatclaw88@users.noreply.github.com` to keep the old
-attribution.
+`agent-hive`).
 
 ## Status
 

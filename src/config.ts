@@ -70,6 +70,7 @@ export const config = {
     authorName: process.env.GIT_AUTHOR_NAME || "agent-hive",
     authorEmail: process.env.GIT_AUTHOR_EMAIL || "agent-hive@users.noreply.github.com",
     branchPrefix: process.env.HIVE_BRANCH_PREFIX || "hive/",
+    pushRemote: process.env.HIVE_PUSH_REMOTE || "origin",
     // Only for local testing: accept repo URLs other than github.com (file paths, other hosts).
     allowAnyRepoUrl: process.env.HIVE_ALLOW_ANY_REPO_URL === "1",
   },

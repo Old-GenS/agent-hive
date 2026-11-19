@@ -69,9 +69,10 @@ See [stansz/hive-mcp](https://github.com/stansz/hive-mcp).
 
 ## Command line (hive)
 
-`hive` runs an agent on the **current local git repository** in a throwaway libkrun microVM and
-exports its commits as patch files — the local-repo counterpart of the server. Build everything,
-then link the binary:
+`hive` runs an agent on a git repository in a throwaway libkrun microVM and exports its commits as
+patch files — the local-repo counterpart of the server. Run it on the **current local
+repository**, or point it at a remote with `--repo` when you don't have a checkout. Build
+everything, then link the binary:
 
 ```bash
 npm ci && npm run build && npm run build:image && npm run build:vm && npm run build:rootfs && npm link
@@ -80,17 +81,43 @@ npm ci && npm run build && npm run build:image && npm run build:vm && npm run bu
 Keys go in `~/.config/agent-hive/env` (same variables as the server, e.g.
 `OPENROUTER_API_KEY=sk-or-...`; optional `DEFAULT_PROVIDER`, `DEFAULT_MODEL`, `DEFAULT_THINKING`).
 The CLI only supports the libkrun backend, so it needs `/dev/kvm`, libkrun, `pasta`, the launcher
-and the rootfs. Run it inside any git repo; it works on `HEAD`, so uncommitted changes are not
-included.
+and the rootfs. Without `--repo` it works on the current repo's `HEAD`, so uncommitted changes are
+not included.
 
 | Command | What it does |
 |---------|--------------|
-| `hive run "<prompt>"` | Clone the current repo into a new run, run the agent in a VM, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--json`, `-f <prompt-file>`. |
+| `hive run "<prompt>"` | Clone the current repo into a new run, run the agent in a VM, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--json`, `-f <prompt-file>`, `--repo <owner/name|url>`, `--ref <branch>`. |
 | `hive log [run]` | Replay a run's event log; follows it live while the run is going. `--json` prints raw events. |
 | `hive diff [run]` | Show the run's changes; `--stat` gives a summary. |
-| `hive apply [run]` | Apply the run's patches to the current repo (clean, at the run's base), or `--branch <name>` to put them on a new branch. |
+| `hive apply [run]` | Apply the run's patches to the current repo (clean, at the run's base), or `--branch <name>` to put them on a new branch. Local runs only. |
+| `hive push [run]` | Put the run's commits on a branch and push it with your own git credentials. Options: `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for the PR's base branch. |
 | `hive list` | List runs, newest first. |
 | `hive clean <run>` | Delete a run; `--all` deletes every finished run (live runs are kept). |
+
+`--repo` accepts `owner/name`, an `https://`, `http://` or `ssh://` URL, or a scp-style
+`git@host:owner/name.git`; `--ref` picks the branch to start from (default: the repo's default
+branch). A run started with `--repo` is a remote run: `hive diff` and `hive log` work as usual, but
+there is no local checkout to apply to — use `hive push`.
+
+`hive push` runs host-side git as you, so it uses your own git credentials (your SSH key, credential
+helper, or `gh auth setup-git`), and `--pr` uses your `gh` login (`gh auth login`). Pushes are never
+forced, and nothing new is passed into the VM. New runs use your git `user.name`/`user.email` as
+the commit identity unless `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` are set.
+
+Settings, like keys, can go in `~/.config/agent-hive/env`:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where run directories are kept |
+| `HIVE_BRANCH_PREFIX` | `hive/` | Prefix for the branch `hive push` creates |
+| `HIVE_PUSH_REMOTE` | `origin` | Remote `hive push` pushes to for local runs |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | your git `user.name` / `user.email` | Commit identity for runs and pushes |
+| `DEFAULT_PROVIDER` | first provider with a key | Provider used when `-p` is omitted |
+| `DEFAULT_MODEL` | per-provider default | Model used when `-m` is omitted |
+| `DEEPSEEK_API_KEY`, `ZAI_API_KEY` (or `ZAI_CODE`), `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | — | Provider keys; only the selected one enters the VM |
+| `HIVE_SANDBOX_MEMORY` | `1g` | Memory for the VM |
+| `HIVE_SANDBOX_CPUS` | `1` | vCPUs for the VM |
+| `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | Kill the run after this many minutes |
 
 `[run]` defaults to the newest run. Runs live under `~/.cache/agent-hive/runs` (`HIVE_RUNS_DIR`
 overrides it), one directory per run:

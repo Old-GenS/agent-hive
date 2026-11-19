@@ -9,18 +9,33 @@
  * The VM writes its events to io/events.jsonl, never to stdout; the host follows that file.
  * The host never runs git inside work/ after prepareLocal returns.
  */
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { config, PROVIDERS, providerKey, resolveProvider } from "./config.js";
 import { runSandbox, type SandboxOptions } from "./sandbox.js";
-import { git, gitIdentity, isDirty, prepareLocal, validateBranch } from "./git.js";
+import {
+  applyAndPush,
+  git,
+  githubSlug,
+  gitIdentity,
+  isDirty,
+  prepareLocal,
+  prepareRepo,
+  validateBranch,
+} from "./git.js";
 import { followJsonl } from "./follow.js";
 import { addUsage, emptyUsage, type Usage } from "./render.js";
+
+const execFileAsync = promisify(execFile);
 
 export type RunStatus = "running" | "done" | "failed" | "aborted";
 
 export interface RunMeta {
   repo: string;
+  /** "local" when the run cloned the user's checkout; "remote" when it cloned a URL. */
+  source: "local" | "remote";
   base: string;
   provider: string;
   model: string;
@@ -31,6 +46,11 @@ export interface RunMeta {
   pid: number;
   commits: number;
   usage: Usage;
+  /** text of the agent's latest assistant message, written when the run ends */
+  summary?: string;
+  /** where `hive push` put the run's commits */
+  pushed?: { branch: string; url: string; at: number };
+  prUrl?: string;
   error?: string;
   createdAt: number;
   finishedAt?: number;
@@ -152,6 +172,7 @@ export async function diffRun(dir: string, stat: boolean): Promise<string> {
  */
 export async function applyRun(dir: string, repo: string, branch?: string): Promise<string> {
   const meta = readMeta(dir);
+  if (meta.source === "remote") throw new Error("this run is from " + meta.repo + "; use hive push");
   if (meta.status !== "done") throw new Error(`run is ${meta.status}; nothing to apply`);
   if (!(meta.commits > 0)) throw new Error("nothing to apply");
   if (realpathSync(repo) !== realpathSync(meta.repo)) throw new Error(`this run belongs to ${meta.repo}`);
@@ -183,8 +204,113 @@ export async function applyRun(dir: string, repo: string, branch?: string): Prom
   return `on branch ${branch}: ${meta.commits} commit(s)`;
 }
 
+/** Subject of the first `Subject: ` line in a format-patch file, with the `[PATCH …]` tag off. */
+export function patchSubject(patchText: string): string {
+  const line = patchText.split("\n").find((l) => l.startsWith("Subject: "));
+  if (line === undefined) return "";
+  return line
+    .slice("Subject: ".length)
+    .replace(/^\[PATCH[^\]]*\]\s*/, "")
+    .trim();
+}
+
+/** `gh pr create` arguments for a pushed run. */
+export function prArgs(o: {
+  slug: string;
+  branch: string;
+  title: string;
+  body: string;
+  base?: string;
+}): string[] {
+  const args = ["pr", "create", "--repo", o.slug, "--head", o.branch, "--title", o.title, "--body", o.body];
+  if (o.base) args.push("--base", o.base);
+  return args;
+}
+
+/**
+ * Put a finished run's commits on a branch in the repo's push remote with the user's own git
+ * credentials (never forced). Remote runs push back to the URL they were cloned from.
+ */
+export async function pushRun(
+  dir: string,
+  o: { branch?: string; remote?: string } = {},
+): Promise<{ branch: string; url: string; commits: number }> {
+  const meta = readMeta(dir);
+  if (meta.status !== "done") throw new Error(`run is ${meta.status}; nothing to push`);
+  if (!(meta.commits > 0)) throw new Error("nothing to push");
+  const branch = validateBranch(o.branch ?? config.git.branchPrefix + basename(dir));
+
+  let url: string;
+  if (meta.source === "remote") {
+    url = await git(["remote", "get-url", "origin"], join(dir, "origin"));
+  } else {
+    const remoteName = o.remote ?? config.git.pushRemote;
+    try {
+      url = await git(["remote", "get-url", "--push", remoteName], meta.repo);
+    } catch {
+      throw new Error(`repo ${meta.repo} has no remote "${remoteName}"`);
+    }
+    rmSync(join(dir, "origin"), { recursive: true, force: true });
+    await git(["clone", "-q", "--no-hardlinks", "--", meta.repo, join(dir, "origin")]);
+    await git(["remote", "set-url", "origin", url], join(dir, "origin"));
+    try {
+      await git(["cat-file", "-e", `${meta.base}^{commit}`], join(dir, "origin"));
+    } catch {
+      throw new Error(`the run's base commit is no longer in ${meta.repo}`);
+    }
+  }
+
+  let commits: number;
+  try {
+    commits = await applyAndPush(dir, meta.base, branch, false);
+  } catch (err) {
+    throw new Error(`${(err as Error).message} (check your git credentials for ${url})`);
+  }
+  meta.pushed = { branch, url, at: Date.now() };
+  writeMeta(dir, meta);
+  return { branch, url, commits };
+}
+
+/** Open a GitHub pull request for a pushed run through the user's `gh` login. */
+export async function openPr(dir: string, o: { base?: string } = {}): Promise<string> {
+  const meta = readMeta(dir);
+  if (!meta.pushed) throw new Error("push the run first");
+  const slug = githubSlug(meta.pushed.url);
+  if (!slug) throw new Error(`pull requests need a github.com remote (pushed to ${meta.pushed.url})`);
+
+  const first = patchFiles(dir)[0];
+  let title = first ? patchSubject(readFileSync(first, "utf8")) : "";
+  if (!title) title = meta.prompt.slice(0, 70);
+  const body = meta.summary ?? title;
+
+  let stdout: string;
+  try {
+    const result = await execFileAsync(
+      "gh",
+      prArgs({ slug, branch: meta.pushed.branch, title, body, base: o.base }),
+      { timeout: 120_000 },
+    );
+    stdout = result.stdout;
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException & { stderr?: string | Buffer };
+    if (e.code === "ENOENT") {
+      throw new Error("gh is not installed; install the GitHub CLI and run gh auth login to open pull requests");
+    }
+    const detail = e.stderr ? String(e.stderr) : e.message;
+    throw new Error(`gh pr create failed: ${detail.trim()}`);
+  }
+
+  const prUrl = stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  meta.prUrl = prUrl;
+  writeMeta(dir, meta);
+  return prUrl;
+}
+
 export interface StartRunOptions {
-  repo: string;
+  /** Local repo to clone; mutually exclusive with `remote`. */
+  repo?: string;
+  /** Remote repo to clone; mutually exclusive with `repo`. */
+  remote?: { url: string; name: string; ref?: string };
   prompt: string;
   provider?: string;
   model?: string;
@@ -198,6 +324,7 @@ export interface StartRunOptions {
  * starts; afterwards the outcome is recorded in meta.json and returned.
  */
 export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta: RunMeta }> {
+  if ((o.repo !== undefined) === (o.remote !== undefined)) throw new Error("startRun needs repo or remote");
   const provider = resolveProvider(o.provider);
   if (!provider || !PROVIDERS[provider]) {
     throw new Error(`Unknown or missing provider. Supported: ${Object.keys(PROVIDERS).join(", ")}`);
@@ -209,13 +336,16 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   const thinking = o.thinking || config.defaultThinking;
   if (!THINKING.includes(thinking)) throw new Error(`thinkingLevel must be one of ${THINKING.join(", ")}`);
 
-  const dir = makeRunDir(o.repo);
-  const base = await prepareLocal(o.repo, join(dir, "work"));
+  const dir = makeRunDir(o.remote ? o.remote.name : (o.repo as string));
+  const base = o.remote
+    ? await prepareRepo(dir, o.remote.url, o.remote.ref)
+    : await prepareLocal(o.repo as string, join(dir, "work"));
   writeFileSync(join(dir, "io", "prompt.md"), o.prompt);
   writeFileSync(join(dir, "io", "system.md"), config.systemPrompt);
 
   const meta: RunMeta = {
-    repo: o.repo,
+    repo: o.remote ? o.remote.url : (o.repo as string),
+    source: o.remote ? "remote" : "local",
     base,
     provider,
     model,
@@ -259,8 +389,16 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     command,
   });
 
+  let summary: string | undefined;
   const follower = followJsonl(join(dir, "io", "events.jsonl"), (e) => {
     addUsage(meta.usage, e);
+    if (e?.type === "message_end" && e.message?.role === "assistant") {
+      const text = (Array.isArray(e.message.content) ? e.message.content : [])
+        .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+        .map((b: any) => b.text)
+        .join("");
+      if (text) summary = text;
+    }
     o.onEvent(e);
   });
   const onAbort = () => {
@@ -314,6 +452,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
 
   meta.status = status;
   if (error !== undefined) meta.error = error;
+  if (summary !== undefined) meta.summary = summary.slice(0, 60_000);
   meta.finishedAt = Date.now();
   writeMeta(dir, meta);
   return { dir, meta };

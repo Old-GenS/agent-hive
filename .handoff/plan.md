@@ -1,258 +1,216 @@
 ## Goal
 
-Add a `hive` command-line tool to agent-hive that runs a coding agent on the current local git
-repo inside a throwaway libkrun microVM, the same way pi-vm and dsh-vm work:
+Extend the `hive` CLI (`src/cli.ts`, `src/runs.ts`) with git-host support, with nothing tied to any
+particular user or account:
 
-- `hive run "<prompt>"` clones the current repo with `--no-hardlinks` into a run dir, boots a VM
-  with the existing launcher (`runSandbox()` in `src/sandbox.ts`, libkrun backend), passes the
-  prompt as a file, shows the agent's progress live by following a JSONL log file that pi writes
-  inside the VM, then exports the agent's commits as patch files.
-- `hive log`, `hive diff`, `hive apply`, `hive list`, `hive clean` manage runs.
-- Text moves between host and VM only through files in shared folders. Never parse the VM's
-  stdout.
-
-The server code (`src/index.ts`, `src/auth.ts`, `src/routes/`, `src/tasks.ts`, `ui/`) stays
-exactly as it is.
+- `hive run --repo <ref> [--ref <branch>] "<prompt>"` runs on a remote repo without a local checkout.
+- `hive push [run] [--branch <name>] [--remote <name>] [--pr] [--base <branch>]` puts the run's
+  patches on a new branch, pushes it with the user's own git credentials, and with `--pr` opens a
+  GitHub pull request through the user's `gh`.
+- Settings come from env vars, which can live in `~/.config/agent-hive/env`. The commit identity
+  defaults to the user's own git identity.
+- Remove the maintainer's personal accounts and domain from `AGENTS.md` and `public/landing.html`.
 
 ## Files to touch
 
-- `src/cli.ts` (new)
-- `src/runs.ts` (new)
-- `src/follow.ts` (new)
-- `src/render.ts` (new)
-- `src/config.ts`
+- `src/cli.ts`
+- `src/runs.ts`
 - `src/git.ts`
-- `package.json`
+- `src/config.ts`
 - `README.md`
 - `AGENTS.md`
-- `test/cli.test.mjs` (new)
+- `public/landing.html`
+- `test/push.test.mjs` (new)
 - `.handoff/report.md`
 
 ## Steps
 
 1. Run `npm ci`.
 
-2. `src/config.ts`:
-   - Replace `dotenv.config();` with
-     `dotenv.config(process.env.HIVE_DOTENV_PATH ? { path: process.env.HIVE_DOTENV_PATH } : undefined);`
-   - Add to the `config` object: `runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),`
+2. `src/config.ts`: in the `git` block, add `pushRemote: process.env.HIVE_PUSH_REMOTE || "origin",`.
 
-3. `src/git.ts`, add these exports (all use the existing `git()` helper):
-   - `repoTop(cwd: string): Promise<string>`: `git rev-parse --show-toplevel` in `cwd`. Throws
-     `Error("not in a git repo")` on failure.
-   - `isDirty(repo: string): Promise<boolean>`: true when `git status --porcelain` in `repo` prints
-     anything.
-   - `prepareLocal(repo: string, work: string): Promise<string>`: `base = git rev-parse HEAD` in
-     `repo`; `git clone -q --no-hardlinks -- <repo> <work>`; in `work`: `git remote remove origin`,
-     `git config user.name <config.git.authorName>`, `git config user.email <config.git.authorEmail>`.
-     Returns `base`.
-   - `gitIdentity(): Record<string, string>`: the same four `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
-     entries as the private `gitIdentity()` in `src/tasks.ts` (leave that one in place).
+3. `src/git.ts`:
+   - Change `applyAndPush(dir, base, resultBranch)` to
+     `applyAndPush(dir: string, base: string, resultBranch: string, force = true)`. When `force` is
+     false, the push command has no `--force`. Everything else stays the same, and the existing
+     caller in `src/tasks.ts` keeps working unchanged.
+   - Add `normalizeCliRepo(input: string): { url: string; name: string }`:
+     - trim `input`
+     - `owner/name` (the existing `OWNER_REPO` regex) → url `https://github.com/<owner>/<name>.git`,
+       name `<name>`
+     - starts with `https://`, `http://`, `ssh://`, or matches `/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:/`
+       → url as given, with trailing `/` removed
+     - name: the last path segment, split on `/` and `:`, with a trailing `.git` removed. Empty →
+       `"repo"`
+     - anything else, including strings starting with `-` → throw
+       `Error("repo must be owner/name or a git URL")`
+   - Add `githubSlug(url: string): string | undefined`. It returns `owner/name`, without `.git`, for
+     `https://github.com/owner/name(.git)(/)`, `ssh://git@github.com/owner/name(.git)` and
+     `git@github.com:owner/name(.git)`. Anything else returns `undefined`.
+   - Add `gitConfigIdentity(cwd: string): { name?: string; email?: string }`. It uses
+     `execFileSync("git", ["config", "--get", "user.name"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })`,
+     and the same for `user.email`. Trim each value. A failing command or empty output leaves that
+     field undefined.
 
-4. `src/follow.ts`, export
-   `followJsonl(path: string, onEvent: (event: any) => void, intervalMs = 250): { poll(): void; stop(): void }`:
-   - Keeps a byte offset into the file. `poll()` opens the file and reads every byte after the
-     offset with `fs.openSync` / `fs.readSync`, then closes it. A missing file is a no-op.
-   - Splits on byte 10 (LF) only. Keeps an incomplete last line in a buffer until its LF arrives.
-     Strips a trailing `\r`. Calls `onEvent(JSON.parse(line))` for each non-empty line and skips
-     lines that don't parse. An exception thrown by `onEvent` is caught and printed with
-     `console.error`.
-   - Starts a `setInterval(poll, intervalMs)`. `stop()` clears the interval and calls `poll()` one
-     last time.
-   - Polling only, no `fs.watch`. The file sits on a virtiofs share.
+4. `src/runs.ts`:
+   - `RunMeta` gains:
+     - `source: "local" | "remote"`
+     - `summary?: string`
+     - `pushed?: { branch: string; url: string; at: number }`
+     - `prUrl?: string`
+     
+     For remote runs, `repo` holds the remote URL.
+   - `StartRunOptions`: `repo` becomes optional, and `remote?: { url: string; name: string; ref?: string }`
+     is added. Exactly one of the two must be given (else throw `Error("startRun needs repo or remote")`).
+   - `startRun`:
+     - Local runs behave exactly as now, with `source: "local"`.
+     - Remote runs: the run dir name uses `remote.name` in place of `basename(repo)`. Instead of
+       `prepareLocal`, run `base = await prepareRepo(dir, remote.url, remote.ref)` (the existing
+       function: it clones into `<dir>/origin` and `<dir>/work`). Then `meta.repo = remote.url` and
+       `source: "remote"`.
+     - In the follower callback, when `e.type === "message_end"` and `e.message.role === "assistant"`,
+       save the joined text of its `type === "text"` blocks, if non-empty, as the latest summary.
+     - When writing the final `meta.json`, set `meta.summary` to the latest summary, cut to 60000
+       characters, when there is one.
+   - `applyRun`: right after reading `meta`, if `meta.source === "remote"`, throw
+     `Error("this run is from " + meta.repo + "; use hive push")`. Treat a missing `source` as
+     `"local"`.
+   - Add `pushRun(dir: string, o: { branch?: string; remote?: string } = {}): Promise<{ branch: string; url: string; commits: number }>`:
+     1. Read `meta`. `status` must be `"done"` (else throw `run is <status>; nothing to push`) and
+        `commits > 0` (else throw `nothing to push`).
+     2. `branch = validateBranch(o.branch ?? config.git.branchPrefix + basename(dir))`.
+     3. Remote runs: `url = await git(["remote", "get-url", "origin"], join(dir, "origin"))`.
+     4. Local runs:
+        - `remoteName = o.remote ?? config.git.pushRemote`.
+        - `url = await git(["remote", "get-url", "--push", remoteName], meta.repo)`. On failure
+          throw `repo <meta.repo> has no remote "<remoteName>"`.
+        - `rmSync(join(dir, "origin"), { recursive: true, force: true })`.
+        - `git clone -q --no-hardlinks -- <meta.repo> <dir>/origin`.
+        - In `<dir>/origin`: `git remote set-url origin <url>`.
+        - In `<dir>/origin`: `git cat-file -e <meta.base>^{commit}`. On failure throw
+          `the run's base commit is no longer in <meta.repo>`.
+     5. `commits = await applyAndPush(dir, meta.base, branch, false)`. If it throws, rethrow
+        `Error(<its message> + " (check your git credentials for " + url + ")")`.
+     6. `meta.pushed = { branch, url, at: Date.now() }`. `writeMeta`. Return `{ branch, url, commits }`.
+   - Add `patchSubject(patchText: string): string`. It takes the first line starting with
+     `Subject: `, removes `Subject: ` and a leading `[PATCH...] ` group (regex `/^\[PATCH[^\]]*\]\s*/`),
+     and trims. Returns `""` when there is no such line.
+   - Add `prArgs(o: { slug: string; branch: string; title: string; body: string; base?: string }): string[]`.
+     It returns `["pr", "create", "--repo", slug, "--head", branch, "--title", title, "--body", body]`,
+     plus `["--base", base]` when `base` is set.
+   - Add `openPr(dir: string, o: { base?: string } = {}): Promise<string>`:
+     1. Read `meta`. If there is no `meta.pushed`, throw `push the run first`.
+     2. `slug = githubSlug(meta.pushed.url)`. If undefined, throw
+        `pull requests need a github.com remote (pushed to <url>)`.
+     3. `title` = `patchSubject` of the first patch file. If empty, use `meta.prompt` cut to 70
+        characters.
+     4. `body` = `meta.summary` if set, else `title`.
+     5. Run `execFile("gh", prArgs({ slug, branch: meta.pushed.branch, title, body, base: o.base }), { timeout: 120_000 })`
+        via `promisify`. An `ENOENT` error → throw
+        `gh is not installed; install the GitHub CLI and run gh auth login to open pull requests`.
+        Any other error → throw `gh pr create failed: <stderr or message, trimmed>`.
+     6. `prUrl` = the last non-empty line of stdout, trimmed. Save it to `meta.prUrl` and `writeMeta`.
+        Return it.
 
-5. `src/render.ts`, export:
-   - `renderEvent(e: any): string | undefined`:
-     - `e.type === "message_end"` and `e.message.role === "assistant"`: join the `text` of the
-       content blocks whose `type === "text"`. If `e.message.errorMessage` is set, return
-       `"error: " + errorMessage`. Otherwise return the joined text, or `undefined` when it is empty.
-     - `e.type === "tool_execution_start"`: return `"  → " + e.toolName + " " + summary`, where
-       `summary` is `e.args.command` for `bash`, `e.args.path` for `read`, `edit` and `write`, and
-       `JSON.stringify(e.args)` for anything else. Collapse whitespace runs to one space and trim.
-       If `summary` is longer than 100 characters, cut it to 99 and append `…`.
-     - `e.type === "tool_execution_end"` and `e.isError === true`: return `"  ✗ " + e.toolName + " failed"`.
-     - Anything else: `undefined`.
-   - `type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }`
-     and `emptyUsage(): Usage`.
-   - `addUsage(total: Usage, e: any): void`: for `message_end` with an assistant message, add
-     `usage.input`, `usage.output`, `usage.cacheRead`, `usage.cacheWrite` and `usage.cost.total`,
-     treating missing numbers as 0 (same fields as `runAgent` in `src/tasks.ts`).
-   - No ANSI colours anywhere.
-
-6. `src/runs.ts`:
-   - Run dir: `<config.runsDir>/<basename of repo>-<YYYYMMDD-HHMMSS>` in local time. If it exists,
-     append `-2`, `-3` and so on. Subfolders:
-     - `work/`: the agent's copy, mounted at `/work`
-     - `io/`: mounted at `/io`; holds `prompt.md`, `system.md`, `events.jsonl`, `stderr.log`
-     - `session/`: pi's session, mounted at `/session`
-     - `out/`: patches, mounted at `/out` by the export step only
-   - `meta.json`:
-     `{ repo, base, provider, model, thinking, prompt (first 200 chars), status ("running" | "done" | "failed" | "aborted"), pid, commits, usage, error?, createdAt, finishedAt? }`.
-     Write it atomically (write `meta.json.tmp`, then `renameSync`).
-   - `export interface RunMeta` with those fields; `readMeta(dir)`, `writeMeta(dir, meta)`.
-   - `isLive(meta)`: `status === "running"` and `process.kill(meta.pid, 0)` doesn't throw.
-   - `resolveRun(arg?: string): string`:
-     - With no `arg`, return the run with the newest `createdAt`, or throw `Error("no runs")`.
-     - Otherwise treat `arg` as a name under `config.runsDir` if it has no `/`, or as a path if it
-       does. Its `realpathSync` must have a `dirname` equal to `realpathSync(config.runsDir)` and
-       contain `meta.json`, or throw `Error("not a run: " + arg)`.
-   - `listRuns(): { name: string; dir: string; meta: RunMeta }[]`, newest first. Skip dirs without a
-     readable `meta.json`. Return `[]` when `config.runsDir` doesn't exist.
-   - `cleanRun(dir)`: throw `Error("run is still going: <name>")` if `isLive`; otherwise
-     `rmSync(dir, { recursive: true, force: true })`.
-   - `startRun(o: { repo: string; prompt: string; provider?: string; model?: string; thinking?: string; onEvent: (e: any) => void; signal: AbortSignal }): Promise<{ dir: string; meta: RunMeta }>`.
-     It throws only on errors before the VM starts. After that it records the outcome in `meta.json`
-     and returns:
-     1. Resolve the provider, key, model and thinking level the same way `createTask` in
-        `src/tasks.ts` does, using `resolveProvider`, `providerKey`, `PROVIDERS`,
-        `config.defaultModel` and `config.defaultThinking`, with the same error messages. Valid
-        thinking levels: `off minimal low medium high xhigh`.
-     2. Create the run dir and its four subfolders. `base = await prepareLocal(repo, <dir>/work)`.
-        Write `io/prompt.md` (the prompt) and `io/system.md` (`config.systemPrompt`). Write
-        `meta.json` with `status: "running"`, `pid: process.pid`, `commits: 0` and `emptyUsage()`.
-     3. `mounts`: `work`→`/work`, `io`→`/io`, `session`→`/session`. Add the npm cache exactly as
-        `runAgent` in `src/tasks.ts` does (`mkdirSync`, then `shared: true`, at `/root/.npm`) when
-        `config.sandbox.npmCache` is non-empty.
-     4. Call `runSandbox({ name: "hive-" + <run dir basename>, mounts, env: { [PROVIDERS[provider].sandboxEnv]: key, ...gitIdentity() }, command })`
-        with no `onEvent`, where `command` is:
-        `["bash", "-c", 'exec hive-agent "$@" > /io/events.jsonl 2> /io/stderr.log', "hive-agent", "-p", "--provider", provider, "--model", model, "--thinking", thinking, "--session-dir", "/session", "--append-system-prompt", "/io/system.md", "@/io/prompt.md", "Do the task described in the attached file prompt.md."]`
-     5. `followJsonl(<dir>/io/events.jsonl, e => { addUsage(meta.usage, e); o.onEvent(e); })`.
-        When `o.signal` fires, call the handle's `stop()`.
-     6. `await handle.done`, then call the follower's `stop()`. Set the outcome:
-        - signal aborted → `"aborted"`
-        - `timedOut` → `"failed"` with error `timed out after <config.sandbox.timeoutMin> minutes`
-        - `code !== 0` → `"failed"` with error `agent exited <code>: ` plus the last 2000 characters
-          of `io/stderr.log` (or of the handle's `stderr` when that file is missing or empty)
-     7. When `code === 0` and not aborted: `runSandbox({ name: "hive-" + <basename> + "-export", mounts: [work→/work, out→/out], env: gitIdentity(), command: ["hive-export", base] })`.
-        A non-zero exit → `"failed"` with error `export failed (exit <code>)`. Otherwise
-        `commits` = the number of `*.patch` files in `out/` and status `"done"`.
-     8. Set `finishedAt`, write `meta.json`, return `{ dir, meta }`.
-   - `patchFiles(dir): string[]`: absolute paths of `out/*.patch`, sorted.
-   - `diffRun(dir: string, stat: boolean): Promise<string>`: `""` when there are no patches. With
-     `stat`, the stdout of `git apply --stat <patches…>` run with `cwd: dir`. Otherwise the patch
-     files' contents joined in order.
-   - `applyRun(dir: string, repo: string, branch?: string): Promise<string>`:
-     - `meta.status` must be `"done"` (else throw `run is <status>; nothing to apply`) and
-       `commits > 0` (else throw `nothing to apply`).
-     - `realpathSync(repo)` must equal `realpathSync(meta.repo)` (else throw
-       `this run belongs to <meta.repo>`).
-     - `isDirty(repo)` → throw `repo has uncommitted changes; commit or stash first`.
-     - Without `branch`: `git rev-parse HEAD` in `repo` must equal `meta.base` (else throw
-       `repo HEAD moved since the run; use --branch`). Run `git apply <all patches in one call>` in
-       `repo`. Return the output of `git status --short`.
-     - With `branch`: `validateBranch(branch)`. If `git rev-parse --verify --quiet refs/heads/<branch>`
-       succeeds, throw `branch <branch> already exists`. Run `git switch -q -c <branch> <meta.base>`,
-       then `git am -q --keep-cr <patches…>`. If `git am` fails, run `git am --abort` and rethrow.
-       Return `on branch <branch>: <commits> commit(s)`.
-
-7. `src/cli.ts`:
-   - First line `#!/usr/bin/env node`.
-   - Before importing anything from `./config.js`, `./sandbox.js`, `./runs.js` or `./git.js`
-     (import them with `await import(...)` inside `main()`):
-     - set `process.env.HIVE_DOTENV_PATH` to `<XDG_CONFIG_HOME or ~/.config>/agent-hive/env` if unset;
-     - if `HIVE_RUNTIME` is set to anything other than `libkrun`, print
-       `hive: the CLI only supports HIVE_RUNTIME=libkrun` and exit 1; otherwise set it to `libkrun`.
-   - Parse arguments with `parseArgs` from `node:util`. Usage text, printed by `--help`, `-h` or no
-     arguments (exit 0), and on stderr for an unknown command (exit 1):
+5. `src/cli.ts`:
+   - In `main()`, after the existing env setup and before the first dynamic import: if
+     `process.env.GIT_AUTHOR_NAME` is unset, read `user.name` and `user.email` with a small local
+     helper in `cli.ts` that does the same as `gitConfigIdentity` (`execFileSync("git", ["config", "--get", key], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })`,
+     trimmed, with failures treated as unset). Don't import `./git.js` for this: `config.ts` reads
+     the env when it is first imported, so the identity must be set before that. If both values are
+     found, set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and
+     `GIT_COMMITTER_EMAIL` from them.
+   - `run` gains the options `--repo` (string) and `--ref` (string):
+     - With `--repo`: don't call `repoTop` and don't check for a dirty tree.
+       `remote = { ...normalizeCliRepo(values.repo), ref: values.ref }`. Pass `remote` to `startRun`
+       in place of `repo`. `--ref` without `--repo` is an error: `--ref needs --repo`.
+     - Keep the order: parse the prompt, then resolve local or remote, then `libkrunAvailable()`, then
+       `startRun`.
+     - The final `done` lines print `hive push <name>` in place of `hive apply <name>` when the run
+       is remote; local runs print both `hive apply <name>` and `hive push <name>`.
+   - New command `push`: options `--branch` (string), `--remote` (string), `--pr` (boolean) and
+     `--base` (string).
+     - `dir = resolveRun(positionals[0])`, then `pushRun(dir, { branch, remote })`. Print
+       `hive: pushed <commits> commit(s) to <branch> on <url>` to stdout.
+     - With `--pr`: `openPr(dir, { base })` and print the URL on its own line.
+     - `--base` without `--pr` is an error: `--base needs --pr`.
+   - Usage text: add these lines after the `hive apply` line, and change both `hive run` lines to
+     include `[--repo <owner/name|url> [--ref <branch>]]` after `[--json]`:
      ```
-     hive run [-m model] [-p provider] [-t thinking] [--json] "<prompt>"
-     hive run [-m model] [-p provider] [-t thinking] [--json] -f <prompt-file>
-     hive log [run] [--json]
-     hive diff [run] [--stat]
-     hive apply [run] [--branch <name>]
-     hive list
-     hive clean <run> | --all
+     hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
      ```
-     `[run]` defaults to the newest run.
-   - `run`:
-     1. `repo = repoTop(process.cwd())`. The prompt comes from the positional argument, or
-        `readFileSync(-f)`. A missing or empty prompt is an error.
-     2. If `libkrunAvailable()` is false, print `hive: can't start a VM:` followed by each line of
-        `checkSandbox()` and the line `hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)`, then exit 1.
-     3. If `isDirty(repo)`, print to stderr
-        `hive: uncommitted changes are not included; the agent works on HEAD`.
-     4. `AbortController`. The first SIGINT prints `hive: stopping…` and aborts; a second SIGINT
-        exits 130 at once.
-     5. `startRun`. Print `hive: run <name>` on stderr once the run dir exists (pass a callback or
-        print after `listRuns()`; either is fine). `onEvent`: with `--json` write
-        `JSON.stringify(e)` plus a newline to stdout; otherwise write `renderEvent(e)` plus a
-        newline when it returns a string.
-     6. At the end, print to stderr:
-        - `done`: `hive: done, <commits> commit(s), $<cost.toFixed(4)>, <input> in / <output> out tokens`,
-          then `hive diff <name>` and `hive apply <name>` on two lines. Exit 0.
-        - `failed`: `hive: failed: <error>`. Exit 1.
-        - `aborted`: `hive: aborted`. Exit 130.
-   - `log`: `resolveRun`. Follow `io/events.jsonl` from the start with the same rendering (`--json`
-     prints raw lines). If the run isn't live, `poll()` once, `stop()`, and print the status line.
-     Otherwise check `meta.json` every 500 ms until the run isn't live, then `stop()` and print
-     `hive: <status>`.
-   - `diff`: print `diffRun(dir, stat)`, or `hive: no changes` on stderr when it is empty.
-   - `apply`: `applyRun(resolveRun(arg), await repoTop(process.cwd()), branch)` and print the result.
-   - `list`: one line per run, `<name>  <status>  <commits> commit(s)  $<cost.toFixed(4)>  <repo>`,
-     or `no runs`.
-   - `clean`: `clean <run>` → `cleanRun`. `clean --all` → `cleanRun` every run that isn't live and
-     print `hive: kept <name> (still running)` for each live one.
-   - Wrap `main()` so that any thrown `Error` prints `hive: <message>` on stderr and exits 1.
 
-8. `package.json`: add `"bin": { "hive": "dist/cli.js" }`. Change no existing script or dependency.
+6. `README.md`, in the `## Command line (hive)` section:
+   - Document `--repo` and `--ref`, and `hive push` with `--branch`, `--remote`, `--pr` and `--base`.
+   - Say that pushing uses the user's own git credentials (SSH key, credential helper, or `gh auth setup-git`), and `--pr` uses their `gh` login.
+   - Add a settings table: `HIVE_RUNS_DIR`, `HIVE_BRANCH_PREFIX` (default `hive/`), `HIVE_PUSH_REMOTE`
+     (default `origin`), `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` (default: your git `user.name` and
+     `user.email`), `DEFAULT_PROVIDER`, `DEFAULT_MODEL`, the provider key variables from `PROVIDERS`,
+     `HIVE_SANDBOX_MEMORY`, `HIVE_SANDBOX_CPUS` and `HIVE_SANDBOX_TIMEOUT_MIN`. Each row gets a
+     one-line meaning, and the table says the variables can go in `~/.config/agent-hive/env`.
 
-9. `README.md`: add a section `## Command line (hive)` near the top, covering:
-   - setup: `npm ci && npm run build && npm run build:image && npm run build:vm && npm run build:rootfs && npm link`
-   - keys go in `~/.config/agent-hive/env` (for example `OPENROUTER_API_KEY=...`)
-   - each command with a one-line description
-   - the run dir layout
-   
-   `AGENTS.md`: add rows for `src/cli.ts`, `src/runs.ts`, `src/follow.ts` and `src/render.ts` to the
-   Layout table. Under the security model, add: "The CLI's host git runs only in the user's repo
-   (rev-parse, status, clone source, apply/am of exported patches), never in a run's `work/`. Text
-   crosses into and out of the VM only as files in `io/` and patches in `out/`."
+7. `AGENTS.md`:
+   - Rename the section `## Two-account GitHub model` to `## GitHub access (server)`.
+   - Replace `stansz` with `<owner>` and `oatclaw88` with `<bot>` everywhere in that section and in
+     `### Commit author`, and drop the sentence about keeping the old attribution.
+   - Add one line under the section: "The `hive` CLI needs none of this: it uses the user's own git
+     credentials and `gh` login on the host; nothing is passed into the VM."
+   - Keep the `hive-mcp` link on line 8 as it is.
 
-10. `test/cli.test.mjs` (`node:test` and `node:assert/strict`; import from `../dist/…` with
-    `await import` after setting `process.env.HIVE_RUNS_DIR` to a fresh `mkdtempSync` dir at the top
-    of the file):
-    - `followJsonl`: write `{"a":1}\n{"b"` to a temp file → `poll()` gives 1 event. Append `:2}\n`
-      → 2 events, the second `{ b: 2 }`. Append `garbage\n` → still 2. Then `stop()`.
-    - `renderEvent`:
-      - `{type:"tool_execution_start",toolName:"bash",args:{command:"npm   test"}}` → `"  → bash npm test"`
-      - `read` with `args.path:"a.txt"` → `"  → read a.txt"`
-      - a 300-character bash command → length ≤ 109 and ends with `…`
-      - an assistant `message_end` with content `[{type:"thinking",thinking:"x"},{type:"text",text:"hi"}]` → `"hi"`
-      - a `user` `message_end` → `undefined`
-      - `{type:"tool_execution_end",toolName:"bash",isError:true}` → `"  ✗ bash failed"`
-    - `addUsage`: two assistant `message_end` events with
-      `usage:{input:10,output:5,cacheRead:1,cacheWrite:2,cost:{total:0.5}}` → totals
-      `20/10/2/4/1`.
-    - `resolveRun`:
-      - creates `<runsDir>/r1` and `<runsDir>/r2` with `meta.json` (`createdAt` 1 and 2)
-      - `resolveRun("r1")` ends with `/r1`
-      - `resolveRun()` ends with `/r2`
-      - `resolveRun("/etc")` and `resolveRun("../x")` throw
-    - `applyRun`, all with `git -c user.name=t -c user.email=t@t`:
-      - make a temp repo with one commit holding `f.txt`
-      - clone it to a temp dir, change `f.txt`, add `new.txt`, commit `"agent change"`
-      - `git format-patch -o <runsDir>/r3/out <base>..HEAD`
-      - write `<runsDir>/r3/meta.json` with `status:"done"`, `commits:1`, `repo`, `base`, `createdAt:3`
-      - `applyRun(r3, repo)`: HEAD is unchanged, `git status --porcelain` shows ` M f.txt` and
-        `?? new.txt`, and a second `applyRun` throws `/uncommitted/`
-      - `git checkout -- . && git clean -fdq`, then `applyRun(r3, repo, "hive/t")`: the current
-        branch is `hive/t` and `git log -1 --format=%s` is `agent change`
-    - CLI, via `execFileSync(process.execPath, ["dist/cli.js", ...])` with `cwd` the agent-hive repo:
-      - `--help` exits 0, and its output contains `hive run`, `hive log`, `hive diff`, `hive apply`,
-        `hive list` and `hive clean`
-      - `list` with `HIVE_RUNS_DIR` set to a new empty temp dir prints `no runs`
-      - `bogus` exits 1
+8. `public/landing.html`: replace every `https://hive.ogsapps.cc` with `https://hive.example.com`.
+   Keep the links to the project's GitHub repo.
+
+9. `test/push.test.mjs` (`node:test` and `node:assert/strict`):
+   - Set `process.env.HIVE_RUNS_DIR` to a fresh `mkdtempSync` dir, plus `GIT_AUTHOR_NAME`,
+     `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` to `t` / `t@t`, before any
+     `await import("../dist/…")`.
+   - `normalizeCliRepo`:
+     - `"a/b"` → `{ url: "https://github.com/a/b.git", name: "b" }`
+     - `"https://gitlab.com/x/y.git/"` → url `https://gitlab.com/x/y.git`, name `y`
+     - `"git@github.com:a/b.git"` → name `b`
+     - `"-x"`, `"/tmp/repo"` and `"b"` throw
+   - `githubSlug`:
+     - the https, ssh:// and scp forms of `github.com/a/b(.git)` → `"a/b"`
+     - `https://gitlab.com/a/b.git` → `undefined`
+   - `patchSubject`: `"From x\nSubject: [PATCH 2/3] fix calc\n\n"` → `"fix calc"`; text with no
+     subject → `""`.
+   - `prArgs` with and without `base`: exact arrays.
+   - `gitConfigIdentity`: in a temp repo with `git config user.name n` and `user.email e@e`, it
+     returns `{ name: "n", email: "e@e" }`.
+   - `pushRun` (local run):
+     - Make a bare repo `remote.git`. Clone it to `local`, commit `f.txt` and push `main`. The bare
+       repo also gets a remote named `upstream` (a second bare repo `up.git`) in `local`.
+     - Clone `local` to a temp dir, change `f.txt`, commit `agent change`, and
+       `git format-patch -o <runsDir>/r1/out <base>..HEAD`.
+     - Write `<runsDir>/r1/meta.json`:
+       `{ source:"local", status:"done", commits:1, repo:<local>, base:<base>, createdAt:1, prompt:"p", usage:{input:0,output:0,cacheRead:0,cacheWrite:0,cost:0}, pid:1, provider:"x", model:"y", thinking:"low" }`
+     - `pushRun(r1)`: returns `branch` `hive/r1` and `commits` 1, and
+       `git --git-dir remote.git log -1 --format=%s hive/r1` prints `agent change`. `meta.json` now
+       has `pushed.branch === "hive/r1"`.
+     - `pushRun(r1, { branch: "feat/x", remote: "upstream" })` puts `feat/x` in `up.git` with the
+       same subject.
+     - `pushRun(r1, { branch: "bad..name" })` throws.
+     - A run with `status:"failed"` throws `/nothing to push|failed/`.
+   - `pushRun` (remote run): `prepareRepo(<runsDir>/r2, <path of remote.git>)` returns `base`.
+     Create a commit in a separate clone of `remote.git` (not pushed), and `format-patch` it into
+     `<runsDir>/r2/out`. Write meta with `source:"remote"`, `repo:<remote.git path>`, `base`,
+     `status:"done"`, `commits:1`. `pushRun(r2)` puts `hive/r2` in `remote.git`.
+   - `applyRun` on the remote run throws `/use hive push/`.
+   - `openPr` on a run without `pushed` throws `/push the run first/`. A run whose `pushed.url` is
+     `https://gitlab.com/a/b.git` throws `/github.com remote/`.
 
 ## Acceptance
 
 1. `npm ci` exits 0.
 2. `npm run build` exits 0.
-3. `npm test` exits 0, and its output shows the new tests from `test/cli.test.mjs` passing, with `fail 0`.
-4. `node dist/cli.js --help` exits 0 and prints lines starting with `hive run`, `hive log`, `hive diff`, `hive apply`, `hive list` and `hive clean`.
-5. `HIVE_RUNS_DIR=$(mktemp -d) node dist/cli.js list` prints `no runs`.
-6. `head -1 dist/cli.js` prints `#!/usr/bin/env node`.
+3. `npm test` exits 0. Its output shows the tests from `test/push.test.mjs` passing and `fail 0`.
+4. `node dist/cli.js --help` exits 0. Its output contains a line starting with `hive push` and the text `--repo`.
+5. `git grep -n 'ogsapps' -- public src` exits 1 (no matches).
+6. `git grep -nE 'oatclaw88|stansz' -- src AGENTS.md` prints only the `hive-mcp` link line in `AGENTS.md`.
 7. `git diff --quiet HEAD -- src/index.ts src/auth.ts src/routes src/tasks.ts src/sandbox.ts ui image vm` exits 0.
-8. `R=$PWD; T=$(mktemp -d); cd $T && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m x && node $R/dist/cli.js run "hi"; echo "exit=$?"; cd $R` prints `exit=1`, and stderr contains `hive: can't start a VM:` (this machine has no /dev/kvm).
-9. `grep -c '"hive": "dist/cli.js"' package.json` prints `1`.
+8. `R=$PWD; T=$(mktemp -d); cd $T && node $R/dist/cli.js run --repo a/b "hi"; echo "exit=$?"; cd $R` prints `exit=1`. Stderr contains `hive: can't start a VM:` and does not contain `not in a git repo`.
+9. `node dist/cli.js push nope; echo "exit=$?"` prints `exit=1`, and stderr contains `not a run`.
+10. `node dist/cli.js run --ref main "hi"; echo "exit=$?"` (run from the repo root) prints `exit=1`, and stderr contains `--ref needs --repo`.
 
 ## Parallel work
 
@@ -265,17 +223,18 @@ None — do it sequentially.
 - No new npm dependencies.
 - Don't change `src/sandbox.ts`, `src/tasks.ts`, `src/index.ts`, `src/auth.ts`, `src/routes/`,
   `ui/`, `image/` or `vm/`.
-- The CLI never calls podman, and never reads events from the VM's stdout. Events come only from
-  `io/events.jsonl`.
-- The host never runs git inside a run's `work/` after `prepareLocal` returns.
-- API keys go to `runSandbox` only through its `env` object, never in `command` or in any file.
-- Strict TypeScript (the existing `tsconfig.json`), ES modules, Node 24 built-ins only.
+- No user names, account names, domains or tokens in code or tests. Defaults come from env vars or
+  the user's git config.
+- Git credentials and the `gh` login are used only by host-side commands. Nothing new is mounted or
+  passed into the VM.
+- The host never runs git in a run's `work/` after it is cloned. Pushing uses `<dir>/origin` only.
+- Pushes are never forced from the CLI.
+- Strict TypeScript, ES modules, Node 24 built-ins only.
 
 ## Out of scope
 
-`hive serve`, `hive mcp`, review cycles, follow-up prompts on an existing run, macOS support,
-pushing to GitHub, a desktop app, and any change to the server, the web UI, the image or the
-launcher.
+Review cycles, forks and cross-repo PRs, PR updates, `hive serve`, `hive mcp`, macOS, and any change
+to the server, the web UI, the image or the launcher.
 
 ## If blocked
 

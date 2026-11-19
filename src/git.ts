@@ -4,7 +4,7 @@
  * (<task>/work); its results come back as patch files and are applied here with `git am`, which
  * treats them as data (it refuses paths inside .git and writes through symlinks).
  */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -53,6 +53,59 @@ export function normalizeRepo(input: string): { url: string; name: string } {
   throw new Error("repo must be owner/name or a github.com URL");
 }
 
+/**
+ * Normalise a repo reference for `hive run --repo` / `hive push`: owner/name becomes a
+ * github.com https URL; https://, http://, ssh:// and scp-like URLs are kept as given. Option
+ * looking strings and plain paths are refused.
+ */
+export function normalizeCliRepo(input: string): { url: string; name: string } {
+  const s = input.trim();
+  if (s.startsWith("-")) throw new Error("repo must be owner/name or a git URL");
+  let url: string;
+  if (OWNER_REPO.test(s)) {
+    url = `https://github.com/${s}.git`;
+  } else if (/^(?:https?|ssh):\/\//.test(s) || /^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:/.test(s)) {
+    url = s;
+  } else {
+    throw new Error("repo must be owner/name or a git URL");
+  }
+  url = url.replace(/\/+$/, "");
+  const name = url.split(/[/:]/).filter((part) => part !== "").pop()?.replace(/\.git$/, "") || "repo";
+  return { url, name };
+}
+
+/** `owner/name` for a github.com URL (https, ssh:// or scp-like), without `.git`; else undefined. */
+export function githubSlug(url: string): string | undefined {
+  const s = url.trim();
+  const patterns = [
+    /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
+    /^ssh:\/\/git@github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/,
+    /^git@github\.com:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/,
+  ];
+  for (const re of patterns) {
+    const m = s.match(re);
+    if (m) return m[1];
+  }
+  return undefined;
+}
+
+/** The user's own git identity from `cwd`; a missing or failing config leaves the field unset. */
+export function gitConfigIdentity(cwd: string): { name?: string; email?: string } {
+  const read = (key: string): string | undefined => {
+    try {
+      const value = execFileSync("git", ["config", "--get", key], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      return value || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return { name: read("user.name"), email: read("user.email") };
+}
+
 export function validateBranch(branch: string): string {
   if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.startsWith("-") || branch.includes("..")) {
     throw new Error(`Invalid branch name: ${branch}`);
@@ -85,7 +138,12 @@ const MAX_PATCHES = 500;
  * Apply the sandbox's patches (from <dir>/out) on top of the base commit in the pristine clone
  * and force-push them to the task's branch. Returns the number of commits pushed (0 = no changes).
  */
-export async function applyAndPush(dir: string, base: string, resultBranch: string): Promise<number> {
+export async function applyAndPush(
+  dir: string,
+  base: string,
+  resultBranch: string,
+  force = true,
+): Promise<number> {
   const origin = join(dir, "origin");
   const out = join(dir, "out");
   const patches = readdirSync(out).filter((f) => f.endsWith(".patch")).sort();
@@ -103,7 +161,8 @@ export async function applyAndPush(dir: string, base: string, resultBranch: stri
     throw new Error(`Couldn't apply the agent's commits: ${(err as Error).message}`);
   }
   // The branch belongs to this task, so a follow-up run may rewrite it.
-  await git(["push", "-q", "--force", "origin", `HEAD:refs/heads/${resultBranch}`], origin, 120_000);
+  const push = force ? ["push", "-q", "--force"] : ["push", "-q"];
+  await git([...push, "origin", `HEAD:refs/heads/${resultBranch}`], origin, 120_000);
   return patches.length;
 }
 
