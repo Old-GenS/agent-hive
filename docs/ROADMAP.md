@@ -88,7 +88,8 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
 - **Web search for the agent:** a search key passed like the LLM key (Tavily or Exa free tiers),
   or a keyless fallback; pi supports search through plug-in packages.
 - **GUI with onboarding:** first run (welcome, the `hive doctor` checks with a rootfs download,
-  adding a model key) and key management, following the clickable mockup made for it.
+  adding a model key) and key management, following the clickable mockup made for it. Design in
+  `docs/GUI.md`.
 - **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor
   from step 3 where there's no KVM.
 
