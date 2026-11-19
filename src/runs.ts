@@ -233,7 +233,7 @@ export function prArgs(o: {
  */
 export async function pushRun(
   dir: string,
-  o: { branch?: string; remote?: string } = {},
+  o: { branch?: string; remote?: string; requireGithub?: boolean } = {},
 ): Promise<{ branch: string; url: string; commits: number }> {
   const meta = readMeta(dir);
   if (meta.status !== "done") throw new Error(`run is ${meta.status}; nothing to push`);
@@ -258,6 +258,21 @@ export async function pushRun(
     } catch {
       throw new Error(`the run's base commit is no longer in ${meta.repo}`);
     }
+  }
+
+  // Checked before anything is pushed, so `--pr` on a non-GitHub remote leaves no stray branch.
+  if (o.requireGithub && !githubSlug(url)) {
+    throw new Error(`pull requests need a github.com remote (this run pushes to ${url})`);
+  }
+  // Never overwrite: a branch that already exists (e.g. from an earlier push) is an error.
+  let existing: string;
+  try {
+    existing = await git(["ls-remote", "--heads", "origin", `refs/heads/${branch}`], join(dir, "origin"), 120_000);
+  } catch (err) {
+    throw new Error(`couldn't reach ${url}: ${(err as Error).message} (check your git credentials)`);
+  }
+  if (existing) {
+    throw new Error(`branch ${branch} already exists on ${url}; pick another name with --branch`);
   }
 
   let commits: number;

@@ -144,6 +144,13 @@ test("pushRun pushes a local run's patches to a new branch", async () => {
 
   await assert.rejects(() => pushRun(dir, { branch: "bad..name" }), /Invalid branch/);
 
+  // A repeat push to an existing branch is refused with a clear message, never forced.
+  await assert.rejects(() => pushRun(dir), /branch hive\/r1 already exists.*--branch/);
+
+  // --pr on a non-GitHub remote fails before anything is pushed.
+  await assert.rejects(() => pushRun(dir, { branch: "pr/x", requireGithub: true }), /github\.com remote/);
+  assert.equal(gitDir(remoteGit, "branch", "--list", "pr/x").trim(), "");
+
   const failed = join(runsDir, "r4");
   mkdirSync(failed, { recursive: true });
   writeMeta(failed, { source: "local", repo: local, base: baseSha, status: "failed" });

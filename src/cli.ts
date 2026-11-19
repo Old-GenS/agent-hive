@@ -124,6 +124,10 @@ async function cmdRun(args: string[]): Promise<number> {
     console.error(
       `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
     );
+    if (meta.commits === 0) {
+      console.error("hive: no changes");
+      return 0;
+    }
     console.error(`hive diff ${name}`);
     if (meta.source !== "remote") console.error(`hive apply ${name}`);
     console.error(`hive push ${name}`);
@@ -204,7 +208,7 @@ async function cmdPush(args: string[]): Promise<number> {
   if (values.base !== undefined && !values.pr) throw new Error("--base needs --pr");
   const { openPr, pushRun, resolveRun } = await import("./runs.js");
   const dir = resolveRun(positionals[0]);
-  const result = await pushRun(dir, { branch: values.branch, remote: values.remote });
+  const result = await pushRun(dir, { branch: values.branch, remote: values.remote, requireGithub: !!values.pr });
   process.stdout.write(`hive: pushed ${result.commits} commit(s) to ${result.branch} on ${result.url}\n`);
   if (values.pr) process.stdout.write((await openPr(dir, { base: values.base })) + "\n");
   return 0;
