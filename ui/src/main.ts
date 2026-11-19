@@ -56,6 +56,19 @@ const STATUS_PILL: Record<string, string> = {
 
 const BUSY_STATUS = new Set(["queued", "cloning", "running", "reviewing", "pushing"]);
 
+/** Same rule as the server's validateRepoName. */
+function validRepoName(name: string): boolean {
+  const trimmed = name.trim();
+  return (
+    /^[A-Za-z0-9_.-]{1,100}$/.test(trimmed) &&
+    !trimmed.startsWith(".") &&
+    !trimmed.startsWith("-") &&
+    !trimmed.endsWith(".git") &&
+    trimmed !== "." &&
+    trimmed !== ".."
+  );
+}
+
 /** What the bee indicator shows for each run status. */
 const BEE_STATE: Record<Status, { state: BeeState; label: string }> = {
   queued: { state: "queued", label: "Waiting for a free microVM" },
@@ -89,11 +102,13 @@ type RunItem =
   | { kind: "user"; text: string }
   | AssistantItem
   | ToolItem
-  | { kind: "banner"; tone: Tone; title: string; detail: string };
+  | { kind: "banner"; tone: Tone; title: string; detail: string; link?: { href: string; label: string } };
 
 interface RunState {
   sessionId: string;
   repo: string | null;
+  /** the project name for a run that starts from an empty repo */
+  newRepo: string | null;
   providerLabel: string;
   model: string;
   title: string;
@@ -364,6 +379,28 @@ function buildForm(): HTMLElement {
   const task = el("textarea", { id: "task", rows: "5", placeholder: "Describe what the agent should do" });
   const taskField = el("div", { class: "field" }, el("label", { for: "task" }, "Task"), task);
 
+  const modeExisting = el("input", {
+    id: "mode-existing",
+    type: "radio",
+    name: "projectMode",
+    value: "existing",
+    checked: "",
+  });
+  const modeNew = el("input", { id: "mode-new", type: "radio", name: "projectMode", value: "new" });
+  const modeExistingLabel = el(
+    "label",
+    { class: "segmented-option", for: "mode-existing" },
+    modeExisting,
+    "Existing repo",
+  );
+  const modeNewLabel = el("label", { class: "segmented-option", for: "mode-new" }, modeNew, "New project");
+  const modeField = el(
+    "fieldset",
+    { class: "field project-mode" },
+    el("legend", {}, "Project"),
+    el("div", { class: "segmented" }, modeExistingLabel, modeNewLabel),
+  );
+
   const repo = el("input", {
     id: "repo",
     type: "text",
@@ -382,6 +419,37 @@ function buildForm(): HTMLElement {
   const branch = el("input", { id: "branch", type: "text", placeholder: "default branch", autocomplete: "off" });
   const branchField = el("div", { class: "field" }, el("label", { for: "branch" }, "Branch"), branch);
   const repoRow = el("div", { class: "grid-2" }, repoField, branchField);
+
+  const newRepoName = el("input", {
+    id: "newRepoName",
+    type: "text",
+    placeholder: "my-new-project",
+    autocomplete: "off",
+  });
+  const newRepoError = el("p", { id: "newRepoError", class: "field-error", role: "alert", hidden: "" });
+  const newRepoPrivate = el("input", { id: "newRepoPrivate", type: "checkbox", checked: "" });
+  const newRepoGroup = el(
+    "div",
+    { class: "new-repo-fields", hidden: "" },
+    el(
+      "div",
+      { class: "field" },
+      el("label", { for: "newRepoName" }, "Project name"),
+      newRepoName,
+      newRepoError,
+      el(
+        "label",
+        { class: "check-field", for: "newRepoPrivate" },
+        newRepoPrivate,
+        el("span", {}, "Private repository"),
+      ),
+      el(
+        "p",
+        { class: "field-hint" },
+        "When the run finishes, hive creates the repository on GitHub under your account and pushes the agent's work to main.",
+      ),
+    ),
+  );
 
   const provider = el("select", { id: "provider" });
   const providerField = el("div", { class: "field" }, el("label", { for: "provider" }, "Provider"), provider);
@@ -425,25 +493,49 @@ function buildForm(): HTMLElement {
   const alertSlot = el("div", { role: "alert" });
   const startBtn = el("button", { id: "startBtn", class: "btn btn-primary", type: "submit" }, "Start run");
 
+  const keysMissing = !!providers && providers.providers.length > 0 && !providers.providers.some((p) => p.hasKey);
   if (providersFailed) {
     warnSlot.append(el("p", { class: "alert alert-warn" }, "Couldn't load providers"));
   }
-  if (providers && providers.providers.length > 0 && !providers.providers.some((p) => p.hasKey)) {
+  if (keysMissing) {
     warnSlot.append(el("p", { class: "alert alert-warn" }, "Add an API key first (see Settings)"));
-    startBtn.disabled = true;
   }
 
   const form = el(
     "form",
     { class: "card", novalidate: "" },
     heading,
-    el("div", { class: "form-rows" }, taskField, repoRow, optionsGrid),
+    el("div", { class: "form-rows" }, taskField, modeField, repoRow, newRepoGroup, optionsGrid),
     el("div", { class: "form-actions" }, warnSlot, alertSlot, startBtn),
   );
 
   const showError = (message: string) => {
     alertSlot.replaceChildren(el("p", { class: "alert alert-danger" }, message));
   };
+
+  const refreshStartState = () => {
+    const isNewProject = modeNew.checked;
+    const name = newRepoName.value.trim();
+    const nameInvalid = isNewProject && !validRepoName(name);
+    newRepoError.hidden = !(nameInvalid && name !== "");
+    newRepoError.textContent = newRepoError.hidden
+      ? ""
+      : "Project name may only use letters, digits, '-', '_' and '.' (max 100)";
+    startBtn.disabled = keysMissing || nameInvalid;
+  };
+
+  const updateMode = () => {
+    const isNewProject = modeNew.checked;
+    modeExistingLabel.classList.toggle("is-selected", !isNewProject);
+    modeNewLabel.classList.toggle("is-selected", isNewProject);
+    repoRow.hidden = isNewProject;
+    newRepoGroup.hidden = !isNewProject;
+    refreshStartState();
+  };
+  modeExisting.addEventListener("change", updateMode);
+  modeNew.addEventListener("change", updateMode);
+  newRepoName.addEventListener("input", refreshStartState);
+  updateMode();
 
   const start = async () => {
     if (startBtn.disabled) return;
@@ -453,18 +545,24 @@ function buildForm(): HTMLElement {
       showError("Describe what the agent should do first.");
       return;
     }
+    const isNewProject = modeNew.checked;
     const repoValue = repo.value.trim();
     const branchValue = branch.value.trim();
     const reviewCycles = Number(review.value);
 
     const body: Record<string, unknown> = { prompt };
-    if (repoValue) body.repo = repoValue;
-    if (repoValue && branchValue) body.branch = branchValue;
+    if (isNewProject) {
+      body.newRepo = { name: newRepoName.value.trim(), private: newRepoPrivate.checked };
+      if (reviewCycles > 0) body.reviewCycles = reviewCycles;
+    } else {
+      if (repoValue) body.repo = repoValue;
+      if (repoValue && branchValue) body.branch = branchValue;
+      if (repoValue && reviewCycles > 0) body.reviewCycles = reviewCycles;
+    }
     if (provider.value) body.provider = provider.value;
     const modelValue = model.value.trim();
     if (modelValue) body.model = modelValue;
     if (thinking.value) body.thinkingLevel = thinking.value;
-    if (repoValue && reviewCycles > 0) body.reviewCycles = reviewCycles;
 
     startBtn.disabled = true;
     try {
@@ -475,9 +573,7 @@ function buildForm(): HTMLElement {
       startRun(data, prompt);
     } catch (err) {
       showError((err as Error).message);
-      if (!providers || providers.providers.length === 0 || providers.providers.some((p) => p.hasKey)) {
-        startBtn.disabled = false;
-      }
+      refreshStartState();
     }
   };
 
@@ -548,6 +644,7 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
   run = {
     sessionId: String(data.sessionId ?? ""),
     repo: typeof data.repo === "string" && data.repo ? data.repo : null,
+    newRepo: typeof data.newRepo === "string" && data.newRepo ? data.newRepo : null,
     providerLabel: label,
     model: typeof data.model === "string" ? data.model : "",
     title: firstLine(prompt),
@@ -584,6 +681,15 @@ function fillItem(li: HTMLElement, item: RunItem): void {
     case "banner": {
       const children: HTMLElement[] = [el("span", { class: "banner-title" }, item.title)];
       if (item.detail) children.push(el("span", { class: "banner-detail" }, item.detail));
+      if (item.link) {
+        children.push(
+          el(
+            "a",
+            { class: "banner-link", href: item.link.href, target: "_blank", rel: "noopener noreferrer" },
+            item.link.label,
+          ),
+        );
+      }
       li.replaceChildren(el("div", { class: `item-banner item-banner-${item.tone}` }, ...children));
       break;
     }
@@ -612,7 +718,7 @@ function buildRunView(): HTMLElement {
   newBtn.onclick = () => newRun();
   const toolbar = el("div", { class: "run-toolbar" }, pill, el("span", { class: "spacer" }), stopBtn, newBtn);
 
-  const repoText = state.repo ?? "no repo";
+  const repoText = state.newRepo ? `new project ${state.newRepo}` : state.repo ?? "no repo";
   const modelText = state.model || "default model";
   const bee = createBeeIndicator();
   const head = el(
@@ -730,11 +836,12 @@ function handleEvent(event: any): void {
       if (status in STATUS_LABEL) setRunStatus(status as Status);
       let text = "";
       if (status === "queued") text = `Queued (${event.running ?? "?"}/${event.max ?? "?"} sandboxes busy)`;
-      else if (status === "cloning") text = "Cloning the repo";
+      else if (status === "cloning") text = event.newProject ? "Setting up the new project" : "Cloning the repo";
       else if (status === "running") text = "Agent working in the VM";
       else if (status === "reviewing") text = `Review cycle ${event.cycle ?? "?"} of ${event.of ?? "?"}`;
       else if (status === "pushing") text = "Pushing changes";
       if (text) appendItem({ kind: "status", text });
+      if (status === "cloning" && event.newProject) runUi?.bee.set("working", "Setting up the new project");
       break;
     }
     case "message_start":
@@ -783,10 +890,21 @@ function finishRun(event: any): void {
   let item: RunItem;
   if (status === "idle") {
     const parts: string[] = [];
-    if (event.resultBranch) parts.push(`Pushed ${event.commitsPushed ?? 0} commit(s) to ${event.resultBranch}`);
+    let link: { href: string; label: string } | undefined;
+    const createdRepo = typeof event.createdRepo === "string" && event.createdRepo ? event.createdRepo : "";
+    if (createdRepo) {
+      parts.push(`Created ${createdRepo} with ${event.commitsPushed ?? 0} commit(s)`);
+      if (/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(createdRepo)) {
+        link = { href: `https://github.com/${createdRepo}`, label: "Open on GitHub" };
+      }
+    } else if (run.newRepo && Number(event.commitsPushed ?? 0) === 0) {
+      parts.push("No changes, so no repository was created");
+    } else if (event.resultBranch) {
+      parts.push(`Pushed ${event.commitsPushed ?? 0} commit(s) to ${event.resultBranch}`);
+    }
     const cost = Number(event.usage?.cost);
     if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
-    item = { kind: "banner", tone: "ok", title: "Done", detail: parts.join(" · ") };
+    item = { kind: "banner", tone: "ok", title: "Done", detail: parts.join(" · "), link };
   } else if (status === "aborted") {
     item = { kind: "banner", tone: "warn", title: "Stopped", detail: event.error ? String(event.error) : "" };
   } else {

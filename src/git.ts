@@ -6,7 +6,7 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 
@@ -108,6 +108,72 @@ export function gitConfigIdentity(cwd: string): { name?: string; email?: string 
   return { name: read("user.name"), email: read("user.email") };
 }
 
+const REPO_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/** Validate a name for a repository created from scratch; returns it trimmed. */
+export function validateRepoName(name: string): string {
+  const trimmed = name.trim();
+  if (
+    !REPO_NAME.test(trimmed) ||
+    trimmed.startsWith(".") ||
+    trimmed.startsWith("-") ||
+    trimmed.endsWith(".git") ||
+    trimmed === "." ||
+    trimmed === ".."
+  ) {
+    throw new Error("Project name may only use letters, digits, '-', '_' and '.' (max 100)");
+  }
+  return trimmed;
+}
+
+/** The gh binary; read per call so tests can point GH_BIN at a fake. */
+function ghBin(): string {
+  return process.env.GH_BIN || "gh";
+}
+
+const GH_ENV = () => ({ ...process.env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" });
+
+/** The logged-in GitHub account name (`gh api user`). */
+export async function githubLogin(): Promise<string> {
+  let login: string;
+  try {
+    const { stdout } = await execFileAsync(ghBin(), ["api", "user", "--jq", ".login"], {
+      env: GH_ENV(),
+      timeout: 30_000,
+    });
+    login = stdout.trim();
+  } catch {
+    throw new Error("Couldn't read the GitHub login (gh auth status)");
+  }
+  if (!login || !/^[A-Za-z0-9-]+$/.test(login)) {
+    throw new Error("Couldn't read the GitHub login (gh auth status)");
+  }
+  return login;
+}
+
+/** Create <login>/<name> on GitHub with `gh repo create`; returns the `owner/name` slug. */
+export async function createGithubRepo(name: string, isPrivate: boolean): Promise<string> {
+  const repoName = validateRepoName(name);
+  const owner = await githubLogin();
+  const full = `${owner}/${repoName}`;
+  const args = [
+    "repo",
+    "create",
+    full,
+    isPrivate ? "--private" : "--public",
+    "--description",
+    "Created by agent-hive",
+  ];
+  try {
+    await execFileAsync(ghBin(), args, { env: GH_ENV(), timeout: 60_000 });
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    const detail = String(e.stderr || e.message || "").trim().slice(-500);
+    throw new Error(`Couldn't create the GitHub repository ${full}: ${detail}`);
+  }
+  return full;
+}
+
 export function validateBranch(branch: string): string {
   if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.startsWith("-") || branch.includes("..")) {
     throw new Error(`Invalid branch name: ${branch}`);
@@ -123,6 +189,39 @@ export async function prepareRepo(dir: string, repoUrl: string, branch?: string)
   if (branch) args.push("--branch", branch);
   args.push("--", repoUrl, origin);
   await git(args, undefined, 120_000);
+  const base = await git(["rev-parse", "HEAD"], origin);
+
+  // --no-hardlinks: the sandbox must not share object files with the pristine clone.
+  await git(["clone", "-q", "--no-hardlinks", "--", origin, work], undefined, 120_000);
+  await git(["remote", "remove", "origin"], work);
+  await git(["config", "user.name", config.git.authorName], work);
+  await git(["config", "user.email", config.git.authorEmail], work);
+  return base;
+}
+
+/**
+ * Set up a brand-new project at <dir>: an empty `main` repo in <dir>/origin (the host's pristine
+ * copy, which receives the push) and the sandbox's copy in <dir>/work. Returns the base SHA.
+ */
+export async function prepareNewRepo(dir: string): Promise<string> {
+  const origin = join(dir, "origin");
+  const work = join(dir, "work");
+  mkdirSync(origin, { recursive: true });
+  await git(["init", "-q", "-b", "main"], origin);
+  await git(
+    [
+      "-c",
+      "user.name=" + config.git.authorName,
+      "-c",
+      "user.email=" + config.git.authorEmail,
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "Initial commit",
+    ],
+    origin,
+  );
   const base = await git(["rev-parse", "HEAD"], origin);
 
   // --no-hardlinks: the sandbox must not share object files with the pristine clone.

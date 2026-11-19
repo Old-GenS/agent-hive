@@ -3,6 +3,7 @@
 //
 //   npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs
 //
+import { deepStrictEqual } from "node:assert";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -156,6 +157,52 @@ try {
 
   await page.unroute("**/prompt");
   await page.unroute("**/events/demo-session/ticket");
+  await page.click('button:has-text("New run")');
+  await page.waitForSelector("#provider");
+
+  // ── desktop: new-project form ──
+  await page.click("#mode-new");
+  assert(await page.isHidden("#repo"), "#repo is hidden in the new-project mode");
+  assert(await page.isVisible("#newRepoName"), "#newRepoName is visible in the new-project mode");
+  await page.fill("#newRepoName", "bad name");
+  const startDisabled = await page.$eval("#startBtn", (node) => node.disabled);
+  assert(startDisabled, "#startBtn is disabled while the project name is invalid");
+  await page.fill("#newRepoName", "demo-project");
+  await page.fill("#task", "new project task");
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-new-project.png") });
+
+  let captured = null;
+  await page.route("**/prompt", async (route) => {
+    captured = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessionId: "demo-new",
+        status: "queued",
+        repo: null,
+        newRepo: "demo-project",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+      }),
+    });
+  });
+  await page.route("**/events/demo-new/ticket", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ticket: "demo" }) }),
+  );
+  await page.click("#startBtn");
+  await page.waitForSelector(".run-meta");
+  assert(captured !== null, "the new-project /prompt body was captured");
+  deepStrictEqual(captured.newRepo, { name: "demo-project", private: true });
+  assert(captured.repo === undefined, "a new project never sends repo");
+  assert(captured.branch === undefined, "a new project never sends branch");
+  const runMeta = await page.$eval(".run-meta", (node) => (node.textContent ?? "").trim());
+  assert(
+    runMeta.includes("new project demo-project"),
+    `run meta says new project demo-project (got ${JSON.stringify(runMeta)})`,
+  );
+  await page.unroute("**/prompt");
+  await page.unroute("**/events/demo-new/ticket");
   await page.click('button:has-text("New run")');
   await page.waitForSelector("#provider");
 

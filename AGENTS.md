@@ -79,6 +79,9 @@ full access to the owner's GitHub. The sandbox gets neither.
   the sandbox → host pushes `hive/<id>` via the deploy key. Merge or open a PR yourself.
 - **External repos:** fork into <bot> (UI "Fork" button or `POST /api/github/fork`), then run
   the task on `<bot>/<repo>`. PR creation is not built yet.
+- **New projects:** a task with `newRepo` starts from an empty repo; when the agent has commits,
+  the host runs `gh repo create <login>/<name>` (private by default) and pushes to `main`. Needs a
+  `gh` login that may create repos.
 
 ### Adding a repo
 

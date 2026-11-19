@@ -20,6 +20,15 @@ const promptSchema = {
       systemPromptOverride: { type: "string", maxLength: 20_000 },
       reviewCycles: { type: "integer", minimum: 0, maximum: 5 },
       reviewModel: { type: "string", maxLength: 200 },
+      newRepo: {
+        type: "object",
+        required: ["name"],
+        additionalProperties: false,
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 100 },
+          private: { type: "boolean" },
+        },
+      },
     },
   },
 } as const;
@@ -63,12 +72,20 @@ export default async function sessionRoutes(app: FastifyInstance) {
         systemPrompt: body.systemPromptOverride,
         reviewCycles: body.reviewCycles,
         reviewModel: body.reviewModel,
+        newRepo: body.newRepo,
       });
     } catch (err) {
       return reply.code(err instanceof BusyError ? 503 : 400).send({ error: (err as Error).message });
     }
     void runPrompt(task, body.prompt);
-    return { sessionId: task.id, status: task.status, repo: task.repoUrl, model: task.model, provider: task.provider };
+    return {
+      sessionId: task.id,
+      status: task.status,
+      repo: task.repoUrl,
+      newRepo: task.newRepoName,
+      model: task.model,
+      provider: task.provider,
+    };
   });
 
   app.post("/snippet", {

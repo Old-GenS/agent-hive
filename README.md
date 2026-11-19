@@ -197,13 +197,18 @@ a result banner. **Settings › API keys** shows each provider's key status, its
 which provider is the default; it is read-only for now. `npm run build:ui` builds the UI into
 `ui/dist`.
 
+Pick **New project** instead of a repository to start from an empty repo: give the project a name
+and, when the run finishes with commits, the host creates that repository under the logged-in
+`gh` account (private by default) and pushes the agent's work to its `main` branch. If the agent
+made no commits, no repository is created.
+
 ### API
 
 All endpoints except `/health` need `Authorization: Bearer <token>`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/prompt` | Start a task (`prompt`, `repo`, `branch`, `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`), or follow up with `sessionId` |
+| POST | `/prompt` | Start a task (`prompt`, `repo`, `branch`, `newRepo` (`{name, private}`), `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`), or follow up with `sessionId` |
 | POST | `/snippet` | One-shot question about some code; waits and returns `{result}` |
 | GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `error` |
 | GET | `/messages/:id` | Conversation so far |

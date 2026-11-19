@@ -1,153 +1,171 @@
 ## Goal
 
-Show that a run is happening with an animated bee that fits the hexagon/hive theme:
-
-- In the run view, an activity row with a honeycomb cell and a bee: the bee flies around the cell
-  while the microVM is working, hovers while queued, lands on a filled cell when done, and turns
-  grey when the run failed or was stopped. Next to it: a status line and an elapsed timer.
-- While a run is busy, a small bee next to **Runs** in the header.
-- Respect `prefers-reduced-motion` (no flying or wing flutter).
-- Fix the phone header so it stays on one line at 390 px.
+Let a server run start a brand-new project: the user picks **New project** in the web UI's New
+run form and gives a name; the agent builds the project in an empty git repo inside the microVM;
+when the run finishes with commits, the host creates a GitHub repository with `gh` under the
+logged-in account and pushes the agent's commits to its `main` branch. No commits means no
+repository is created.
 
 ## Files to touch
 
-- `ui/src/bee.ts` (new)
+- `src/git.ts`
+- `src/tasks.ts`
+- `src/routes/sessions.ts`
 - `ui/src/main.ts`
 - `ui/src/app.css`
 - `scripts/ui-smoke.mjs`
+- `test/newrepo.test.mjs` (new)
+- `README.md`
+- `AGENTS.md`
 - `.handoff/report.md`
-- `.handoff/ui-run-working.png`, `.handoff/ui-run-done.png`, `.handoff/ui-phone.png`,
-  `.handoff/ui-desktop.png`, `.handoff/ui-settings.png` (screenshots written by the smoke script)
+- `.handoff/ui-*.png` (screenshots written by the smoke script)
 
 ## Steps
 
 1. Run `npm ci`, then `cd ui && npm ci && cd ..`, then `bash vm/build.sh`.
 
-2. `ui/src/app.css`: add tokens to `:root`: `--honey: #E8A317; --honey-soft: #FCEFD2;` and in the
-   dark `@media (prefers-color-scheme: dark)` block: `--honey: #F2B53A; --honey-soft: #3A2C0E;`.
-
-3. `ui/src/bee.ts` (new). Export:
+2. `src/git.ts`: add and export
 
    ```ts
-   export type BeeState = "queued" | "working" | "done" | "failed" | "stopped";
-   export interface BeeIndicator {
-     root: HTMLElement;
-     set(state: BeeState, label: string): void;
-     destroy(): void;
-   }
-   export function createBeeIndicator(): BeeIndicator;
-   export function headerBee(): HTMLElement;
+   export function validateRepoName(name: string): string
+   export async function prepareNewRepo(dir: string): Promise<string>
+   export async function githubLogin(): Promise<string>
+   export async function createGithubRepo(name: string, isPrivate: boolean): Promise<string>
    ```
 
-   - `createBeeIndicator()` returns `root` = `<div class="bee-indicator" data-state="queued">`
-     containing:
-     - `<div class="bee-stage" aria-hidden="true">`: one inline `<svg viewBox="0 0 96 96" width="96" height="96">` with
-       - a honeycomb cell: hexagon path `M48 18l26 15v30L48 78 22 63V33z`, `fill="var(--honey-soft)"`,
-         `stroke="var(--honey)"`, `stroke-width="3"`, `stroke-linejoin="round"`, class `bee-cell`;
-       - inside it a honey fill: the same hexagon scaled to 60% around the centre
-         (`transform="translate(48 48) scale(0.6) translate(-48 -48)"`), `fill="var(--honey)"`,
-         class `bee-honey`;
-       - a `<g class="bee-flight">` (rotates around the cell centre) containing a `<g class="bee">`
-         placed at the top of the orbit (`transform="translate(48 8)"`) with: two wings (ellipses
-         `rx="6" ry="4"` at `(-4,-5)` and `(4,-5)`, `fill="var(--surface)"`, `stroke="var(--text-3)"`,
-         `stroke-width="1"`, `opacity="0.9"`, class `bee-wing`), a body ellipse `rx="7" ry="5"`
-         `fill="var(--honey)"`, two stripes (`rect` 2 px wide, `fill="var(--text)"`, at x `-2` and
-         `2`, clipped to the body with a `clipPath`), a head circle `r="3"` at `(8,0)`
-         `fill="var(--text)"`.
-       The SVG is built with `document.createElementNS` (no `innerHTML`).
-     - `<div class="bee-text">` with `<span class="bee-label" role="status" aria-live="polite">`
-       and `<span class="bee-time" aria-hidden="true">` (format `m:ss`, or `h:mm:ss` after an hour).
-   - `set(state, label)`: sets `root.dataset.state`, sets the label's `textContent` only when the
-     state or label changed (so screen readers aren't spammed). The timer starts at the first
-     `set` call, updates every second with `setInterval` while the state is `queued` or `working`,
-     and stops (keeping the final time) on `done`, `failed` or `stopped`.
-   - `destroy()` clears the interval.
-   - `headerBee()` returns `<span class="header-bee">` with a 16×16 inline SVG of the same bee
-     (`aria-hidden="true"`) and a visually hidden `<span class="sr-only">Run in progress</span>`.
+   - `validateRepoName`: trims; must match `/^[A-Za-z0-9_.-]{1,100}$/`, must not start with `.`
+     or `-`, must not end with `.git`, must not be `.` or `..`; otherwise throw
+     `Error("Project name may only use letters, digits, '-', '_' and '.' (max 100)")`. Returns the
+     trimmed name.
+   - `prepareNewRepo(dir)`: `origin = join(dir, "origin")`, `work = join(dir, "work")`;
+     `mkdirSync(origin, { recursive: true })`; `git(["init", "-q", "-b", "main"], origin)`;
+     `git(["-c", "user.name=" + config.git.authorName, "-c", "user.email=" + config.git.authorEmail, "commit", "-q", "--allow-empty", "-m", "Initial commit"], origin)`;
+     `base = git(["rev-parse", "HEAD"], origin)`; then exactly the same four work-copy steps as
+     `prepareRepo` (clone `--no-hardlinks` origin → work, remove the `origin` remote in work, set
+     `user.name` / `user.email` in work). Returns `base`.
+   - `githubLogin()`: runs `execFileAsync(GH_BIN, ["api", "user", "--jq", ".login"], { env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" }, timeout: 30_000 })`
+     with `const GH_BIN = process.env.GH_BIN || "gh"` (read at call time); returns the trimmed
+     stdout; throws `Error("Couldn't read the GitHub login (gh auth status)")` if it fails or is
+     empty or doesn't match `/^[A-Za-z0-9-]+$/`.
+   - `createGithubRepo(name, isPrivate)`: validates `name`, gets `owner = await githubLogin()`,
+     then runs `GH_BIN repo create <owner>/<name> --private|--public --description "Created by agent-hive"`
+     (same env and a 60 s timeout, argument array, no shell). On failure throw
+     `Error("Couldn't create the GitHub repository <owner>/<name>: <stderr trimmed, last 500 chars>")`.
+     Returns `<owner>/<name>`.
 
-4. `ui/src/app.css`, bee styles:
-   - `.bee-indicator`: flex row, `align-items: center`, `gap: 16px`, `padding: 12px 0`.
-     `.bee-stage` 96×96, `flex-shrink: 0`. `.bee-text`: column, `gap: 2px`; `.bee-label` 15 px,
-     weight 600; `.bee-time` 13 px, `color: var(--text-3)`, `font-variant-numeric: tabular-nums`.
-   - Use `transform-box: view-box; transform-origin: 48px 48px;` on `.bee-flight` and
-     `transform-box: fill-box; transform-origin: center;` on `.bee` and `.bee-wing`.
-   - `@keyframes bee-orbit { to { transform: rotate(360deg); } }` and
-     `@keyframes bee-upright { to { transform: translate(48px, 8px) rotate(-360deg); } }` with the
-     `.bee` start state `transform: translate(48px, 8px)` (so the bee stays upright while orbiting);
-     `@keyframes bee-flutter { 0%,100% { transform: scaleY(1); } 50% { transform: scaleY(0.35); } }`;
-     `@keyframes bee-bob { 0%,100% { transform: translate(48px, 8px); } 50% { transform: translate(48px, 4px); } }`;
-     `@keyframes honey-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 0.9; } }`.
-   - States:
-     - `[data-state="working"]`: `.bee-flight` `animation: bee-orbit 3.2s linear infinite`;
-       `.bee` `animation: bee-upright 3.2s linear infinite`; `.bee-wing`
-       `animation: bee-flutter 0.12s linear infinite`; `.bee-honey`
-       `animation: honey-pulse 2.4s ease-in-out infinite`.
-     - `[data-state="queued"]`: no orbit; `.bee` `animation: bee-bob 1.6s ease-in-out infinite`;
-       wings flutter; `.bee-honey` `opacity: 0.25`.
-     - `[data-state="done"]`: no animation; the bee sits on top of the cell
-       (`.bee { transform: translate(48px, 18px); }`); `.bee-honey` `opacity: 1`.
-     - `[data-state="failed"]`, `[data-state="stopped"]`: no animation; `.bee-indicator`
-       `filter: grayscale(1)`; `.bee-honey` `opacity: 0.15`; `.bee-label` `color: var(--text-2)`.
-   - `@media (prefers-reduced-motion: reduce)`: every `.bee-indicator *` and `.header-bee *` gets
-     `animation: none !important`.
-   - `.header-bee`: inline-flex, 16×16, `margin-left: 6px`, vertically centred; its wings flutter
-     with `bee-flutter 0.12s linear infinite`.
-   - `.sr-only`: the standard visually-hidden rule (if not already defined).
-   - Phone header fix, `@media (max-width: 640px)`: the header stays one row with no wrapping —
-     hide the user name (`.user-name { display: none; }` or the existing class for it), reduce
-     the header gap to 8 px and nav button padding to `0 10px`; at 390 px the header must be a
-     single row at most 64 px tall with no horizontal scroll. Use the header's existing class
-     names in `main.ts`; add a class if the user-name element has none.
+3. `src/tasks.ts`:
+   - `TaskOptions` gains `newRepo?: { name: string; private?: boolean }`. `Task` gains
+     `newRepoName?: string`, `newRepoPrivate = true`, `createdRepo?: string`; `toJSON()` adds
+     `newRepo: this.newRepoName, createdRepo: this.createdRepo`.
+   - `createTask`: if both `opts.repo` and `opts.newRepo` are set, throw
+     `Error("Use repo or newRepo, not both")`. If `opts.newRepo` is set:
+     `task.newRepoName = validateRepoName(opts.newRepo.name)`,
+     `task.newRepoPrivate = opts.newRepo.private !== false`.
+   - In `runPrompt`, preparation: when `task.newRepoName` is set (and not prepared), call
+     `task.setStatus("cloning", { newProject: true })` and `task.baseSha = await prepareNewRepo(task.dir)`
+     instead of `prepareRepo`.
+   - The intro text: when `task.newRepoName` is set use
+     `"/work is an empty git repository for a new project. Create the project there and commit your work with clear messages. You cannot push; when you finish, the server creates the GitHub repository " + task.newRepoName + " and pushes your commits to it.\n\n"`.
+   - Review cycles and the `pushing` step run when `(task.repoUrl || task.newRepoName) && task.baseSha`.
+   - `exportAndPush()`: after the export sandbox succeeds, if `this.newRepoName` is set:
+     - count the `.patch` files in `out/`; if 0, set `commitsPushed = 0` and return (no repo
+       created);
+     - if `this.createdRepo` is not set yet: `this.createdRepo = await createGithubRepo(this.newRepoName, this.newRepoPrivate)`,
+       then `this.repoUrl = normalizeRepo(this.createdRepo).url` and
+       `git(["remote", "add", "origin", this.repoUrl], join(this.dir, "origin"))`;
+     - `this.commitsPushed = await applyAndPush(this.dir, this.baseSha!, "main")` (force push: the
+       repo was created by this task, and a follow-up rewrites `main` with the full history);
+       `this.resultBranch = "main"`; return.
+     Otherwise keep the existing behaviour unchanged.
+   - Both `hive_done` events add `createdRepo: task.createdRepo`.
 
-5. `ui/src/main.ts`:
-   - Import `createBeeIndicator`, `headerBee` and `BeeState` from `./bee.js`.
-   - In `buildRunView()`, create the indicator, keep it on `runUi` (add `bee: BeeIndicator` to
-     `RunUi`), and insert `bee.root` in the run head card between the meta line and the toolbar.
-     Destroy the previous indicator when a new run view is built and in `newRun()`.
-   - In `syncRunUi()`, map the run status to the bee:
-     `queued` → `("queued", "Waiting for a free microVM")`;
-     `cloning` → `("working", "Cloning the repo")`;
-     `running` → `("working", "Agent working in the microVM")`;
-     `reviewing` → `("working", "Reviewing the changes")`;
-     `pushing` → `("working", "Pushing changes")`;
-     `idle` → `("done", "Done")`; `failed` → `("failed", "Failed")`;
-     `aborted` → `("stopped", "Stopped")`.
-   - Header: while `run?.busy` is true, append one `headerBee()` inside the **Runs** nav button
-     (keep a reference; never add two); remove it when the run is no longer busy. Call this from
-     `syncRunUi()`.
+4. `src/routes/sessions.ts`: add to `promptSchema.body.properties`:
+   `newRepo: { type: "object", required: ["name"], additionalProperties: false, properties: { name: { type: "string", minLength: 1, maxLength: 100 }, private: { type: "boolean" } } }`;
+   pass `newRepo: body.newRepo` to `createTask`; add `newRepo: task.newRepoName` to the new-task
+   response.
 
-6. `scripts/ui-smoke.mjs`: keep every existing check and screenshot, and add, after the desktop
-   Runs checks and before Settings, a run-view check that never reaches the real server's
-   `/prompt`:
-   - `await page.route("**/prompt", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sessionId: "demo-session", status: "queued", repo: null, provider: "deepseek", model: "deepseek-v4-pro" }) }));`
-   - `await page.route("**/events/demo-session/ticket", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ticket: "demo" }) }));`
-   - `let demoSocket; await page.routeWebSocket(/\/events\/demo-session/, (ws) => { demoSocket = ws; ws.send(JSON.stringify({ type: "hive_status", status: "running" })); ws.send(JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "npm test" } })); });`
-     (do not call `ws.connectToServer()`).
-   - Fill `#task` with `demo task`, click `#startBtn`, wait for
-     `.bee-indicator[data-state="working"]`; assert `.bee-label` text is
-     `Agent working in the microVM`; assert a `.header-bee` exists; wait 1500 ms; save
-     `.handoff/ui-run-working.png`.
-   - `demoSocket.send(JSON.stringify({ type: "hive_done", status: "idle", usage: { cost: 0.0123 } }))`;
-     wait for `.bee-indicator[data-state="done"]`; assert no `.header-bee` exists; save
-     `.handoff/ui-run-done.png`.
-   - Reduced motion: `await page.emulateMedia({ reducedMotion: "reduce" })`, then assert
-     `getComputedStyle(document.querySelector(".bee-flight")).animationName === "none"`; then
-     `await page.emulateMedia({ reducedMotion: "no-preference" })`.
-   - `await page.unroute("**/prompt")` and `await page.unroute("**/events/demo-session/ticket")`,
-     click **New run**, wait for `#provider`, then continue with the existing Settings checks.
-   - In the existing phone check, also assert that the header element's bounding box height is at
-     most 64 px.
+5. `ui/src/main.ts` and `ui/src/app.css`, New run form:
+   - Above Repository, a radio group `<fieldset>` with legend "Project" and two options:
+     `#mode-existing` "Existing repo" (checked by default) and `#mode-new` "New project", styled as
+     a two-button segmented control (each option at least 44 px tall, visible focus, the selected
+     one with `--accent-soft` background and `--accent` border).
+   - Existing repo: shows the current Repository, Branch and Review fields unchanged.
+   - New project: hides Repository and Branch, shows `#newRepoName` (label "Project name",
+     placeholder `my-new-project`) and a checkbox `#newRepoPrivate` "Private repository" (checked),
+     with the hint "When the run finishes, hive creates the repository on GitHub under your
+     account and pushes the agent's work to main." Review stays visible.
+   - Validate the name client-side with the same rule as `validateRepoName`; show an inline error
+     and keep Start run disabled while invalid or empty.
+   - The POST body for a new project sends `newRepo: { name, private }` and never `repo` or
+     `branch`; `reviewCycles` is sent when > 0.
+   - Run view meta line: `new project <name>` in place of the repo name.
+   - `hive_status` `cloning` with `newProject: true`: timeline text and bee label
+     "Setting up the new project".
+   - `hive_done` banner: when `createdRepo` is set, the detail is `Created <createdRepo> with N commit(s)`
+     plus an `<a>` "Open on GitHub" with `href = "https://github.com/" + createdRepo`,
+     `target="_blank"`, `rel="noopener noreferrer"` (only when `createdRepo` matches
+     `/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/`); when a new project ended with no commits:
+     `No changes, so no repository was created`. Build it with `el()` / `textContent`.
+
+6. `scripts/ui-smoke.mjs`: keep every existing check and screenshot. After the existing run-view
+   check returns to the form (after **New run**), add:
+   - click `#mode-new`; assert `#repo` is hidden and `#newRepoName` is visible; fill
+     `#newRepoName` with `bad name`, assert `#startBtn` is disabled; fill it with `demo-project`;
+     fill `#task` with `new project task`; save `.handoff/ui-new-project.png`;
+   - `await page.route("**/prompt", async (route) => { captured = route.request().postDataJSON(); await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sessionId: "demo-new", status: "queued", repo: null, newRepo: "demo-project", provider: "deepseek", model: "deepseek-v4-pro" }) }); });`
+     and `await page.route("**/events/demo-new/ticket", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ticket: "demo" }) }));`
+     (no WebSocket mock needed: a failed socket is fine here);
+   - click `#startBtn`; wait for the run view; assert `captured.newRepo` deep-equals
+     `{ name: "demo-project", private: true }`, `captured.repo === undefined`,
+     `captured.branch === undefined`; assert the meta line contains `new project demo-project`;
+   - unroute both, click **New run**, wait for `#provider`, then continue with the existing
+     Settings checks.
+
+7. `test/newrepo.test.mjs` (new), `node:test` style. Before importing from `dist/`: set
+   `HIVE_DOTENV_PATH` to a missing file, `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`
+   to `t` / `t@t`, delete `HIVE_GIT_PROTOCOL`, and set `GH_BIN` to a fake script written into a
+   `mkdtempSync(join(tmpdir(), "hive-newrepo-"))` dir (mode 0o755):
+
+   ```sh
+   #!/bin/sh
+   printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+   if [ "$1" = api ]; then echo me; exit 0; fi
+   if [ "$1" = repo ] && [ "$3" = me/taken ]; then echo "name already exists" >&2; exit 1; fi
+   if [ "$1" = repo ]; then echo "https://github.com/$3"; exit 0; fi
+   exit 1
+   ```
+
+   with `FAKE_GH_LOG` set to a file in the same dir. Tests:
+   - `validateRepoName` accepts `my-app`, `a.b_c`; rejects `bad name`, `-x`, `.x`, `x.git`, `..`,
+     `a/b`, a 101-char name.
+   - `prepareNewRepo(dir)` creates `origin/` and `work/`; `git -C work log --format=%s` prints
+     `Initial commit`; `git -C work remote` prints nothing; the returned base equals
+     `git -C origin rev-parse HEAD`.
+   - `createGithubRepo("demo", true)` returns `me/demo` and the log's last line is
+     `repo create me/demo --private --description Created by agent-hive`;
+     with `false` the line has `--public`.
+   - `createGithubRepo("taken", true)` rejects with `/Couldn't create the GitHub repository me\/taken: name already exists/`.
+   - `createTask({ prompt: "x", repo: "a/b", newRepo: { name: "c" } })` throws `/repo or newRepo/`
+     (set `DEEPSEEK_API_KEY=sk-test` before importing so a provider resolves; import `createTask`
+     from `../dist/tasks.js`; call `destroyTask(task.id)` on any task that does get created).
+
+8. `README.md`: in the web UI section, one paragraph on **New project** (what it does, that it
+   creates the repo under the `gh` account, private by default, pushes to `main`, nothing created
+   without commits); in the API table's `/prompt` row add `newRepo` (`{name, private}`) to the
+   listed fields.
+
+9. `AGENTS.md`: under "GitHub access (server)", add a bullet: **New projects:** a task with
+   `newRepo` starts from an empty repo; when the agent has commits, the host runs
+   `gh repo create <login>/<name>` (private by default) and pushes to `main`. Needs a `gh` login
+   that may create repos.
 
 ## Acceptance
 
-- `npm test` exits 0.
+- `npm test` exits 0 and includes the tests from `test/newrepo.test.mjs` passing.
 - `npm run build:ui` exits 0.
 - `npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs` prints `ui-smoke: ok`
-  and exits 0, and `.handoff/ui-run-working.png`, `.handoff/ui-run-done.png`,
-  `.handoff/ui-phone.png`, `.handoff/ui-desktop.png` and `.handoff/ui-settings.png` exist.
-- `grep -n "innerHTML" ui/src/bee.ts` prints nothing.
-- `git status --short` lists no files other than those in **Files to touch** (screenshots are
-  under `.handoff/`).
+  and exits 0, and `.handoff/ui-new-project.png` exists.
+- `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
 
@@ -161,16 +179,20 @@ None — do it sequentially.
   the plan", one line each saying why. Installing dependencies (`npm ci`, `npm i --no-save`) and
   temporary files outside the repo are fine.
 - The only checks to run are the **Acceptance** commands. Don't write or run other end-to-end
-  tests, and never let a script reach the real `/prompt` endpoint (no real agent runs). If
-  something outside Acceptance fails, note it in the report and finish.
-- No new dependencies, no emoji in the UI, no images or external assets: the bee is inline SVG.
-- No changes to server code (`src/`), the API, or the security invariants in `AGENTS.md`.
+  tests; never call the real `gh`, never create a real GitHub repository, never let a script reach
+  the real `/prompt` endpoint. If something outside Acceptance fails, note it in the report and
+  finish.
+- Run `gh` and `git` only with argument arrays (no shell). Every API route stays in the
+  authenticated scope; agent and GitHub data in the UI is rendered as text only.
+- The host never runs git in `work/` after the agent has started (the `prepareNewRepo` setup
+  happens before the sandbox runs, like `prepareRepo`).
+- No new dependencies, no emoji in the UI.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Sound, a run list, notifications, changes to the timeline items, the Settings page, the CLI,
-  `README.md`.
+- A Files tab or zip download, the CLI (`hive run`), creating repos under an organisation,
+  choosing the default branch name, the Settings page.
 
 ## If blocked
 

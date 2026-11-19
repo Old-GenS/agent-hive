@@ -12,11 +12,20 @@
  */
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from "./config.js";
 import { runSandbox, runtimeInfo, type SandboxHandle, type SandboxOptions } from "./sandbox.js";
-import { applyAndPush, normalizeRepo, prepareRepo, validateBranch } from "./git.js";
+import {
+  applyAndPush,
+  createGithubRepo,
+  git,
+  normalizeRepo,
+  prepareNewRepo,
+  prepareRepo,
+  validateBranch,
+  validateRepoName,
+} from "./git.js";
 
 export type TaskStatus = "queued" | "cloning" | "running" | "reviewing" | "pushing" | "idle" | "failed" | "aborted";
 const BUSY: TaskStatus[] = ["queued", "cloning", "running", "reviewing", "pushing"];
@@ -32,6 +41,8 @@ export interface TaskOptions {
   systemPrompt?: string;
   reviewCycles?: number;
   reviewModel?: string;
+  /** start from an empty repository and create the GitHub repo when the run has commits */
+  newRepo?: { name: string; private?: boolean };
   /** one-shot: no session kept, task removed once its result is read */
   ephemeral?: boolean;
 }
@@ -53,6 +64,9 @@ export class Task extends EventEmitter {
   error?: string;
   repoUrl?: string;
   branch?: string;
+  newRepoName?: string;
+  newRepoPrivate = true;
+  createdRepo?: string;
   baseSha?: string;
   resultBranch?: string;
   commitsPushed = 0;
@@ -110,6 +124,8 @@ export class Task extends EventEmitter {
       isStreaming: this.busy,
       repo: this.repoUrl,
       branch: this.branch,
+      newRepo: this.newRepoName,
+      createdRepo: this.createdRepo,
       resultBranch: this.resultBranch,
       commitsPushed: this.commitsPushed,
       usage: this.usage,
@@ -202,6 +218,22 @@ export class Task extends EventEmitter {
     });
     const r = await exp.done;
     if (r.code !== 0) throw new Error(`Exporting changes failed: ${(r.stderr || r.stdout).trim().slice(-2000)}`);
+    if (this.newRepoName) {
+      const patches = readdirSync(out).filter((f) => f.endsWith(".patch")).length;
+      if (patches === 0) {
+        this.commitsPushed = 0;
+        return;
+      }
+      if (!this.createdRepo) {
+        this.createdRepo = await createGithubRepo(this.newRepoName, this.newRepoPrivate);
+        this.repoUrl = normalizeRepo(this.createdRepo).url;
+        await git(["remote", "add", "origin", this.repoUrl], join(this.dir, "origin"));
+      }
+      // The repo was created by this task, and a follow-up rewrites main with the full history.
+      this.commitsPushed = await applyAndPush(this.dir, this.baseSha!, "main");
+      this.resultBranch = "main";
+      return;
+    }
     const branch = `${config.git.branchPrefix}${this.id.slice(0, 8)}`;
     this.commitsPushed = await applyAndPush(this.dir, this.baseSha!, branch);
     if (this.commitsPushed > 0) this.resultBranch = branch;
@@ -296,8 +328,13 @@ export function createTask(opts: TaskOptions): Task {
   const cycles = opts.reviewCycles ?? 0;
   if (!Number.isInteger(cycles) || cycles < 0 || cycles > 5) throw new Error("reviewCycles must be 0-5");
 
+  if (opts.repo && opts.newRepo) throw new Error("Use repo or newRepo, not both");
   const task = new Task(provider, model, thinking, opts);
   if (opts.repo) task.repoUrl = normalizeRepo(opts.repo).url;
+  if (opts.newRepo) {
+    task.newRepoName = validateRepoName(opts.newRepo.name);
+    task.newRepoPrivate = opts.newRepo.private !== false;
+  }
   if (opts.branch) task.branch = validateBranch(opts.branch);
   mkdirSync(join(task.dir, "session"), { recursive: true });
   tasks.set(task.id, task);
@@ -340,7 +377,10 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
     if (!task.prepared) {
       rmSync(join(task.dir, "origin"), { recursive: true, force: true });
       rmSync(join(task.dir, "work"), { recursive: true, force: true });
-      if (task.repoUrl) {
+      if (task.newRepoName) {
+        task.setStatus("cloning", { newProject: true });
+        task.baseSha = await prepareNewRepo(task.dir);
+      } else if (task.repoUrl) {
         task.setStatus("cloning");
         task.baseSha = await prepareRepo(task.dir, task.repoUrl, task.branch);
       } else {
@@ -350,16 +390,20 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
     }
 
     task.setStatus("running");
-    const intro = task.repoUrl
-      ? "The repository is checked out at /work. Make the changes there and commit them with clear messages. You cannot push; the server pushes your commits to a new branch when you finish.\n\n"
-      : "";
+    const intro = task.newRepoName
+      ? "/work is an empty git repository for a new project. Create the project there and commit your work with clear messages. You cannot push; when you finish, the server creates the GitHub repository " +
+        task.newRepoName +
+        " and pushes your commits to it.\n\n"
+      : task.repoUrl
+        ? "The repository is checked out at /work. Make the changes there and commit them with clear messages. You cannot push; the server pushes your commits to a new branch when you finish.\n\n"
+        : "";
     task.lastAssistantText = await task.runAgent(intro + prompt, {
       model: task.model,
       continueSession: task.sessionStarted,
       keepSession: !task.opts.ephemeral,
     });
 
-    if (task.repoUrl && task.baseSha) {
+    if ((task.repoUrl || task.newRepoName) && task.baseSha) {
       const cycles = task.opts.reviewCycles ?? 0;
       for (let i = 1; i <= cycles; i++) {
         task.setStatus("reviewing", { cycle: i, of: cycles });
@@ -374,12 +418,12 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
       await task.exportAndPush();
     }
     task.setStatus("idle");
-    task.emitEvent({ type: "hive_done", status: "idle", resultBranch: task.resultBranch, commitsPushed: task.commitsPushed, usage: task.usage });
+    task.emitEvent({ type: "hive_done", status: "idle", resultBranch: task.resultBranch, commitsPushed: task.commitsPushed, createdRepo: task.createdRepo, usage: task.usage });
   } catch (err) {
     const aborted = err instanceof AbortError;
     task.error = aborted ? undefined : (err as Error).message;
     task.setStatus(aborted ? "aborted" : "failed", task.error ? { error: task.error } : {});
-    task.emitEvent({ type: "hive_done", status: task.status, error: task.error, resultBranch: task.resultBranch, usage: task.usage });
+    task.emitEvent({ type: "hive_done", status: task.status, error: task.error, resultBranch: task.resultBranch, createdRepo: task.createdRepo, usage: task.usage });
     if (!aborted) console.error(`task ${task.id} failed:`, task.error);
   } finally {
     release();
