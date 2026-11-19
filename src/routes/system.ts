@@ -5,13 +5,24 @@
  */
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
+import { githubLogin } from "../git.js";
 import { currentVersion } from "../release.js";
 import { systemInfo } from "../sandbox.js";
 import { capacity } from "../tasks.js";
 
+/** Whether the server's gh login works, and as whom. */
+async function githubStatus(): Promise<{ connected: boolean; login?: string; error?: string }> {
+  try {
+    return { connected: true, login: await githubLogin() };
+  } catch (err) {
+    return { connected: false, error: (err as Error).message };
+  }
+}
+
 export default async function systemRoutes(app: FastifyInstance) {
   app.get("/api/system", async () => ({
     ...systemInfo(),
+    github: await githubStatus(),
     vm: {
       memory: config.sandbox.memory,
       cpus: config.sandbox.cpus,

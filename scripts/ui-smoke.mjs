@@ -266,6 +266,7 @@ try {
   await page.waitForSelector("#isolationCard");
   const checkRows = await page.$$eval("#checksTable tbody tr", (nodes) => nodes.length);
   assert(checkRows >= 2, `this computer lists its checks (got ${checkRows})`);
+  await page.waitForSelector("#githubCard");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-computer.png") });
 
   // ── theme toggle: light <-> dark, remembered; the user name is a tooltip on Log out ──

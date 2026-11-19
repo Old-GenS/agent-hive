@@ -1291,6 +1291,7 @@ interface SystemInfo {
   vm: { memory: string; cpus: string; timeoutMin: number };
   capacity: { running: number; queued: number; max: number };
   gitProtocol: string;
+  github?: { connected: boolean; login?: string; error?: string };
   npmCache: boolean;
   version: string;
 }
@@ -1301,8 +1302,37 @@ const ISOLATION_TEXT: Record<string, string> = {
   container: "Plain container",
 };
 
+/** One plain sentence on what each runtime is, and where to read more. */
+const RUNTIME_ABOUT: Record<string, { text: string; href: string; label: string }> = {
+  libkrun: {
+    text: "libkrun is a small library that boots a lightweight virtual machine with your CPU's built-in virtualization (KVM). Each run gets its own Linux kernel, so the agent can't touch this computer's files or processes.",
+    href: "https://github.com/containers/libkrun",
+    label: "What is libkrun?",
+  },
+  krun: {
+    text: "krun is podman's runtime built on libkrun: each container runs inside its own lightweight virtual machine with its own Linux kernel.",
+    href: "https://github.com/containers/libkrun",
+    label: "What is krun?",
+  },
+  runsc: {
+    text: "gVisor puts its own kernel, written in Go, between the agent and this computer's kernel, so most system calls never reach the host.",
+    href: "https://gvisor.dev/docs/",
+    label: "What is gVisor?",
+  },
+  crun: {
+    text: "A plain podman container shares this computer's Linux kernel. It keeps files apart, but a kernel bug could let the agent out.",
+    href: "https://podman.io/docs",
+    label: "About podman",
+  },
+  runc: {
+    text: "A plain podman container shares this computer's Linux kernel. It keeps files apart, but a kernel bug could let the agent out.",
+    href: "https://podman.io/docs",
+    label: "About podman",
+  },
+};
+
 const RUNTIME_TEXT: Record<string, string> = {
-  libkrun: "libkrun, started directly (no podman)",
+  libkrun: "libkrun, started directly",
   krun: "podman with the krun runtime",
   runsc: "podman with gVisor (runsc)",
   crun: "podman (crun)",
@@ -1345,6 +1375,17 @@ function computerSections(info: SystemInfo): HTMLElement[] {
     ),
     el("p", { class: "isolation-runtime" }, RUNTIME_TEXT[info.runtime] ?? info.runtime),
   );
+  const about = RUNTIME_ABOUT[info.runtime];
+  if (about) {
+    summary.append(
+      el(
+        "p",
+        { class: "isolation-about", id: "runtimeAbout" },
+        about.text + " ",
+        el("a", { href: about.href, target: "_blank", rel: "noopener noreferrer" }, about.label),
+      ),
+    );
+  }
   if (info.warning) summary.append(el("p", { class: "alert alert-warn" }, info.warning));
 
   const table = el("table", { id: "checksTable" });
@@ -1369,14 +1410,37 @@ function computerSections(info: SystemInfo): HTMLElement[] {
     ["VM size", `${info.vm.memory} memory, ${info.vm.cpus} CPU${info.vm.cpus === "1" ? "" : "s"}`],
     ["Time limit per run", `${info.vm.timeoutMin} minutes`],
     ["Runs at once", `${info.capacity.running} running of ${info.capacity.max}, ${info.capacity.queued} queued`],
-    ["GitHub access", info.gitProtocol === "ssh" ? "SSH (deploy keys)" : "HTTPS (the server's gh login)"],
     ["Shared npm cache", info.npmCache ? "On" : "Off"],
     ["hive version", info.version],
   ];
   const list = el("dl", { class: "facts" });
   for (const [term, value] of facts) list.append(el("div", { class: "fact" }, el("dt", {}, term), el("dd", {}, value)));
 
-  return [summary, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
+  const gh = info.github;
+  const ghCard = el(
+    "div",
+    { class: "card github-card", id: "githubCard" },
+    el(
+      "div",
+      { class: "github-head" },
+      el("span", { class: "github-account" }, gh?.connected && gh.login ? gh.login : "Not connected"),
+      el("span", { class: `pill ${gh?.connected ? "pill-ok" : "pill-danger"}` }, gh?.connected ? "Connected" : "Not connected"),
+    ),
+    el(
+      "p",
+      { class: "github-detail" },
+      gh?.connected
+        ? `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`
+        : "Run gh auth login on the server so runs can clone private repos, push branches and open pull requests.",
+    ),
+    el(
+      "p",
+      { class: "github-detail" },
+      el("a", { href: "https://www.githubstatus.com/", target: "_blank", rel: "noopener noreferrer" }, "GitHub service status"),
+    ),
+  );
+
+  return [summary, el("h2", { class: "section-title" }, "GitHub"), ghCard, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
 }
 
 // ── theme ──

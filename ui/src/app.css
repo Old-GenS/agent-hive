@@ -1472,3 +1472,36 @@ a.btn {
 .header-user {
   gap: 4px;
 }
+
+.isolation-about {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 720px;
+}
+
+.github-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.github-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.github-account {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.github-detail {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
