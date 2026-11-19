@@ -71,5 +71,34 @@ export default async function githubRoutes(app: FastifyInstance) {
     }
   });
 
+  // Branches of a repo, for the UI's branch list: the default branch first, then the rest by name.
+  app.get("/api/github/branches", {
+    schema: {
+      querystring: {
+        type: "object",
+        required: ["repo"],
+        properties: { repo: { type: "string", pattern: OWNER_REPO.source, maxLength: 200 } },
+      },
+    },
+  }, async (req, reply) => {
+    const { repo } = req.query as { repo: string };
+    // "." / ".." parts would turn repos/<repo> into another GitHub API path.
+    if (repo.split("/").some((part) => part === "." || part === "..")) {
+      return reply.code(400).send({ error: "Invalid repo" });
+    }
+    try {
+      const [{ stdout: def }, { stdout: list }] = await Promise.all([
+        gh(["api", `repos/${repo}`, "--jq", ".default_branch"]),
+        gh(["api", "--paginate", `repos/${repo}/branches?per_page=100`, "--jq", ".[].name"]),
+      ]);
+      const defaultBranch = def.trim();
+      const names = [...new Set(list.split("\n").map((b) => b.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const branches = defaultBranch ? [defaultBranch, ...names.filter((b) => b !== defaultBranch)] : names;
+      return { repo, defaultBranch, branches };
+    } catch (err: any) {
+      return reply.code(502).send({ error: "Couldn't list branches (does the repo exist, and can gh see it?)" });
+    }
+  });
+
   app.get("/api/user", async (req) => req.hiveUser);
 }

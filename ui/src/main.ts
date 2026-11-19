@@ -424,8 +424,21 @@ function buildForm(): HTMLElement {
     repo,
     repoOptions,
   );
-  const branch = el("input", { id: "branch", type: "text", placeholder: "default branch", autocomplete: "off" });
-  const branchField = el("div", { class: "field" }, el("label", { for: "branch" }, "Branch"), branch);
+  const branch = el("input", {
+    id: "branch",
+    type: "text",
+    list: "branchOptions",
+    placeholder: "default branch",
+    autocomplete: "off",
+  });
+  const branchOptions = el("datalist", { id: "branchOptions" });
+  const branchField = el(
+    "div",
+    { class: "field" },
+    el("label", { for: "branch" }, "Branch"),
+    branch,
+    branchOptions,
+  );
   const repoRow = el("div", { class: "grid-2" }, repoField, branchField);
 
   const newRepoName = el("input", {
@@ -639,6 +652,38 @@ function buildForm(): HTMLElement {
       // No suggestions; the field stays free-text.
     }
   })();
+
+  // Branch suggestions for the chosen repo: the default branch becomes the placeholder.
+  let branchRequest = 0;
+  let branchTimer: number | undefined;
+  const loadBranches = async () => {
+    const id = ++branchRequest;
+    const name = repo.value.trim();
+    branchOptions.replaceChildren();
+    branch.placeholder = "default branch";
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) return;
+    try {
+      const res = await api(`/api/github/branches?repo=${encodeURIComponent(name)}`);
+      if (!res.ok || id !== branchRequest) return;
+      const data = (await res.json()) as { defaultBranch?: unknown; branches?: unknown };
+      if (id !== branchRequest) return;
+      const names = Array.isArray(data.branches) ? data.branches.filter((b): b is string => typeof b === "string") : [];
+      branchOptions.replaceChildren(...names.map((b) => el("option", { value: b })));
+      if (typeof data.defaultBranch === "string" && data.defaultBranch) {
+        branch.placeholder = `${data.defaultBranch} (default)`;
+      }
+    } catch {
+      // No suggestions; the field stays free-text.
+    }
+  };
+  repo.addEventListener("input", () => {
+    window.clearTimeout(branchTimer);
+    branchTimer = window.setTimeout(() => void loadBranches(), 400);
+  });
+  repo.addEventListener("change", () => {
+    window.clearTimeout(branchTimer);
+    void loadBranches();
+  });
 
   wrap.append(form);
   return wrap;

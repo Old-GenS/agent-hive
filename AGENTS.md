@@ -27,7 +27,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`) |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
 | `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/abort`, `/session`, `/files`, `/events` |
-| `src/routes/github.ts` | `gh`-backed repo list, search, fork for the UI |
+| `src/routes/github.ts` | `gh`-backed repo list, branches, search, fork for the UI |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |

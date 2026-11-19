@@ -221,6 +221,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
 | GET | `/api/models?provider=` | Models to offer for a provider (OpenRouter's live list, a fixed list for the others) |
 | GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
+| GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first (via `gh`) |
 | POST | `/api/github/fork` | Fork into the `gh` account; returns `{repo}` |
 | GET | `/health` | Health check (no auth) |
 
