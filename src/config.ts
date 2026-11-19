@@ -18,12 +18,25 @@ function int(name: string, fallback: number): number {
 }
 
 /** LLM providers: which env var holds the key on the host, which name pi expects in the sandbox. */
-export const PROVIDERS: Record<string, { hostEnv: string[]; sandboxEnv: string; defaultModel?: string }> = {
-  deepseek: { hostEnv: ["DEEPSEEK_API_KEY"], sandboxEnv: "DEEPSEEK_API_KEY", defaultModel: "deepseek-v4-pro" },
-  zai: { hostEnv: ["ZAI_API_KEY", "ZAI_CODE"], sandboxEnv: "ZAI_API_KEY", defaultModel: "glm-5.3" },
-  openrouter: { hostEnv: ["OPENROUTER_API_KEY"], sandboxEnv: "OPENROUTER_API_KEY", defaultModel: "xiaomi/mimo-v2.6-flash" },
-  anthropic: { hostEnv: ["ANTHROPIC_API_KEY"], sandboxEnv: "ANTHROPIC_API_KEY" },
-  openai: { hostEnv: ["OPENAI_API_KEY"], sandboxEnv: "OPENAI_API_KEY" },
+export const PROVIDERS: Record<
+  string,
+  { hostEnv: string[]; sandboxEnv: string; defaultModel?: string; label: string }
+> = {
+  deepseek: {
+    hostEnv: ["DEEPSEEK_API_KEY"],
+    sandboxEnv: "DEEPSEEK_API_KEY",
+    defaultModel: "deepseek-v4-pro",
+    label: "DeepSeek",
+  },
+  zai: { hostEnv: ["ZAI_API_KEY", "ZAI_CODE"], sandboxEnv: "ZAI_API_KEY", defaultModel: "glm-5.3", label: "Z.AI" },
+  openrouter: {
+    hostEnv: ["OPENROUTER_API_KEY"],
+    sandboxEnv: "OPENROUTER_API_KEY",
+    defaultModel: "xiaomi/mimo-v2.6-flash",
+    label: "OpenRouter",
+  },
+  anthropic: { hostEnv: ["ANTHROPIC_API_KEY"], sandboxEnv: "ANTHROPIC_API_KEY", label: "Anthropic" },
+  openai: { hostEnv: ["OPENAI_API_KEY"], sandboxEnv: "OPENAI_API_KEY", label: "OpenAI" },
 };
 
 export function providerKey(provider: string): string | undefined {
@@ -75,3 +88,53 @@ export const config = {
     allowAnyRepoUrl: process.env.HIVE_ALLOW_ANY_REPO_URL === "1",
   },
 };
+
+/** The model a provider will use: DEFAULT_MODEL beats the provider's own default. */
+export function effectiveModel(provider: string): string | undefined {
+  return config.defaultModel || PROVIDERS[provider]?.defaultModel || undefined;
+}
+
+export interface ProviderInfo {
+  default: {
+    provider: string | null;
+    providerSource: "DEFAULT_PROVIDER" | "first provider with a key" | null;
+    model: string | null;
+    modelSource: "DEFAULT_MODEL" | "provider default" | null;
+    thinking: string;
+  };
+  providers: { id: string; label: string; hasKey: boolean; model: string | null }[];
+}
+
+/** Resolved defaults for the UI/CLI, plus which providers have a key. Never includes key values. */
+export function providerInfo(): ProviderInfo {
+  const resolved = resolveProvider();
+  const provider = resolved !== undefined && PROVIDERS[resolved] ? resolved : null;
+
+  let providerSource: ProviderInfo["default"]["providerSource"] = null;
+  if (provider !== null) {
+    providerSource =
+      process.env.DEFAULT_PROVIDER && process.env.DEFAULT_PROVIDER === provider
+        ? "DEFAULT_PROVIDER"
+        : "first provider with a key";
+  }
+
+  const model = provider !== null ? (effectiveModel(provider) ?? null) : null;
+  let modelSource: ProviderInfo["default"]["modelSource"] = null;
+  if (model !== null) modelSource = config.defaultModel ? "DEFAULT_MODEL" : "provider default";
+
+  return {
+    default: {
+      provider,
+      providerSource,
+      model,
+      modelSource,
+      thinking: config.defaultThinking,
+    },
+    providers: Object.keys(PROVIDERS).map((id) => ({
+      id,
+      label: PROVIDERS[id].label,
+      hasKey: !!providerKey(id),
+      model: effectiveModel(id) ?? null,
+    })),
+  };
+}

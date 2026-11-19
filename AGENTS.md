@@ -28,6 +28,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
 | `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/abort`, `/session`, `/files`, `/events` |
 | `src/routes/github.ts` | `gh`-backed repo list, search, fork for the UI |
+| `src/routes/providers.ts` | `/api/providers`: resolved defaults and which providers have a key, for the UI |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist` |

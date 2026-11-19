@@ -290,7 +290,7 @@ function commandPath(bin: string): string | undefined {
 
 async function cmdDoctor(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
-  const { config } = await import("./config.js");
+  const { config, providerInfo } = await import("./config.js");
   const { libkrunAvailable } = await import("./sandbox.js");
   const { currentVersion } = await import("./release.js");
 
@@ -345,6 +345,30 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const isolationOk = libkrunAvailable();
   lines.push(`isolation: ${isolationOk ? "microvm (system libkrun)" : "unavailable"}`);
   if (!isolationOk) allOk = false;
+
+  const providers = providerInfo();
+  const def = providers.default;
+  if (def.provider !== null) {
+    lines.push(
+      def.providerSource === "DEFAULT_PROVIDER"
+        ? `provider: ${def.provider} (DEFAULT_PROVIDER)`
+        : `provider: ${def.provider} (first provider with a key; set DEFAULT_PROVIDER to choose)`,
+    );
+  } else if (process.env.DEFAULT_PROVIDER) {
+    lines.push(
+      `provider: unknown "${process.env.DEFAULT_PROVIDER}" (DEFAULT_PROVIDER); supported: deepseek, zai, openrouter, anthropic, openai`,
+    );
+  } else {
+    lines.push("provider: none (no API key set)");
+  }
+  if (def.model !== null) {
+    lines.push(
+      def.modelSource === "DEFAULT_MODEL"
+        ? `model: ${def.model} (DEFAULT_MODEL)`
+        : `model: ${def.model} (${def.provider}'s default)`,
+    );
+  }
+  lines.push(`thinking: ${def.thinking}`);
 
   process.stdout.write(lines.join("\n") + "\n");
   return allOk ? 0 : 1;

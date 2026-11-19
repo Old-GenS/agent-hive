@@ -14,7 +14,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { config, PROVIDERS, providerKey, resolveProvider } from "./config.js";
+import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from "./config.js";
 import { runSandbox, runtimeInfo, type SandboxHandle, type SandboxOptions } from "./sandbox.js";
 import { applyAndPush, normalizeRepo, prepareRepo, validateBranch } from "./git.js";
 
@@ -289,7 +289,7 @@ export function createTask(opts: TaskOptions): Task {
     throw new Error(`Unknown or missing provider. Supported: ${Object.keys(PROVIDERS).join(", ")}`);
   }
   if (!providerKey(provider)) throw new Error(`No API key configured for provider "${provider}"`);
-  const model = opts.model || config.defaultModel || PROVIDERS[provider].defaultModel;
+  const model = opts.model || effectiveModel(provider);
   if (!model) throw new Error(`model is required for provider "${provider}" (or set DEFAULT_MODEL)`);
   const thinking = opts.thinkingLevel || config.defaultThinking;
   if (!THINKING.includes(thinking)) throw new Error(`thinkingLevel must be one of ${THINKING.join(", ")}`);

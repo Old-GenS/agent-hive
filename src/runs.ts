@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { config, PROVIDERS, providerKey, resolveProvider } from "./config.js";
+import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from "./config.js";
 import { runSandbox, type SandboxOptions } from "./sandbox.js";
 import {
   applyAndPush,
@@ -346,7 +346,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   }
   const key = providerKey(provider);
   if (!key) throw new Error(`No API key configured for provider "${provider}"`);
-  const model = o.model || config.defaultModel || PROVIDERS[provider].defaultModel;
+  const model = o.model || effectiveModel(provider);
   if (!model) throw new Error(`model is required for provider "${provider}" (or set DEFAULT_MODEL)`);
   const thinking = o.thinking || config.defaultThinking;
   if (!THINKING.includes(thinking)) throw new Error(`thinkingLevel must be one of ${THINKING.join(", ")}`);

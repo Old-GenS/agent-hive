@@ -125,6 +125,25 @@ All optional. Put them in `~/.config/agent-hive/env` or export them.
 | `HIVE_RELEASE_REPO` | `ogsapps/agent-hive` | GitHub repo releases are looked up in |
 | `GH_TOKEN` / `GITHUB_TOKEN` | — | Used for release lookups when set |
 
+### Provider and model
+
+The provider is `-p` if given, else `DEFAULT_PROVIDER`, else the first provider in this order that
+has a key: DeepSeek, Z.AI, OpenRouter, Anthropic, OpenAI. The model is `-m` if given, else
+`DEFAULT_MODEL`, else the provider's default:
+
+| Provider | Default model |
+|----------|---------------|
+| DeepSeek | `deepseek-v4-pro` |
+| Z.AI | `glm-5.3` |
+| OpenRouter | `xiaomi/mimo-v2.6-flash` |
+| Anthropic | none — `-m` or `DEFAULT_MODEL` is required |
+| OpenAI | none — `-m` or `DEFAULT_MODEL` is required |
+
+`DEFAULT_MODEL` applies whichever provider is picked, so set it only together with
+`DEFAULT_PROVIDER`. With both `DEEPSEEK_API_KEY` and `OPENROUTER_API_KEY` set, DeepSeek is used
+unless `DEFAULT_PROVIDER=openrouter`. `hive doctor` prints what will be used. The web UI shows the
+resolved defaults and lists only providers that have a key.
+
 ### Run directories
 
 ```
@@ -185,6 +204,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |
 | WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` |
 | GET | `/capacity` | Running / queued sandboxes |
+| GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
 | GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
 | POST | `/api/github/fork` | Fork into the `gh` account; returns `{repo}` |
 | GET | `/health` | Health check (no auth) |

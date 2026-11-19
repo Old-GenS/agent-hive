@@ -10,6 +10,7 @@ import { checkSandbox, runtimeInfo } from "./sandbox.js";
 import { capacity, taskCount } from "./tasks.js";
 import sessionRoutes from "./routes/sessions.js";
 import githubRoutes from "./routes/github.js";
+import providerRoutes from "./routes/providers.js";
 
 let tokenCount = 0;
 try {
@@ -60,6 +61,7 @@ await app.register(async (api) => {
   api.get("/capacity", async () => capacity());
   await api.register(sessionRoutes);
   await api.register(githubRoutes);
+  await api.register(providerRoutes);
 });
 
 for (const problem of checkSandbox()) app.log.error(problem);

@@ -192,6 +192,7 @@ async function sendChat() {
     if (!sessionId) {
       sessionId = data.sessionId;
       lockSessionControls();
+      addMessage("system", esc(`🐝 ${data.provider} · ${data.model}`));
     }
     await connect(data.sessionId);
   } catch (err: any) {
@@ -214,6 +215,72 @@ function useRepo(fullName: string) {
 function switchTab(tab: string) {
   document.querySelectorAll<HTMLElement>(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   document.querySelectorAll<HTMLElement>(".tab-panel").forEach((p) => p.classList.toggle("active", p.dataset.tab === tab));
+}
+
+// ── providers ──
+
+interface ProviderInfoResponse {
+  default: {
+    provider: string | null;
+    providerSource: string | null;
+    model: string | null;
+    modelSource: string | null;
+    thinking: string;
+  };
+  providers: { id: string; label: string; hasKey: boolean; model: string | null }[];
+}
+
+let providerInfo: ProviderInfoResponse | null = null;
+
+function applyModelPlaceholder() {
+  const input = $<HTMLInputElement>("modelInput");
+  const select = $<HTMLSelectElement>("providerSelect");
+  if (!input || !select || !providerInfo) return;
+  let model: string | null = null;
+  if (select.value) {
+    model = providerInfo.providers.find((p) => p.id === select.value)?.model ?? null;
+  } else {
+    model = providerInfo.default.model;
+  }
+  input.placeholder = model ? `model (${model})` : "model";
+}
+
+/** Fill the provider/model/thinking controls from the server's resolved defaults. */
+async function loadProviders(): Promise<void> {
+  try {
+    const r = await api("/api/providers");
+    if (!r.ok) return;
+    providerInfo = (await r.json()) as ProviderInfoResponse;
+    const select = $<HTMLSelectElement>("providerSelect");
+    const thinking = $<HTMLSelectElement>("thinkingSelect");
+    if (!select || !thinking) return;
+
+    select.replaceChildren();
+    const first = document.createElement("option");
+    first.value = "";
+    if (providerInfo.default.provider) {
+      const entry = providerInfo.providers.find((p) => p.id === providerInfo!.default.provider);
+      first.textContent = `Provider: default (${entry?.label ?? providerInfo.default.provider} · ${providerInfo.default.model ?? "no default model"})`;
+    } else {
+      first.textContent = "Provider: default (none: no API key)";
+    }
+    select.appendChild(first);
+    for (const p of providerInfo.providers) {
+      const option = document.createElement("option");
+      option.value = p.id;
+      option.textContent = p.hasKey ? p.label : `${p.label} (no key)`;
+      option.disabled = !p.hasKey;
+      select.appendChild(option);
+    }
+
+    const thinkingDefault = thinking.options[0];
+    if (thinkingDefault) thinkingDefault.textContent = `Thinking: default (${providerInfo.default.thinking})`;
+
+    select.addEventListener("change", applyModelPlaceholder);
+    applyModelPlaceholder();
+  } catch {
+    // Leave the static controls unchanged when the endpoint is unavailable.
+  }
 }
 
 // ── app ──
@@ -296,6 +363,7 @@ function renderApp(user: { name: string }) {
 
   new GitHubPanel(useRepo).init();
   input.focus();
+  void loadProviders();
 }
 
 (async () => {
