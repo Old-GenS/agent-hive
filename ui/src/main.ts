@@ -396,9 +396,10 @@ function renderApp(user: { name: string }): void {
   navSettingsEl.onclick = () => {
     location.hash = "#settings";
   };
-  const logout = el("button", { id: "logoutBtn", class: "btn btn-small btn-ghost", type: "button" }, "Log out");
-  // The signed-in name shows as a tooltip on Log out instead of taking space in the header.
-  logout.title = `Current user: ${user.name}`;
+  const logout = el("button", { id: "logoutBtn", class: "btn btn-small btn-ghost icon-btn", type: "button" });
+  logout.append(logoutIcon());
+  // The signed-in name shows in the tooltip instead of taking space in the header.
+  logout.title = `Log out (current user: ${user.name})`;
   logout.setAttribute("aria-label", `Log out (current user: ${user.name})`);
   logout.onclick = () => {
     run?.ws?.close();
@@ -1427,12 +1428,30 @@ function themeIcon(theme: Theme): SVGSVGElement {
   return svg;
 }
 
+/** A door with an arrow leaving it, for Log out. */
+function logoutIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.5");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("d", "M6.5 2.5h-3a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3 M10.5 11l3-3-3-3 M13.5 8H6.5");
+  svg.append(path);
+  return svg;
+}
+
 /**
  * Header button switching between light and dark. It shows the theme a click switches to.
  * Until the viewer picks one it follows the device; the pick is kept in this browser.
  */
 function themeButton(): HTMLButtonElement {
-  const button = el("button", { id: "themeBtn", class: "btn btn-small btn-ghost theme-btn", type: "button" });
+  const button = el("button", { id: "themeBtn", class: "btn btn-small btn-ghost icon-btn theme-btn", type: "button" });
   const render = () => {
     const next: Theme = currentTheme() === "dark" ? "light" : "dark";
     button.replaceChildren(themeIcon(next));

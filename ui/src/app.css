@@ -1456,6 +1456,19 @@ a.btn {
   gap: 6px;
 }
 
-.theme-btn svg {
+/* Icon-only header buttons (theme, log out): square 44 px targets, side by side. */
+.icon-btn {
+  width: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn svg {
   flex-shrink: 0;
+}
+
+.header-user {
+  gap: 4px;
 }

@@ -283,7 +283,10 @@ try {
   await page.click("#themeBtn");
   assert((await themeAttr()) === "light", "theme toggle switches back to light");
   const logoutTitle = await page.getAttribute("#logoutBtn", "title");
-  assert(logoutTitle === "Current user: Admin", `Log out shows the current user on hover (got ${logoutTitle})`);
+  assert(
+    logoutTitle === "Log out (current user: Admin)",
+    `Log out shows the current user on hover (got ${logoutTitle})`,
+  );
   assert((await page.$$(".user-name")).length === 0, "the user name is no longer in the header");
 
   // ── phone: runs view at 390 px ──
