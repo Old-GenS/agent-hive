@@ -4,7 +4,7 @@
 //   npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs
 //
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,5 +192,6 @@ try {
   try {
     server.kill("SIGKILL");
   } catch {}
+  rmSync(workspace, { recursive: true, force: true });
 }
 process.exit(exitCode);
