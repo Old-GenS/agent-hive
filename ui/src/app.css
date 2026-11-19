@@ -18,6 +18,8 @@
   --warn-soft: #FFF4E0;
   --danger: #B42318;
   --danger-soft: #FDECEA;
+  --honey: #E8A317;
+  --honey-soft: #FCEFD2;
   --radius: 8px;
   --radius-lg: 12px;
 }
@@ -41,6 +43,8 @@
     --warn-soft: #33270F;
     --danger: #FF7A6E;
     --danger-soft: #3A1714;
+    --honey: #F2B53A;
+    --honey-soft: #3A2C0E;
   }
 }
 
@@ -105,6 +109,18 @@ code,
 .mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 0.9em;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 button,
@@ -718,6 +734,167 @@ textarea:disabled {
   resize: vertical;
 }
 
+/* ── bee ── */
+
+.bee-indicator {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+}
+
+.bee-stage {
+  width: 96px;
+  height: 96px;
+  flex-shrink: 0;
+}
+
+.bee-flight {
+  transform-box: view-box;
+  transform-origin: 48px 48px;
+}
+
+.bee,
+.bee-wing {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.bee {
+  transform: translate(48px, 8px);
+}
+
+.bee-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bee-label {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.bee-time {
+  font-size: 13px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes bee-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes bee-upright {
+  to {
+    transform: translate(48px, 8px) rotate(-360deg);
+  }
+}
+
+@keyframes bee-flutter {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.35);
+  }
+}
+
+@keyframes bee-bob {
+  0%,
+  100% {
+    transform: translate(48px, 8px);
+  }
+  50% {
+    transform: translate(48px, 4px);
+  }
+}
+
+@keyframes honey-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.bee-indicator[data-state="working"] .bee-flight {
+  animation: bee-orbit 3.2s linear infinite;
+}
+
+.bee-indicator[data-state="working"] .bee {
+  animation: bee-upright 3.2s linear infinite;
+}
+
+.bee-indicator[data-state="working"] .bee-wing {
+  animation: bee-flutter 0.12s linear infinite;
+}
+
+.bee-indicator[data-state="working"] .bee-honey {
+  animation: honey-pulse 2.4s ease-in-out infinite;
+}
+
+.bee-indicator[data-state="queued"] .bee {
+  animation: bee-bob 1.6s ease-in-out infinite;
+}
+
+.bee-indicator[data-state="queued"] .bee-wing {
+  animation: bee-flutter 0.12s linear infinite;
+}
+
+.bee-indicator[data-state="queued"] .bee-honey {
+  opacity: 0.25;
+}
+
+.bee-indicator[data-state="done"] .bee {
+  transform: translate(48px, 18px);
+}
+
+.bee-indicator[data-state="done"] .bee-honey {
+  opacity: 1;
+}
+
+.bee-indicator[data-state="failed"],
+.bee-indicator[data-state="stopped"] {
+  filter: grayscale(1);
+}
+
+.bee-indicator[data-state="failed"] .bee-honey,
+.bee-indicator[data-state="stopped"] .bee-honey {
+  opacity: 0.15;
+}
+
+.bee-indicator[data-state="failed"] .bee-label,
+.bee-indicator[data-state="stopped"] .bee-label {
+  color: var(--text-2);
+}
+
+.header-bee {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.header-bee .bee-wing {
+  animation: bee-flutter 0.12s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bee-indicator *,
+  .header-bee * {
+    animation: none !important;
+  }
+}
+
 /* ── settings ── */
 
 .settings-layout {
@@ -873,6 +1050,42 @@ td.provider-name {
   }
 }
 
+@media (max-width: 640px) {
+  .header-inner {
+    padding: 9px 16px;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+
+  .header-user {
+    order: 0;
+    width: auto;
+    justify-content: flex-end;
+  }
+
+  .user-name {
+    display: none;
+  }
+
+  .nav-btn {
+    padding: 0 10px;
+  }
+}
+
 [hidden] {
   display: none !important;
+}
+
+/* The bee orbits slightly outside the 96 px stage; let it show instead of clipping. */
+.bee-stage svg {
+  overflow: visible;
+}
+
+/* Result banners: the inner .item-banner box draws the frame, not the timeline row around it. */
+.timeline > li.item-banner-ok,
+.timeline > li.item-banner-danger,
+.timeline > li.item-banner-warn {
+  background: none;
+  border: 0;
+  color: inherit;
 }

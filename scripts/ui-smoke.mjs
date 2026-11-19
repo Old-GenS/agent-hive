@@ -100,6 +100,65 @@ try {
   assert(!hasEmoji, "no element text contains an emoji");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-desktop.png") });
 
+  // ── desktop: run view (bee indicator; never reaches the real /prompt) ──
+  await page.route("**/prompt", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        sessionId: "demo-session",
+        status: "queued",
+        repo: null,
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+      }),
+    }),
+  );
+  await page.route("**/events/demo-session/ticket", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ticket: "demo" }) }),
+  );
+  let demoSocket = null;
+  await page.routeWebSocket(/\/events\/demo-session/, (ws) => {
+    demoSocket = ws;
+    ws.send(JSON.stringify({ type: "hive_status", status: "running" }));
+    ws.send(JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "npm test" } }));
+  });
+
+  // Playwright installs the WebSocket interception hook as an init script, so the document has
+  // to load after the route is registered. The token is in localStorage, so a reload lands back
+  // on the new-run form.
+  await page.reload();
+  await page.waitForSelector("#provider");
+
+  await page.fill("#task", "demo task");
+  await page.click("#startBtn");
+  await page.waitForSelector('.bee-indicator[data-state="working"]');
+  const beeLabel = await page.$eval(".bee-label", (node) => (node.textContent ?? "").trim());
+  assert(
+    beeLabel === "Agent working in the microVM",
+    `bee label is Agent working in the microVM (got ${JSON.stringify(beeLabel)})`,
+  );
+  const headerBees = await page.$$eval(".header-bee", (nodes) => nodes.length);
+  assert(headerBees === 1, `header shows one bee while the run is busy (got ${headerBees})`);
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-run-working.png") });
+
+  demoSocket.send(JSON.stringify({ type: "hive_done", status: "idle", usage: { cost: 0.0123 } }));
+  await page.waitForSelector('.bee-indicator[data-state="done"]');
+  const headerBeesDone = await page.$$eval(".header-bee", (nodes) => nodes.length);
+  assert(headerBeesDone === 0, `header bee is removed when the run is done (got ${headerBeesDone})`);
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-run-done.png") });
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const beeAnimation = await page.evaluate(() => getComputedStyle(document.querySelector(".bee-flight")).animationName);
+  assert(beeAnimation === "none", `reduced motion stops the bee flight (got ${beeAnimation})`);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  await page.unroute("**/prompt");
+  await page.unroute("**/events/demo-session/ticket");
+  await page.click('button:has-text("New run")');
+  await page.waitForSelector("#provider");
+
   // ── desktop: settings ──
   await page.click("#nav-settings");
   await page.waitForSelector("#settingsTable tbody tr");
@@ -117,6 +176,8 @@ try {
   await page.waitForSelector("#provider");
   const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   assert(scrollWidth <= 390, `no horizontal scroll at 390 px (scrollWidth ${scrollWidth})`);
+  const headerHeight = await page.$eval(".header", (node) => node.getBoundingClientRect().height);
+  assert(headerHeight <= 64, `header is at most 64 px tall at 390 px (got ${headerHeight})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-phone.png") });
 
   console.log("ui-smoke: ok");

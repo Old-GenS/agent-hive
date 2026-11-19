@@ -7,6 +7,7 @@
  * formatContent(), which escapes first and only then adds a fixed set of formatting tags.
  */
 import "./app.css";
+import { createBeeIndicator, headerBee, type BeeIndicator, type BeeState } from "./bee.js";
 import { api, clearToken, el, esc, getToken, saveToken, setToken, serverUrl } from "./util.js";
 
 // ── types ──
@@ -54,6 +55,19 @@ const STATUS_PILL: Record<string, string> = {
 };
 
 const BUSY_STATUS = new Set(["queued", "cloning", "running", "reviewing", "pushing"]);
+
+/** What the bee indicator shows for each run status. */
+const BEE_STATE: Record<Status, { state: BeeState; label: string }> = {
+  queued: { state: "queued", label: "Waiting for a free microVM" },
+  cloning: { state: "working", label: "Cloning the repo" },
+  running: { state: "working", label: "Agent working in the microVM" },
+  reviewing: { state: "working", label: "Reviewing the changes" },
+  pushing: { state: "working", label: "Pushing changes" },
+  idle: { state: "done", label: "Done" },
+  failed: { state: "failed", label: "Failed" },
+  aborted: { state: "stopped", label: "Stopped" },
+};
+
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 type Tone = "ok" | "warn" | "danger";
@@ -100,6 +114,7 @@ interface RunUi {
   followInput: HTMLTextAreaElement;
   followBtn: HTMLButtonElement;
   empty: HTMLElement | null;
+  bee: BeeIndicator;
 }
 
 // ── state ──
@@ -115,6 +130,7 @@ let runsEl: HTMLElement | null = null;
 let settingsEl: HTMLElement | null = null;
 let navRunsEl: HTMLButtonElement | null = null;
 let navSettingsEl: HTMLButtonElement | null = null;
+let headerBeeEl: HTMLElement | null = null;
 
 let run: RunState | null = null;
 let runUi: RunUi | null = null;
@@ -258,8 +274,10 @@ function renderApp(user: { name: string }): void {
   const logout = el("button", { id: "logoutBtn", class: "btn btn-small btn-ghost", type: "button" }, "Log out");
   logout.onclick = () => {
     run?.ws?.close();
+    runUi?.bee.destroy();
     run = null;
     runUi = null;
+    headerBeeEl = null;
     runsEl = null;
     settingsEl = null;
     mainEl = null;
@@ -586,6 +604,7 @@ function itemElement(item: RunItem): HTMLElement {
 
 function buildRunView(): HTMLElement {
   const state = run!;
+  runUi?.bee.destroy();
   const pill = el("span", { class: "pill" });
   const stopBtn = el("button", { class: "btn btn-danger", type: "button" }, "Stop");
   stopBtn.onclick = () => void abortRun();
@@ -595,6 +614,7 @@ function buildRunView(): HTMLElement {
 
   const repoText = state.repo ?? "no repo";
   const modelText = state.model || "default model";
+  const bee = createBeeIndicator();
   const head = el(
     "section",
     { class: "card" },
@@ -603,6 +623,7 @@ function buildRunView(): HTMLElement {
       { class: "run-head" },
       el("h1", { class: "run-title" }, state.title),
       el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`),
+      bee.root,
       toolbar,
     ),
   );
@@ -632,9 +653,22 @@ function buildRunView(): HTMLElement {
   });
   const followUp = el("div", { class: "follow-up" }, followInput, followBtn);
 
-  runUi = { pill, stopBtn, newBtn, timeline, nodes, followInput, followBtn, empty };
+  runUi = { pill, stopBtn, newBtn, timeline, nodes, followInput, followBtn, empty, bee };
   syncRunUi();
   return el("div", {}, head, timelineCard, followUp);
+}
+
+function syncHeaderBee(): void {
+  if (!navRunsEl) return;
+  if (run?.busy) {
+    if (!headerBeeEl) {
+      headerBeeEl = headerBee();
+      navRunsEl.append(headerBeeEl);
+    }
+  } else if (headerBeeEl) {
+    headerBeeEl.remove();
+    headerBeeEl = null;
+  }
 }
 
 function syncRunUi(): void {
@@ -645,6 +679,9 @@ function syncRunUi(): void {
   runUi.newBtn.hidden = run.busy;
   runUi.followInput.disabled = run.busy;
   runUi.followBtn.disabled = run.busy;
+  const beeState = BEE_STATE[run.status];
+  runUi.bee.set(beeState.state, beeState.label);
+  syncHeaderBee();
 }
 
 function appendItem(item: RunItem): void {
@@ -822,8 +859,10 @@ async function sendFollowUp(): Promise<void> {
 
 function newRun(): void {
   run?.ws?.close();
+  runUi?.bee.destroy();
   run = null;
   runUi = null;
+  syncHeaderBee();
   if (runsEl) runsEl.replaceChildren(buildForm());
 }
 
