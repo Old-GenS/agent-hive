@@ -18,6 +18,9 @@ import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from 
 import { runSandbox, runtimeInfo, type SandboxHandle, type SandboxOptions } from "./sandbox.js";
 import {
   applyAndPush,
+  changeSummary,
+  githubSlug,
+  type ChangeSummary,
   createGithubRepo,
   git,
   normalizeRepo,
@@ -70,6 +73,8 @@ export class Task extends EventEmitter {
   baseSha?: string;
   resultBranch?: string;
   commitsPushed = 0;
+  /** what the last push changed: commits and files */
+  changes?: ChangeSummary;
   /** token and cost totals over every agent run of this task */
   usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   messages: ChatMessage[] = [];
@@ -128,6 +133,8 @@ export class Task extends EventEmitter {
       createdRepo: this.createdRepo,
       resultBranch: this.resultBranch,
       commitsPushed: this.commitsPushed,
+      changes: this.changes,
+      repoSlug: this.repoUrl ? githubSlug(this.repoUrl) : undefined,
       usage: this.usage,
       provider: this.provider,
       model: this.model,
@@ -208,6 +215,7 @@ export class Task extends EventEmitter {
     const out = join(this.dir, "out");
     rmSync(out, { recursive: true, force: true });
     mkdirSync(out);
+    this.changes = undefined;
     const exp = runSandbox({
       name: `hive-${this.id.slice(0, 8)}-export-${this.runs}`,
       mounts: [
@@ -234,11 +242,15 @@ export class Task extends EventEmitter {
       // The repo was created by this task, and a follow-up rewrites main with the full history.
       this.commitsPushed = await applyAndPush(this.dir, this.baseSha!, "main");
       this.resultBranch = "main";
+      this.changes = await changeSummary(this.dir, this.baseSha!);
       return;
     }
     const branch = `${config.git.branchPrefix}${this.id.slice(0, 8)}`;
     this.commitsPushed = await applyAndPush(this.dir, this.baseSha!, branch);
-    if (this.commitsPushed > 0) this.resultBranch = branch;
+    if (this.commitsPushed > 0) {
+      this.resultBranch = branch;
+      this.changes = await changeSummary(this.dir, this.baseSha!);
+    }
   }
 }
 
@@ -420,7 +432,16 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
       await task.exportAndPush();
     }
     task.setStatus("idle");
-    task.emitEvent({ type: "hive_done", status: "idle", resultBranch: task.resultBranch, commitsPushed: task.commitsPushed, createdRepo: task.createdRepo, usage: task.usage });
+    task.emitEvent({
+      type: "hive_done",
+      status: "idle",
+      resultBranch: task.resultBranch,
+      commitsPushed: task.commitsPushed,
+      createdRepo: task.createdRepo,
+      changes: task.changes,
+      repoSlug: task.repoUrl ? githubSlug(task.repoUrl) : undefined,
+      usage: task.usage,
+    });
   } catch (err) {
     const aborted = err instanceof AbortError;
     task.error = aborted ? undefined : (err as Error).message;

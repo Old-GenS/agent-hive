@@ -109,7 +109,66 @@ type RunItem =
   | { kind: "user"; text: string }
   | AssistantItem
   | ToolItem
-  | { kind: "banner"; tone: Tone; title: string; detail: string; link?: { href: string; label: string } };
+  | {
+      kind: "banner";
+      tone: Tone;
+      title: string;
+      detail: string;
+      link?: { href: string; label: string };
+      changes?: Changes;
+    };
+
+/** What a run's push changed, from hive_done (agent-controlled text: render as text only). */
+interface Changes {
+  commits: string[];
+  files: { path: string; added: number | null; removed: number | null }[];
+  moreFiles: number;
+}
+
+function parseChanges(raw: unknown): Changes | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const commits = Array.isArray(r.commits) ? r.commits.filter((c): c is string => typeof c === "string") : [];
+  const files = Array.isArray(r.files)
+    ? r.files
+        .filter((f): f is Record<string, unknown> => !!f && typeof f === "object" && typeof (f as any).path === "string")
+        .map((f) => ({
+          path: f.path as string,
+          added: typeof f.added === "number" ? f.added : null,
+          removed: typeof f.removed === "number" ? f.removed : null,
+        }))
+    : [];
+  if (!commits.length && !files.length) return undefined;
+  return { commits, files, moreFiles: typeof r.moreFiles === "number" ? r.moreFiles : 0 };
+}
+
+function changesElement(changes: Changes): HTMLElement {
+  const box = el("div", { class: "changes" });
+  if (changes.commits.length) {
+    box.append(el("h3", { class: "changes-title" }, `Commits (${changes.commits.length})`));
+    box.append(el("ul", { class: "changes-commits" }, ...changes.commits.map((c) => el("li", {}, c))));
+  }
+  if (changes.files.length) {
+    const total = changes.files.length + changes.moreFiles;
+    box.append(el("h3", { class: "changes-title" }, `Files changed (${total})`));
+    const list = el("ul", { class: "changes-files" });
+    for (const f of changes.files) {
+      const stats =
+        f.added === null || f.removed === null
+          ? el("span", { class: "changes-binary" }, "binary")
+          : el(
+              "span",
+              { class: "changes-stats" },
+              el("span", { class: "changes-added" }, `+${f.added}`),
+              el("span", { class: "changes-removed" }, `\u2212${f.removed}`),
+            );
+      list.append(el("li", {}, el("span", { class: "changes-path" }, f.path), stats));
+    }
+    if (changes.moreFiles > 0) list.append(el("li", { class: "cell-muted" }, `and ${changes.moreFiles} more`));
+    box.append(list);
+  }
+  return box;
+}
 
 interface RunState {
   sessionId: string;
@@ -747,7 +806,9 @@ function fillItem(li: HTMLElement, item: RunItem): void {
           ),
         );
       }
-      li.replaceChildren(el("div", { class: `item-banner item-banner-${item.tone}` }, ...children));
+      const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
+      if (item.changes) banner.append(changesElement(item.changes));
+      li.replaceChildren(banner);
       break;
     }
   }
@@ -972,10 +1033,18 @@ function finishRun(event: any): void {
       parts.push("No changes, so no repository was created");
     } else if (event.resultBranch) {
       parts.push(`Pushed ${event.commitsPushed ?? 0} commit(s) to ${event.resultBranch}`);
+      const slug = typeof event.repoSlug === "string" ? event.repoSlug : "";
+      const branch = String(event.resultBranch);
+      if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(slug) && /^[A-Za-z0-9._\/-]+$/.test(branch)) {
+        const encoded = branch.split("/").map(encodeURIComponent).join("/");
+        link = { href: `https://github.com/${slug}/compare/${encoded}`, label: "See the changes on GitHub" };
+      }
+    } else if (!run.newRepo && run.repo) {
+      parts.push("No changes were made");
     }
     const cost = Number(event.usage?.cost);
     if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
-    item = { kind: "banner", tone: "ok", title: "Done", detail: parts.join(" · "), link };
+    item = { kind: "banner", tone: "ok", title: "Done", detail: parts.join(" · "), link, changes: parseChanges(event.changes) };
   } else if (status === "aborted") {
     item = { kind: "banner", tone: "warn", title: "Stopped", detail: event.error ? String(event.error) : "" };
   } else {

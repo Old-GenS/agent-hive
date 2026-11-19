@@ -1317,3 +1317,71 @@ td.provider-name {
     grid-template-columns: 1fr;
   }
 }
+
+/* What a run changed, inside the result banner */
+.changes {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.changes-title {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.changes-commits,
+.changes-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.changes-commits li::before {
+  content: "\2022";
+  color: var(--text-3);
+  margin-right: 8px;
+}
+
+.changes-files li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.changes-path {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.changes-stats {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.changes-added {
+  color: var(--ok);
+}
+
+.changes-removed {
+  color: var(--danger);
+}
+
+.changes-binary {
+  color: var(--text-3);
+  font-size: 13px;
+}

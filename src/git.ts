@@ -267,6 +267,37 @@ export async function applyAndPush(
   return patches.length;
 }
 
+export interface ChangeSummary {
+  commits: string[];
+  files: { path: string; added: number | null; removed: number | null }[];
+  /** more files changed than are listed */
+  moreFiles: number;
+}
+
+const MAX_SUMMARY_FILES = 200;
+
+/**
+ * What the pushed commits changed, read from the pristine clone (never from work/): commit
+ * subjects oldest first, and per-file lines added/removed (null for binary files).
+ */
+export async function changeSummary(dir: string, base: string): Promise<ChangeSummary> {
+  const origin = join(dir, "origin");
+  const log = await git(["log", "--reverse", "--format=%s", `${base}..HEAD`], origin);
+  const commits = log ? log.split("\n") : [];
+  const numstat = await git(["diff", "--numstat", "--no-renames", base, "HEAD"], origin);
+  const all = numstat
+    ? numstat.split("\n").map((line) => {
+        const [a, r, ...rest] = line.split("\t");
+        return {
+          path: rest.join("\t"),
+          added: a === "-" ? null : Number.parseInt(a, 10),
+          removed: r === "-" ? null : Number.parseInt(r, 10),
+        };
+      })
+    : [];
+  return { commits, files: all.slice(0, MAX_SUMMARY_FILES), moreFiles: Math.max(0, all.length - MAX_SUMMARY_FILES) };
+}
+
 // ── CLI host-side git ──
 // These run against the user's own repo (rev-parse, status, clone source, apply/am of exported
 // patches), never against a run's work/ copy.

@@ -150,12 +150,37 @@ try {
   await page.waitForTimeout(1500);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-run-working.png") });
 
-  demoSocket.send(JSON.stringify({ type: "hive_done", status: "idle", usage: { cost: 0.0123 } }));
+  demoSocket.send(
+    JSON.stringify({
+      type: "hive_done",
+      status: "idle",
+      resultBranch: "hive/demo1234",
+      commitsPushed: 2,
+      repoSlug: "demo/repo",
+      changes: {
+        commits: ["Fix the loading state", "Document the focus page"],
+        files: [
+          { path: "index.html", added: 19, removed: 10 },
+          { path: "README.md", added: 6, removed: 0 },
+          { path: "logo.png", added: null, removed: null },
+        ],
+        moreFiles: 0,
+      },
+      usage: { cost: 0.0123 },
+    }),
+  );
   await page.waitForSelector('.bee-indicator[data-state="done"]');
   const stepsDone = await page.$$eval(".item-status[data-step]", (nodes) => nodes.map((n) => n.dataset.step));
   assert(
     JSON.stringify(stepsDone) === JSON.stringify(["done", "done"]),
     `every step is ticked off when the run is done (got ${JSON.stringify(stepsDone)})`,
+  );
+  const changedFiles = await page.$$eval(".changes-files li", (nodes) => nodes.length);
+  assert(changedFiles === 3, `the result lists the files changed (got ${changedFiles})`);
+  const compareHref = await page.$eval(".banner-link", (a) => a.getAttribute("href"));
+  assert(
+    compareHref === "https://github.com/demo/repo/compare/hive/demo1234",
+    `the result links to the changes on GitHub (got ${compareHref})`,
   );
   const headerBeesDone = await page.$$eval(".header-bee", (nodes) => nodes.length);
   assert(headerBeesDone === 0, `header bee is removed when the run is done (got ${headerBeesDone})`);
