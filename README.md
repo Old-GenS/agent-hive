@@ -212,6 +212,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/snippet` | One-shot question about some code; waits and returns `{result}` |
 | GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `error` |
 | GET | `/messages/:id` | Conversation so far |
+| POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
 | POST | `/abort/:id` | Stop the running sandbox |
 | DELETE | `/session/:id` | Delete the session and its files |
 | GET | `/files/:id?path=`, `/file/:id?path=` | Browse the agent's working copy |

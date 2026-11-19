@@ -25,6 +25,10 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      '/pr': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
       '/abort': {
         target: 'http://localhost:8080',
         changeOrigin: true,

@@ -116,6 +116,8 @@ type RunItem =
       detail: string;
       link?: { href: string; label: string };
       changes?: Changes;
+      /** set when this run's branch can become a pull request */
+      pr?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
     };
 
 /** What a run's push changed, from hive_done (agent-controlled text: render as text only). */
@@ -140,6 +142,47 @@ function parseChanges(raw: unknown): Changes | undefined {
     : [];
   if (!commits.length && !files.length) return undefined;
   return { commits, files, moreFiles: typeof r.moreFiles === "number" ? r.moreFiles : 0 };
+}
+
+const PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/;
+
+function prElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
+  const pr = item.pr!;
+  const box = el("div", { class: "pr-actions" });
+  if (pr.state === "open" && pr.url && PR_URL.test(pr.url)) {
+    box.append(
+      el("a", { class: "btn btn-primary", id: "prLink", href: pr.url, target: "_blank", rel: "noopener noreferrer" }, "View pull request"),
+    );
+    return box;
+  }
+  const button = el(
+    "button",
+    { class: "btn btn-primary", id: "openPrBtn", type: "button" },
+    pr.state === "opening" ? "Opening pull request…" : "Open pull request",
+  );
+  button.disabled = pr.state === "opening";
+  button.onclick = () => void openPr(item);
+  box.append(button, el("span", { class: "pr-hint" }, "Uses the agent's write-up and the change list as the description."));
+  if (pr.state === "error" && pr.error) box.append(el("p", { class: "alert alert-danger" }, pr.error));
+  return box;
+}
+
+async function openPr(item: Extract<RunItem, { kind: "banner" }>): Promise<void> {
+  if (!run || !item.pr || item.pr.state === "opening") return;
+  const sessionId = run.sessionId;
+  item.pr = { state: "opening" };
+  updateItem(item);
+  try {
+    const res = await api(`/pr/${encodeURIComponent(sessionId)}`, { method: "POST" });
+    const data = (await res.json().catch(() => ({}))) as { url?: unknown; error?: unknown };
+    if (!res.ok || typeof data.url !== "string") {
+      throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    }
+    item.pr = { state: "open", url: data.url };
+  } catch (err) {
+    item.pr = { state: "error", error: err instanceof Error ? err.message : String(err) };
+  }
+  updateItem(item);
 }
 
 function changesElement(changes: Changes): HTMLElement {
@@ -808,6 +851,7 @@ function fillItem(li: HTMLElement, item: RunItem): void {
       }
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
       if (item.changes) banner.append(changesElement(item.changes));
+      if (item.pr) banner.append(prElement(item));
       li.replaceChildren(banner);
       break;
     }
@@ -1044,7 +1088,16 @@ function finishRun(event: any): void {
     }
     const cost = Number(event.usage?.cost);
     if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
-    item = { kind: "banner", tone: "ok", title: "Done", detail: parts.join(" · "), link, changes: parseChanges(event.changes) };
+    const canPr = !createdRepo && !!event.resultBranch && typeof event.repoSlug === "string" && !!event.repoSlug;
+    item = {
+      kind: "banner",
+      tone: "ok",
+      title: "Done",
+      detail: parts.join(" · "),
+      link,
+      changes: parseChanges(event.changes),
+      pr: canPr ? { state: "ready" } : undefined,
+    };
   } else if (status === "aborted") {
     item = { kind: "banner", tone: "warn", title: "Stopped", detail: event.error ? String(event.error) : "" };
   } else {

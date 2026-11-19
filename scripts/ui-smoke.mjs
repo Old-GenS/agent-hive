@@ -182,6 +182,14 @@ try {
     compareHref === "https://github.com/demo/repo/compare/hive/demo1234",
     `the result links to the changes on GitHub (got ${compareHref})`,
   );
+  await page.route("**/pr/demo-session", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ url: "https://github.com/demo/repo/pull/7" }) }),
+  );
+  await page.click("#openPrBtn");
+  await page.waitForSelector("#prLink");
+  const prHref = await page.$eval("#prLink", (a) => a.getAttribute("href"));
+  assert(prHref === "https://github.com/demo/repo/pull/7", `View pull request links to the PR (got ${prHref})`);
+  await page.unroute("**/pr/demo-session");
   const headerBeesDone = await page.$$eval(".header-bee", (nodes) => nodes.length);
   assert(headerBeesDone === 0, `header bee is removed when the run is done (got ${headerBeesDone})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-run-done.png") });

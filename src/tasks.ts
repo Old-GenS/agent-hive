@@ -19,6 +19,8 @@ import { runSandbox, runtimeInfo, type SandboxHandle, type SandboxOptions } from
 import {
   applyAndPush,
   changeSummary,
+  openPullRequest,
+  prBody,
   githubSlug,
   type ChangeSummary,
   createGithubRepo,
@@ -75,6 +77,8 @@ export class Task extends EventEmitter {
   commitsPushed = 0;
   /** what the last push changed: commits and files */
   changes?: ChangeSummary;
+  /** the pull request opened from resultBranch, if any */
+  prUrl?: string;
   /** token and cost totals over every agent run of this task */
   usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   messages: ChatMessage[] = [];
@@ -134,6 +138,7 @@ export class Task extends EventEmitter {
       resultBranch: this.resultBranch,
       commitsPushed: this.commitsPushed,
       changes: this.changes,
+      prUrl: this.prUrl,
       repoSlug: this.repoUrl ? githubSlug(this.repoUrl) : undefined,
       usage: this.usage,
       provider: this.provider,
@@ -252,6 +257,27 @@ export class Task extends EventEmitter {
       this.changes = await changeSummary(this.dir, this.baseSha!);
     }
   }
+}
+
+/**
+ * Open a pull request from a finished run's branch, with the agent's last message and the
+ * change list as its description. Opening it again returns the same PR.
+ */
+export async function openTaskPr(task: Task): Promise<string> {
+  if (task.prUrl) return task.prUrl;
+  if (task.busy) throw new Error("The run is still going");
+  if (!task.resultBranch || task.createdRepo) throw new Error("This run has no branch to open a pull request from");
+  const slug = task.repoUrl ? githubSlug(task.repoUrl) : undefined;
+  if (!slug) throw new Error("Pull requests need a github.com repository");
+  const firstLine = (task.opts.prompt.split("\n").find((l) => l.trim()) ?? "").trim();
+  const title = `hive: ${firstLine.length > 70 ? firstLine.slice(0, 69) + "…" : firstLine || task.resultBranch}`;
+  task.prUrl = await openPullRequest({
+    slug,
+    branch: task.resultBranch,
+    title,
+    body: prBody(task.lastAssistantText, task.changes, task.model),
+  });
+  return task.prUrl;
 }
 
 /** Commits made in the sandbox use the configured identity (env beats git config). */

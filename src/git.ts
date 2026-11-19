@@ -298,6 +298,48 @@ export async function changeSummary(dir: string, base: string): Promise<ChangeSu
   return { commits, files: all.slice(0, MAX_SUMMARY_FILES), moreFiles: Math.max(0, all.length - MAX_SUMMARY_FILES) };
 }
 
+const MAX_PR_SUMMARY = 50_000;
+
+/**
+ * A pull request description: the agent's own write-up first, then the facts from git (commits
+ * and files changed), so the PR stays accurate even when the write-up isn't.
+ */
+export function prBody(summary: string, changes: ChangeSummary | undefined, model: string): string {
+  const parts: string[] = [];
+  const text = summary.trim();
+  parts.push(text ? (text.length > MAX_PR_SUMMARY ? text.slice(0, MAX_PR_SUMMARY) + "\n\n…(cut)" : text) : "_The agent left no summary._");
+  if (changes?.commits.length) {
+    parts.push("---", "### Commits", ...changes.commits.map((c) => `- ${c}`));
+  }
+  if (changes?.files.length) {
+    parts.push("### Files changed", "| File | Added | Removed |", "|---|---:|---:|");
+    for (const f of changes.files) {
+      const path = f.path.replace(/\|/g, "\\|");
+      parts.push(f.added === null ? `| \`${path}\` | binary | |` : `| \`${path}\` | +${f.added} | −${f.removed} |`);
+    }
+    if (changes.moreFiles > 0) parts.push(`| …and ${changes.moreFiles} more | | |`);
+  }
+  parts.push("", `_Opened by agent-hive from a run on \`${model}\`._`);
+  return parts.join("\n");
+}
+
+/** Open a pull request from `branch` with gh; returns its URL. */
+export async function openPullRequest(o: { slug: string; branch: string; title: string; body: string }): Promise<string> {
+  const args = ["pr", "create", "--repo", o.slug, "--head", o.branch, "--title", o.title, "--body", o.body];
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(ghBin(), args, { env: GH_ENV(), timeout: 120_000, maxBuffer: 1024 * 1024 }));
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    throw new Error(`Couldn't open the pull request: ${String(e.stderr || e.message || "").trim().slice(-500)}`);
+  }
+  const url = stdout.trim().split("\n").pop()?.trim() ?? "";
+  if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(url)) {
+    throw new Error(`gh pr create gave an unexpected answer: ${stdout.trim().slice(-300)}`);
+  }
+  return url;
+}
+
 // ── CLI host-side git ──
 // These run against the user's own repo (rev-parse, status, clone source, apply/am of exported
 // patches), never against a run's work/ copy.

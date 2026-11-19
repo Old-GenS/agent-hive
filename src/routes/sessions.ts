@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 import { issueTicket } from "../auth.js";
-import { BusyError, createTask, destroyTask, getTask, runPrompt, type Task } from "../tasks.js";
+import { BusyError, createTask, destroyTask, getTask, openTaskPr, runPrompt, type Task } from "../tasks.js";
 
 const promptSchema = {
   body: {
@@ -136,6 +136,17 @@ export default async function sessionRoutes(app: FastifyInstance) {
   app.get("/messages/:sessionId", async (req, reply) => {
     const task = taskOr404((req.params as any).sessionId, reply);
     return task && { sessionId: task.id, messages: task.messages };
+  });
+
+  // Open a pull request from the run's branch (only when the user clicks; never automatic).
+  app.post("/pr/:sessionId", async (req, reply) => {
+    const task = taskOr404((req.params as any).sessionId, reply);
+    if (!task) return;
+    try {
+      return { sessionId: task.id, url: await openTaskPr(task) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   app.post("/abort/:sessionId", async (req, reply) => {

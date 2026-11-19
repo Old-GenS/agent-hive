@@ -1385,3 +1385,37 @@ td.provider-name {
   color: var(--text-3);
   font-size: 13px;
 }
+
+/* Open pull request, inside the result banner */
+.pr-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  color: var(--text);
+}
+
+.pr-actions .alert {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.pr-hint {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.pr-actions .btn {
+  min-height: 44px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
