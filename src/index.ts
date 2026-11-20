@@ -22,7 +22,9 @@ try {
   process.exit(1);
 }
 if (!tokenCount) {
-  console.error("FATAL: set API_TOKEN (or API_TOKENS) in .env; generate one with: openssl rand -hex 32");
+  console.error(
+    "FATAL: no API token. Run hive serve (it creates one), or set API_TOKEN in .env or ~/.config/agent-hive/env; generate one with: openssl rand -hex 32",
+  );
   process.exit(1);
 }
 

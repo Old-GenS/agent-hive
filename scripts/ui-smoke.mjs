@@ -214,6 +214,10 @@ try {
   const startDisabled = await page.$eval("#startBtn", (node) => node.disabled);
   assert(startDisabled, "#startBtn is disabled while the project name is invalid");
   await page.fill("#newRepoName", "demo-project");
+  assert(await page.isHidden("#reviewModelField"), "the reviewer model is hidden without review cycles");
+  await page.selectOption("#review", "1");
+  assert(await page.isVisible("#reviewModelField"), "picking a review cycle shows the reviewer model");
+  await page.fill("#reviewModel", "deepseek-v4-pro");
   await page.fill("#task", "new project task");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-new-project.png") });
 
@@ -242,6 +246,8 @@ try {
   deepStrictEqual(captured.newRepo, { name: "demo-project", private: true });
   assert(captured.repo === undefined, "a new project never sends repo");
   assert(captured.branch === undefined, "a new project never sends branch");
+  assert(captured.reviewCycles === 1, `review cycles are sent (got ${captured.reviewCycles})`);
+  assert(captured.reviewModel === "deepseek-v4-pro", `the reviewer model is sent (got ${captured.reviewModel})`);
   const runMeta = await page.$eval(".run-meta", (node) => (node.textContent ?? "").trim());
   assert(
     runMeta.includes("new project demo-project"),

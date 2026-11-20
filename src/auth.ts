@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { setting } from "./config.js";
 
 export interface HiveUser {
   name: string;
@@ -10,16 +11,19 @@ const users: { digest: Buffer; user: HiveUser }[] = [];
 const sha = (s: string) => createHash("sha256").update(s).digest();
 
 export function loadTokens(): number {
-  if (process.env.API_TOKENS) {
+  // setting() also reads the keys file (and .env), so a token saved by `hive serve` works here.
+  const tokens = setting("API_TOKENS");
+  if (tokens) {
     let parsed: Record<string, { name?: string; role?: string }>;
     try {
-      parsed = JSON.parse(process.env.API_TOKENS);
+      parsed = JSON.parse(tokens);
     } catch {
       throw new Error("API_TOKENS is not valid JSON");
     }
     for (const [token, profile] of Object.entries(parsed)) addToken(token, { name: profile.name || "User", role: profile.role || "user" });
   }
-  if (process.env.API_TOKEN) addToken(process.env.API_TOKEN, { name: "Admin", role: "admin" });
+  const token = setting("API_TOKEN");
+  if (token) addToken(token, { name: "Admin", role: "admin" });
   return users.length;
 }
 

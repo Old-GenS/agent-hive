@@ -70,7 +70,10 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   same `work/` and pi `session/`, so the agent remembers what it did. The old server did follow-ups
   this way.
 - **`hive mcp`:** a stdio MCP server, so Claude Code, pi or other agents can hand tasks to hive.
-- **`hive serve`:** the HTTP server and web UI on top of the CLI core, for phone and remote use.
+- **`hive serve`** *(started)*: the HTTP server and web UI on top of the CLI core, for phone and
+  remote use. `hive serve` now runs the server from the CLI, and `hive service
+  install|status|restart|logs|uninstall` keeps it running as a systemd user unit (Linux) or a
+  launchd agent (macOS). The server code is still the separate `src/index.ts` core.
 - **macOS:**
   - libkrun on Apple's Hypervisor.framework;
   - a launcher build for Apple silicon (arm64), plus an arm64 rootfs;

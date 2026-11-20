@@ -91,6 +91,8 @@ hive push --pr --base main
 | `hive clean <run>` | Delete a run. `--all` deletes every finished run. |
 | `hive keys [list]` | List each provider's key masked, where it comes from (`saved`, `environment` or `.env`) and its default model. `add <provider>` reads the key from stdin or prompts with echo off and tests it first (`--no-test` skips the test); `test [provider]` checks one key or every saved one; `remove <provider>` deletes a saved key; `default <provider>` makes a provider the default. |
 | `hive setup` | Download the VM filesystem (rootfs) the installed release needs. |
+| `hive serve` | Start the server and web UI from the CLI. `--host` / `--port` (default `127.0.0.1:8080`, or `HOST` / `PORT`), `--open` opens the browser already logged in. Creates and saves a login token if none is configured; Ctrl+C stops it. |
+| `hive service <install\|status\|restart\|logs\|uninstall>` | Run `hive serve` as a background service that starts at login/boot: a systemd user unit on Linux, a launchd agent on macOS. `install` takes `--host` / `--port`; `--dry-run` prints the file and runs nothing. |
 | `hive doctor` | Show what's available: `/dev/kvm`, libkrun, pasta, the launcher and the rootfs. |
 | `hive update [--check \| --rollback]` | Verify and install the latest release (`--check` only reports), or go back to the previous version (`--rollback`). |
 
@@ -183,13 +185,12 @@ when it can (`HIVE_RUNTIME=auto`), or in a podman sandbox (a krun microVM, gViso
 container where there's no KVM). It clones and pushes over HTTPS with the server's own `gh` login
 by default, or with per-repo SSH deploy keys (`HIVE_GIT_PROTOCOL=ssh`, handy across several
 VPSes), and pushes each run's commits to a `hive/<id>` branch. It also supports new projects,
-pull requests on click, review cycles and follow-up messages. A future `hive serve` will put the
-server on top of the CLI core.
+pull requests on click, review cycles and follow-up messages. `hive serve` runs the server and web
+UI from the CLI core, on a laptop or a headless box.
 
 ```bash
 npm ci && npm run build && npm run build:ui && npm run build:image
-cp .env.example .env      # API_TOKEN (openssl rand -hex 32) and one provider key
-node dist/index.js        # http://127.0.0.1:8080/ui/
+hive serve                # http://127.0.0.1:8080/ui/ (creates a login token on first run)
 ```
 
 The server listens on `127.0.0.1`. To reach it from other devices, put it behind a tunnel or a
@@ -199,6 +200,42 @@ the token crosses the network unencrypted. GitHub access and deploy keys are cov
 
 The server keeps runs in memory, so **restarting it stops any run in progress** and forgets
 finished ones.
+
+### Run it as a service
+
+`hive serve` runs the server and web UI in the foreground:
+
+```bash
+hive serve                     # http://127.0.0.1:8080/ui/
+hive serve --open              # also opens the browser, already logged in
+hive serve --host 0.0.0.0 --port 9000
+```
+
+If no login token exists yet (neither `API_TOKEN` nor `API_TOKENS` in the shell, the keys file or
+`.env`), `hive serve` creates one, saves it in the keys file and prints where it is.
+`--open` hands the token to the web UI in the URL fragment, which the UI reads and strips from the
+address bar. Ctrl+C stops the server.
+
+To keep it running in the background and start it at login/boot:
+
+```bash
+hive service install      # systemd user unit on Linux, launchd agent on macOS
+hive service status
+hive service restart
+hive service logs         # follows the journal (Linux) or the log file (macOS)
+hive service uninstall
+```
+
+`install` uses your home folder as the working directory and the current `PATH`, and takes
+`--host` / `--port`. `--dry-run` prints the unit or plist and runs nothing. On a headless Linux
+box, also run the `sudo loginctl enable-linger <user>` line that `install` prints, or the service
+stops when you log out.
+
+The background service does not inherit your shell, so provider keys must be in the keys file
+(`hive keys add`), not only in the environment; `hive service install` warns about keys it can only
+see in the shell. The login token also lives in the keys file as `API_TOKEN` — it is never printed.
+
+`node dist/index.js` still works on its own (with `API_TOKEN` in `.env`).
 
 ### Web UI
 

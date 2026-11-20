@@ -7,9 +7,10 @@
  * HIVE_DOTENV_PATH and HIVE_RUNTIME are in place before ./config.ts reads them.
  */
 import { parseArgs } from "node:util";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { basename, join } from "node:path";
 
 const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
@@ -25,6 +26,8 @@ hive keys add <provider> [--no-test]
 hive keys test [provider]
 hive keys remove <provider>
 hive keys default <provider>
+hive serve [--host <addr>] [--port <n>] [--open]
+hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>] [--dry-run]
 hive setup
 hive doctor
 hive update [--check | --rollback]
@@ -465,6 +468,179 @@ async function cmdKeys(args: string[]): Promise<number> {
   }
 }
 
+/** A --host / --port pair with the defaults and the validation `hive serve` uses. */
+function serveTarget(values: { host?: string; port?: string }): { host: string; port: number } {
+  const host = values.host ?? process.env.HOST ?? "127.0.0.1";
+  const rawPort = values.port ?? process.env.PORT ?? "8080";
+  if (!/^\d+$/.test(rawPort)) throw new Error(`--port must be 1-65535, got "${rawPort}"`);
+  const port = Number(rawPort);
+  if (port < 1 || port > 65535) throw new Error(`--port must be 1-65535, got "${rawPort}"`);
+  return { host, port };
+}
+
+/**
+ * Create and save a login token when none is configured (neither API_TOKEN nor API_TOKENS, in the
+ * shell, the keys file or .env). Returns the new token when it made one.
+ */
+async function ensureLoginToken(): Promise<string | undefined> {
+  const { setting } = await import("./config.js");
+  if (setting("API_TOKEN") || setting("API_TOKENS")) return undefined;
+  const { keysFilePath, setKeysFileValue } = await import("./keys.js");
+  const token = randomBytes(24).toString("hex");
+  setKeysFileValue("API_TOKEN", token);
+  process.stdout.write(`hive: created a login token and saved it to ${keysFilePath()}\n`);
+  return token;
+}
+
+/** Poll the server's /health until it answers, or the timeout runs out. */
+async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      if (res.ok) return true;
+    } catch {
+      // Not listening yet.
+    }
+    await sleep(200);
+  }
+  return false;
+}
+
+/** Open a URL in the user's browser; `onFailure` runs when no opener could be started. */
+function openBrowser(url: string, onFailure: () => void): void {
+  const command = process.platform === "darwin" ? "open" : "xdg-open";
+  try {
+    const child = spawn(command, [url], { detached: true, stdio: "ignore" });
+    child.once("error", onFailure);
+    child.unref();
+  } catch {
+    onFailure();
+  }
+}
+
+async function cmdServe(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      host: { type: "string" },
+      port: { type: "string" },
+      open: { type: "boolean" },
+    },
+  });
+  const { host, port } = serveTarget(values);
+  // Before anything imports ./config.ts: it reads HOST and PORT once, at import time.
+  process.env.HOST = host;
+  process.env.PORT = String(port);
+
+  const created = await ensureLoginToken();
+  const { shellEnv } = await import("./config.js");
+  const { keySource, keysFilePath, readKeysFile } = await import("./keys.js");
+  const configured =
+    created === undefined ? keySource(["API_TOKEN"], shellEnv, process.env, readKeysFile()) : undefined;
+  const token = created ?? configured?.value;
+  // A token that lives only in the keys file has to be in the environment too: loadTokens() runs
+  // after config.ts was imported, so its shell-environment snapshot may predate the check above.
+  if (token !== undefined) process.env.API_TOKEN = token;
+
+  await import("./index.js");
+
+  const hint = `hive: log in with the token in ${keysFilePath()} (hive keys list does not show it; see API_TOKEN there)`;
+  if (!(await waitForHealth(port, 15_000))) {
+    throw new Error(`the server did not answer on http://127.0.0.1:${port}/health; is the port free?`);
+  }
+  process.stdout.write(`hive: serving on http://${host}:${port}/ui/\n`);
+  if (host === "0.0.0.0") {
+    for (const [name, addresses] of Object.entries(networkInterfaces())) {
+      for (const address of addresses ?? []) {
+        if (address.family === "IPv4" && !address.internal) {
+          process.stdout.write(`hive: also on http://${address.address}:${port}/ui/ (${name})\n`);
+        }
+      }
+    }
+  }
+  process.stdout.write(`${hint}\n`);
+
+  if (values.open) {
+    const base = `http://127.0.0.1:${port}/ui/`;
+    const url = token === undefined ? base : `${base}#token=${token}`;
+    openBrowser(url, () => {
+      process.stdout.write(`hive: couldn't open a browser; go to ${base}\n${hint}\n`);
+    });
+  }
+
+  // The server keeps its own handles; Ctrl+C is a normal, successful stop.
+  process.on("SIGINT", () => process.exit(0));
+  return 0;
+}
+
+/** Warn about provider keys that only exist in this shell: a service won't inherit them. */
+async function warnShellOnlyKeys(): Promise<void> {
+  const { PROVIDERS, shellEnv } = await import("./config.js");
+  const { readKeysFile } = await import("./keys.js");
+  const fileValues = readKeysFile();
+  for (const [id, provider] of Object.entries(PROVIDERS)) {
+    const inShell = provider.hostEnv.some((name) => shellEnv[name]);
+    const inFile = provider.hostEnv.some((name) => fileValues[name]);
+    if (inShell && !inFile) {
+      process.stderr.write(
+        `hive: ${provider.label} key comes from your shell; the service won't see it. Save it with: hive keys add ${id}\n`,
+      );
+    }
+  }
+}
+
+async function cmdService(args: string[]): Promise<number> {
+  const [sub, ...rest] = args;
+  if (sub === undefined) throw new Error("hive service needs install, status, restart, logs or uninstall");
+  const { values } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      host: { type: "string" },
+      port: { type: "string" },
+      "dry-run": { type: "boolean" },
+    },
+  });
+  const dryRun = values["dry-run"] ?? false;
+  const service = await import("./service.js");
+  switch (sub) {
+    case "install": {
+      const { host, port } = serveTarget(values);
+      await ensureLoginToken();
+      await warnShellOnlyKeys();
+      const result = service.installService({ host, port, dryRun });
+      if (dryRun) {
+        process.stdout.write(`hive: would write ${result.file}\n`);
+        process.stdout.write(result.content);
+      } else {
+        process.stdout.write(`hive: wrote ${result.file}\n`);
+        process.stdout.write(`hive: started; open http://${host}:${port}/ui/\n`);
+        if (result.lingerHint !== undefined) process.stdout.write(`${result.lingerHint}\n`);
+      }
+      return 0;
+    }
+    case "status": {
+      const { installed } = service.statusService({ dryRun });
+      if (!installed) process.stdout.write("hive: not installed\n");
+      return 0;
+    }
+    case "restart":
+      service.restartService({ dryRun });
+      if (!dryRun) process.stdout.write("hive: restarted\n");
+      return 0;
+    case "logs":
+      return service.logsService({ dryRun });
+    case "uninstall":
+      service.uninstallService({ dryRun });
+      if (!dryRun) process.stdout.write("hive: uninstalled\n");
+      return 0;
+    default:
+      throw new Error(`unknown service command "${sub}"; try hive service install`);
+  }
+}
+
 function kvmState(): "ok" | "missing" | "no access" {
   try {
     accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
@@ -718,6 +894,12 @@ async function main(): Promise<void> {
       return;
     case "keys":
       process.exitCode = await cmdKeys(rest);
+      return;
+    case "serve":
+      process.exitCode = await cmdServe(rest);
+      return;
+    case "service":
+      process.exitCode = await cmdService(rest);
       return;
     case "setup":
       process.exitCode = await cmdSetup(rest);

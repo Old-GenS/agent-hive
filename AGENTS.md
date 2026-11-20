@@ -23,7 +23,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/tasks.ts` | Task lifecycle: queue → clone (or a new empty repo) → agent run → review cycles → export → push (or create the GitHub repo); change summary; pull requests on request; idle cleanup |
 | `src/sandbox.ts` | `podman run` / `pasta` + `hive-vm` wrapper, runtime detection (libkrun / krun / runsc / plain container), JSONL parsing; under libkrun the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
-| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/push/list/clean); sets the commit identity from the user's git config |
+| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/push/list/clean/serve/service); sets the commit identity from the user's git config |
+| `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
 | `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply, push (never forced) and `gh pr create` |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |

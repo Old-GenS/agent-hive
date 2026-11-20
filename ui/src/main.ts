@@ -442,6 +442,26 @@ async function validateToken(): Promise<{ name: string } | null> {
   }
 }
 
+/**
+ * `hive serve --open` logs the browser in with a token in the URL fragment. Take it before the
+ * login check and strip it from the address bar and history entry (fragments never reach the
+ * server). An invalid token is handled like one typed into the login form.
+ */
+function takeTokenFromHash(): void {
+  if (!location.hash.startsWith("#token=")) return;
+  const raw = location.hash.slice("#token=".length);
+  let value = raw;
+  try {
+    value = decodeURIComponent(raw);
+  } catch {
+    // Keep the raw value; the login check will reject it if it isn't a token.
+  }
+  history.replaceState(null, "", "#runs");
+  if (!value) return;
+  setToken(value);
+  saveToken();
+}
+
 function renderLogin(showError = false): void {
   mainEl = null;
   const tokenInput = el("input", {
@@ -943,6 +963,30 @@ function buildForm(): HTMLElement {
   );
   const reviewField = el("div", { class: "field" }, el("label", { for: "review" }, "Review"), review);
 
+  // Reviewer model: same provider as the run, picked from the same model list (shared datalist).
+  const reviewModel = el("input", {
+    id: "reviewModel",
+    type: "text",
+    list: "modelOptions",
+    placeholder: "same as the main model",
+    autocomplete: "off",
+  });
+  const reviewModelField = el(
+    "div",
+    { class: "field", id: "reviewModelField", hidden: "" },
+    el("label", { for: "reviewModel" }, "Reviewer model"),
+    reviewModel,
+    el(
+      "p",
+      { class: "field-hint" },
+      "A fresh agent checks the changes and fixes real problems before anything is pushed. Empty uses the main model.",
+    ),
+  );
+  const syncReviewModel = () => {
+    reviewModelField.hidden = Number(review.value) === 0;
+  };
+  review.addEventListener("change", syncReviewModel);
+
   const optionsGrid = el("div", { class: "grid-2" }, providerField, modelField, thinkingField, reviewField);
 
   const warnSlot = el("div");
@@ -961,7 +1005,7 @@ function buildForm(): HTMLElement {
     "form",
     { class: "card", novalidate: "" },
     heading,
-    el("div", { class: "form-rows" }, taskField, modeField, repoRow, newRepoGroup, optionsGrid),
+    el("div", { class: "form-rows" }, taskField, modeField, repoRow, newRepoGroup, optionsGrid, reviewModelField),
     el("div", { class: "form-actions" }, warnSlot, alertSlot, startBtn),
   );
 
@@ -1015,6 +1059,8 @@ function buildForm(): HTMLElement {
       if (repoValue && branchValue) body.branch = branchValue;
       if (repoValue && reviewCycles > 0) body.reviewCycles = reviewCycles;
     }
+    const reviewModelValue = reviewModel.value.trim();
+    if (body.reviewCycles && reviewModelValue) body.reviewModel = reviewModelValue;
     if (provider.value) body.provider = provider.value;
     const modelValue = model.value.trim();
     if (modelValue) body.model = modelValue;
@@ -1061,6 +1107,7 @@ function buildForm(): HTMLElement {
       if (firstWithKey) provider.value = firstWithKey.id;
     }
     provider.addEventListener("change", () => {
+      reviewModel.value = "";
       void loadModels(provider.value, model, modelOptions);
     });
   }
@@ -2220,6 +2267,7 @@ applyTheme(savedTheme());
 // ── boot ──
 
 (async () => {
+  takeTokenFromHash();
   if (!getToken()) {
     renderLogin();
     return;
