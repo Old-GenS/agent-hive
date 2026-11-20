@@ -1,157 +1,163 @@
 ## Goal
 
-Bring the web UI back to feature parity with the deleted server engine, with every feature living in
-the CLI run engine (`src/runs.ts`): follow-ups, review cycles, new projects, a run queue, the
-"cloning" step and a per-run system prompt. The deleted engine is readable with
-`git show 9cce3c2^:src/tasks.ts` (see `runPrompt`, `runAgent`, `exportAndPush`, `REVIEW_PROMPT`);
-the web routes are in `src/web-runs.ts`. The UI (`ui/`) must not need changes: it already sends
-`sessionId`, `reviewCycles`, `reviewModel`, `newRepo`, `systemPromptOverride` and reads
-`hive_status` (`queued` with `running`/`max`, `cloning` with `newProject`, `running`,
-`reviewing` with `cycle`/`of`, `pushing`) and `hive_done` (`createdRepo`, `commitsPushed`,
-`resultBranch`, `repoSlug`, `changes`, `status`, `error`).
+Finish the run engine's remaining protections and features, all in the CLI engine (`src/runs.ts`)
+with thin hooks in the web layer (`src/web-runs.ts`, `src/index.ts`) and the CLI (`src/cli.ts`):
+
+1. **Startup cleanup:** a VM left behind by a crashed hive is stopped, and its run is marked failed.
+2. **Time limit note:** the agent is told its deadline, so it commits in time.
+3. **Slim saved logs:** streaming-only events are dropped from a step's saved event log once the
+   step ends (live streaming is unchanged).
+4. **Run retention:** finished runs older than 14 days are deleted automatically.
+5. **`hive new`:** start a new project from the terminal.
+6. **OpenRouter routing and models.json,** ported from pi-vm (`~/code/pi-vm/bin/pi-vm` is not in
+   this repo; the logic to port is described in step 7).
 
 ## Files to touch
 
 - `src/runs.ts`
+- `src/openrouter.ts` (new)
+- `src/config.ts`
 - `src/web-runs.ts`
+- `src/index.ts`
 - `src/cli.ts`
-- `test/web-runs.test.mjs`
-- `test/run-steps.test.mjs` (new)
+- `ui/src/main.ts`
+- `test/cleanup.test.mjs` (new)
+- `test/openrouter.test.mjs` (new)
+- `test/run-steps.test.mjs`
 - `README.md`
+- `.env.example`
+- `docs/CORE.md`
 - `.handoff/report.md`
 
 ## Steps
 
 1. Run `npm ci`, then `npm run build:vm`.
 
-2. `src/runs.ts`, run data:
-   - `RunStatus` gains `"queued"`. `RunMeta.source` becomes `"local" | "remote" | "new"`. Add to
-     `RunMeta`: `newRepo?: { name: string; private: boolean }`, `createdRepo?: string`,
-     `reviewCycles?: number`, `reviewModel?: string`, `steps?: number` (agent steps run so far).
-   - `StartRunOptions` gains: `newRepo?: { name: string; private?: boolean }` (a third source:
-     exactly one of `repo`, `remote`, `newRepo` must be set, else throw `"startRun needs exactly one
-     of repo, remote or newRepo"`; validate the name with `validateRepoName` before anything else
-     happens), `systemPrompt?: string`, `reviewCycles?: number` (integer 0..5, else throw),
-     `reviewModel?: string`, `onStatus?: (status: string, extra?: Record<string, unknown>) => void`,
-     `waitTurn?: (signal: AbortSignal) => Promise<void>`.
+2. **Startup cleanup** (`src/runs.ts`): `export function recoverRuns(o: { procRoot?: string;
+   kill?: (pid: number) => void } = {}): string[]` (returns the names of runs it recovered). For
+   every run in `listRuns()` whose `meta.status` is `"running"` or `"queued"` and whose `meta.pid`
+   is gone (`!isLive(meta)`):
+   - find processes whose `/proc/<pid>/cmdline` (NUL-separated; `procRoot` defaults to `/proc`)
+     contains an argument ending in `hive-vm` **and** an argument that contains `<run dir>/`;
+     send each `SIGTERM` (`o.kill ?? ((pid) => process.kill(pid, "SIGTERM"))`, ignore errors);
+   - set `status: "failed"`, `error: "interrupted (hive stopped)"`, `finishedAt: Date.now()` and
+     write meta.
+   Unreadable `/proc` entries are skipped. Call `recoverRuns()` once at server start in
+   `src/index.ts` (before `listen`, log how many were recovered) and at the start of `hive run`,
+   `hive continue`, `hive new` and `hive list` in `src/cli.ts`.
 
-3. `src/runs.ts`, `startRun` order:
-   1. validate (as today, plus step 2);
-   2. `makeRunDir(...)` (name: the new repo's name for `newRepo`), write `meta.json` with
-      `status: "queued"`, `base: ""`, `pid: process.pid` and the new fields, then call `o.onStart`;
-   3. `await o.waitTurn?.(o.signal)`; if `o.signal.aborted` afterwards (or `waitTurn` rejects
-      because of the abort), set `status: "aborted"`, `finishedAt`, write meta and return;
-   4. `o.onStatus?.("cloning", newRepo ? { newProject: true } : {})`, then prepare:
-      `prepareNewRepo(dir)` for `newRepo`, `prepareRepo` for `remote`, `prepareLocal` for `repo`;
-      set `meta.base`, `meta.status = "running"`, write meta;
-   5. write `io/system.md` with `o.systemPrompt || config.systemPrompt`;
-   6. call `runSteps(dir, meta, prompt, { continueSession: false, ... })` (step 4) and return
-      `{ dir, meta }`.
-   For `newRepo` runs, prefix the prompt with: `/work is an empty git repository for a new project.
-   Create the project there and commit your work with clear messages. You cannot push; when you
-   finish, hive creates the GitHub repository <name> and pushes your commits to it.\n\n`.
+3. **Time limit note** (`src/runs.ts`): `startRun` writes the run's system prompt
+   (`o.systemPrompt || config.systemPrompt`) to `io/system-base.md` instead of `io/system.md`.
+   Before each agent step, `agentStep` writes `io/system.md` = the contents of
+   `io/system-base.md` (or `config.systemPrompt` when that file is missing, for older runs) +
+   `"\n\n" + timeNote(config.sandbox.timeoutMin, new Date())`, where
+   `export function timeNote(minutes: number, start: Date): string` returns:
+   `This run has a time limit of <minutes> minutes and is stopped at <ISO time of start + minutes,
+   UTC, no milliseconds> (UTC; check with \`date -u\`). Commit as you go. When 10 minutes are left,
+   start no new work: commit what you have and finish.`
 
-4. `src/runs.ts`, a shared `async function runSteps(dir, meta, prompt, o)` used by `startRun` and
-   `continueRun`:
-   - **Agent step:** move today's VM/follow/stall/`finalStatus` code into
-     `agentStep(dir, meta, { prompt, model, session: "new" | "continue" | "none", signal, onEvent })`
-     returning `{ status, error, summary?, lastText }`. Before each step after the first in a run
-     (`meta.steps >= 1`), rename `io/events.jsonl` to `io/events-<meta.steps>.jsonl` and
-     `io/stderr.log` to `io/stderr-<meta.steps>.log` so earlier steps' events are kept; then
-     increment `meta.steps`. Write the prompt to `io/prompt.md` as today. pi arguments:
-     `session: "new"` → `--session-dir /session`; `"continue"` → `--session-dir /session --continue`;
-     `"none"` → `--no-session` (no `/session` mount needed but keeping it is fine).
-   - Run the main agent step with `o.onStatus?.("running")`, the run's model and
-     `session: o.continueSession ? "continue" : "new"`. Save its summary to `meta.summary`.
-   - **Review cycles:** if the main step's status is `done` and `meta.reviewCycles > 0`, for
-     `i = 1..cycles`: `o.onStatus?.("reviewing", { cycle: i, of: cycles })`, run an agent step with
-     `export const REVIEW_PROMPT` (copied verbatim from the deleted `src/tasks.ts`) for the
-     original prompt and `meta.base`, model `meta.reviewModel || meta.model`, `session: "none"`.
-     Stop when `isLgtm(lastText)` (`export function isLgtm(text: string): boolean` =
-     `/^\s*LGTM\b/i.test(text)`) or when the review step's status isn't `done` (that status and
-     error become the run's). Review steps don't overwrite `meta.summary`.
-   - **Export:** as today (whenever `work/` exists), but first empty `out/` (`rmSync` + `mkdirSync`),
-     because a follow-up exports the run's whole history again.
-   - Write the final `status`, `error`, `commits`, `finishedAt` to meta and return.
-   - Usage from every step is added to `meta.usage` (as today, via the events).
+4. **Slim saved logs** (`src/runs.ts`): after each agent step's VM has exited (after the stall
+   watch is stopped and before `finalStatus`), rewrite `io/events.jsonl` keeping every line except
+   those whose parsed `type` is `"message_update"` or `"tool_execution_update"` (keep lines that
+   don't parse). Write to `io/events.jsonl.tmp` and `renameSync`. Export a pure
+   `export function slimEvents(text: string): string` for this and use it.
+   `ui/src/main.ts`, in `handleEvent` `case "message_end"`: before the existing empty-text check,
+   if `run.currentAssistant` has no text, set it from the event's message content (join the
+   `text` of content blocks with `type === "text"`) and call `updateItem`, so a replayed run (no
+   `message_update` events) still shows the agent's messages. Change nothing else in the UI.
 
-5. `src/runs.ts`, `export async function continueRun(dir, o: { prompt: string; signal: AbortSignal;
-   onEvent; onStatus?; waitTurn? })`: throw `"run is still going"` when `isLive(meta)`;
-   throw `"run has no work folder"` when `work/` is missing. Set `status: "queued"`, `pid`, clear
-   `error`/`finishedAt`, write meta, `await o.waitTurn?.(o.signal)` (abort handling as in step 3),
-   set `status: "running"`, then `runSteps(dir, meta, o.prompt, { continueSession: true, ... })`.
-   Return `{ dir, meta }`.
+5. **Run retention** (`src/runs.ts`, `src/config.ts`): `config.runRetentionDays =
+   int("HIVE_RUN_RETENTION_DAYS", 14)` (0 = keep forever). `export function pruneRuns(now =
+   Date.now()): string[]` deletes (with `cleanRun`) every run that is not live, has a
+   `finishedAt`, and `now - finishedAt > days * 86_400_000`; returns the deleted names; does
+   nothing when days is 0. Call it at server start (after `recoverRuns`) and then every 6 hours
+   (`setInterval(...).unref()`) in `src/index.ts`, and at the start of `hive run` and `hive new`.
 
-6. `src/runs.ts`, publishing:
-   - `pushRun(dir, o)` gains `update?: boolean`. When `update` and `meta.pushed` is set: push to
-     `meta.pushed.branch` with `applyAndPush(dir, meta.base, meta.pushed.branch, true)` (the branch
-     is the run's own), skipping the "branch already exists" check; update `meta.pushed.at`.
-   - When `meta.source === "new"`: if `meta.commits === 0` return `{ branch: "main", url: "",
-     commits: 0 }` without creating anything; otherwise, if `!meta.createdRepo`,
-     `createGithubRepo(meta.newRepo.name, meta.newRepo.private)` → slug, `url =
-     normalizeRepo(slug).url`, `git remote add origin <url>` in `<dir>/origin`, store
-     `meta.createdRepo`; then `applyAndPush(dir, meta.base, "main", true)` and
-     `meta.pushed = { branch: "main", url, at }`.
+6. **`hive new`** (`src/cli.ts`): `hive new <name> [--public] [-m model] [-p provider]
+   [-t thinking] [--review <n>] [--review-model <model>] "<prompt>"` (or `-f <prompt-file>`),
+   calling `startRun({ newRepo: { name, private: !public }, ... })` and rendering events like
+   `hive run`. On success print the run name and `hive push <name>` (which creates the GitHub repo
+   through the existing `pushRun` new-project path). Add it to the CLI usage text.
 
-7. `src/web-runs.ts`:
-   - **Queue:** `export function createSlots(max: number)` returning `{ acquire(signal):
-     Promise<void>; release(): void; running(): number; queued(): number }`, FIFO; an aborted waiter
-     leaves the queue and its promise rejects. One instance with `config.maxConcurrent`. Pass
-     `waitTurn` to `startRun`/`continueRun`: if no slot is free, publish
-     `{ type: "hive_status", status: "queued", running, max }` before waiting. Release the slot
-     exactly once when the run ends (success, failure or abort, also when aborted while queued).
-     Remove the 503 "All worker bees are busy" response. `GET /runs` and `/capacity` report the
-     real `running` and `queued` counts.
-   - `onStatus` → `publish(id, { type: "hive_status", status, ...extra })`.
-   - `POST /prompt` with `sessionId`: 404 for an unknown run, 409 `{ error: "Session is still
-     going; wait for it to finish or abort it" }` when live; otherwise register the live entry,
-     start `continueRun` without awaiting it and respond `{ sessionId, status: "queued" |
-     "running", repo, stepStartedAt, finishedAt: undefined }`. When it ends, `finishRun` pushes
-     with `pushRun(dir, { update: true })`.
-   - `POST /prompt` new run: remove the three "not supported yet" 400s. `newRepo` → `startRun({
-     newRepo: { name, private: body.newRepo.private ?? true }, ... })` (no `repo` needed; `repo`
-     and `newRepo` together → 400 `{ error: "Send repo or newRepo, not both" }`; neither → 400
-     `"Pick a repository"`). Pass `systemPrompt: body.systemPromptOverride`, `reviewCycles`,
-     `reviewModel`. Respond once `onStart` fires (the run may still be queued; status is then
-     `"queued"`), and include `newRepo: body.newRepo?.name`.
-   - `finishRun`: push when `meta.status === "done" && meta.commits > 0` (with `update: true` when
-     `meta.pushed` is already set); for `source: "new"` with 0 commits don't push. Change summary
-     as today.
-   - `runToJSON` adds `createdRepo: meta.createdRepo`, `newRepo: meta.newRepo?.name`,
-     `repoSlug` from `meta.createdRepo ?? meta.pushed?.url ?? meta.repo`; `uiStatus` maps a live
-     run whose meta status is `queued` to `"queued"`.
-   - The finished-run websocket replay sends `io/events-<n>.jsonl` files in numeric order, then
-     `io/events.jsonl`, then the `hive_done`.
+7. **OpenRouter routing and models.json** (`src/openrouter.ts`, new; `src/runs.ts`;
+   `src/config.ts`):
+   - `config.openrouterRouting`: parsed JSON from `HIVE_OPENROUTER_ROUTING`, default
+     `{"quantizations":["fp16","bf16","fp8"]}`; invalid JSON or a non-object → throw a clear error
+     when used.
+   - `export function modelsJson(m: any, routing: object)`: pi's models.json for one model from
+     OpenRouter's `/api/v1/models` entry `m`: `{ providers: { openrouter: { models: [{ id: m.id,
+     name: m.name, reasoning: (m.supported_parameters ?? []).includes("reasoning"), input:
+     (m.architecture?.input_modalities ?? []).includes("image") ? ["text","image"] : ["text"],
+     contextWindow: m.context_length, maxTokens: m.top_provider?.max_completion_tokens ?? 32000,
+     cost: { input, output, cacheRead, cacheWrite } (each = Number(price ?? "0") * 1_000_000 from
+     m.pricing.prompt, .completion, .input_cache_read, .input_cache_write), compat: routing is {} ?
+     {} : { openRouterRouting: routing } }] } } }`.
+   - `export function rankEndpoints(endpoints: any[], routing: any, model: string): { routing:
+     any; note?: string }`: if `routing` has `order` or `only`, return it unchanged. Let `up` =
+     endpoints with `(status ?? 0) === 0`. If `routing.quantizations` is set, `up` is non-empty and
+     no endpoint in `up` has an allowed quantization, drop `quantizations` from the routing and set
+     `note` to `no endpoint of <model> is <q joined by "/">; allowing any for this run`. Then keep
+     endpoints that are up, have an allowed quantization (if any filter remains), list `"tools"`
+     in `supported_parameters`, and have a non-null `pricing.input_cache_read`. Sort: the model
+     maker's own endpoint first (`tag.split("/")[0]` equals `model.split("/")[0]`,
+     case-insensitive), then higher `Math.floor(uptime_last_1d ?? 0)` first, then lower
+     `Number(pricing.prompt)`. If none remain return the routing as is; otherwise return
+     `{ ...routing, order: tags, allow_fallbacks: true }`.
+   - `export async function openrouterSetup(model: string, routing: any, fetchImpl = fetch)`:
+     GET `https://openrouter.ai/api/v1/models` (20 s timeout via `AbortSignal.timeout`), find the
+     model by `id` (not found → throw `model '<id>' not found on OpenRouter (see
+     https://openrouter.ai/models)`); GET `https://openrouter.ai/api/v1/models/<model>/endpoints`
+     (on failure keep `routing` as is and set a note `couldn't list providers for <model>; letting
+     OpenRouter choose`), rank with `rankEndpoints(data.endpoints, ...)`; return `{ modelsJson,
+     routing, note? }`.
+   - `src/runs.ts`: when the run's provider is `openrouter`, `startRun` calls `openrouterSetup`
+     **before** `makeRunDir` (errors reject `startRun` with nothing created), then writes
+     `<run>/agent/models.json` (`JSON.stringify(..., null, 2)`) and `<run>/agent/settings.json`
+     (`{ "enableInstallTelemetry": false }`), stores `meta.routing` (the final routing object), and
+     passes the note (if any) to `o.onEvent({ type: "hive_note", text: note })`. Every agent step
+     of an openrouter run (including follow-ups and reviews) mounts `<run>/agent` read-only at
+     `/pi-agent` (`ro: true`) and adds `PI_CODING_AGENT_DIR=/pi-agent` to the VM env. Add
+     `routing?: unknown` to `RunMeta`. Runs of other providers are unchanged.
+   - `src/cli.ts`: `hive run` and `hive new` print `providers, in order: <a, b, c>` when
+     `meta.routing.order` is set (read meta after `onStart`, or print it from the run's meta in the
+     final summary; either is fine).
 
-8. `src/cli.ts`: add `hive continue [run] <prompt>` (the run defaults to the latest, like
-   `hive log`, via `resolveRun`), rendering events like `hive run` does and leaving pushing to
-   `hive push` (for a run that was already pushed, `hive push` updates its branch: pass
-   `update: true` when `meta.pushed` is set). Add `--review <n>` and `--review-model <model>` to
-   `hive run`. Add both to the CLI's help text.
+8. Tests (each sets `HIVE_RUNS_DIR`, `HIVE_KEYS_FILE` and `HIVE_DOTENV_PATH` to temp paths before
+   importing `../dist/`, like `test/web-runs.test.mjs`):
+   - `test/cleanup.test.mjs` (new): `recoverRuns` with a fake `procRoot` dir holding
+     `<pid>/cmdline` files (NUL-separated args; one for `.../vm/hive-vm --share <run dir>/work:/work`,
+     one unrelated) and a run whose meta has `status: "running"` and a pid that doesn't exist
+     (e.g. 2147483646): the fake `kill` is called with the matching pid only, and the run becomes
+     `failed` / `interrupted (hive stopped)`. A `done` run is untouched. `pruneRuns`: a run finished
+     15 days ago is deleted, one finished 1 day ago is kept, a running one is kept; with
+     `HIVE_RUN_RETENTION_DAYS=0` nothing is deleted (test this with a dynamic import in a child
+     process or by checking the function honours `config.runRetentionDays`; pick one that works).
+   - `test/openrouter.test.mjs` (new): `modelsJson` on a fixture model (prices `"0.0000004"` →
+     `0.4`, image input, reasoning, `{}` routing → `compat: {}`); `rankEndpoints` on fixture
+     endpoints: maker first, then uptime, then price; endpoints that are down, lack tools, lack
+     cache pricing or have a disallowed quantization are dropped; an all-fp4 list drops the
+     quantization filter and sets the note; a routing with `order` is returned unchanged;
+     `openrouterSetup` with a fake `fetchImpl` (unknown model → throws; endpoints call failing →
+     routing unchanged with the note).
+   - `test/run-steps.test.mjs`: add `timeNote(60, new Date("2026-01-01T10:00:00Z"))` contains
+     `60 minutes` and `2026-01-01T11:00:00Z`; `slimEvents` drops `message_update` and
+     `tool_execution_update` lines and keeps others and unparsable lines.
 
-9. Tests:
-   - `test/run-steps.test.mjs` (new): `isLgtm` cases (`"LGTM"`, `"  lgtm\nok"` true; `"Not LGTM"`,
-     `""` false); `REVIEW_PROMPT("task", "abc123")` contains `task` and `abc123`; `startRun` with
-     two sources or none rejects with the step-2 message; `startRun` with `newRepo: { name: "bad
-     name" }` rejects with the `validateRepoName` message; `startRun` with `reviewCycles: 9`
-     rejects. Use a temp `HIVE_RUNS_DIR`, `HIVE_KEYS_FILE` and `HIVE_DOTENV_PATH` set before
-     importing `../dist/`, like `test/web-runs.test.mjs`, and a fake provider key in the env if
-     validation needs one. No VM is booted by these cases.
-   - `test/web-runs.test.mjs`: update the old "not supported yet" assertions: `newRepo` with
-     `repo` → 400; follow-up for an unknown id → 404. Add `createSlots` tests: two acquires with
-     `max: 1` (the second waits until `release()`), FIFO order, an aborted waiter rejects and
-     leaves `queued()` at 0.
-
-10. `README.md`: the web UI section no longer says follow-ups, review cycles and new projects are
-    missing; document `hive continue`, `hive run --review`/`--review-model`, and that runs wait in
-    a queue when `MAX_CONCURRENT_SESSIONS` runs are going.
+9. Docs: `README.md` — `hive new`, startup cleanup, the time note, retention
+   (`HIVE_RUN_RETENTION_DAYS`), OpenRouter routing (`HIVE_OPENROUTER_ROUTING`), slim saved logs.
+   `.env.example` — `HIVE_RUN_RETENTION_DAYS` and `HIVE_OPENROUTER_ROUTING` commented out with
+   their defaults. `docs/CORE.md` — add a short "Status" section at the top: the server engine
+   (`tasks.ts`) is gone, the web UI uses the CLI engine through `src/web-runs.ts`, and list what
+   is built (stall watchdog, export on failure, startup cleanup, queue, follow-ups, reviews, new
+   projects, retention, OpenRouter routing) and what isn't (splitting `ui/src/main.ts`).
 
 ## Acceptance
 
 - `npm run build` exits 0.
+- `npm run build:ui` exits 0.
 - `npm test` exits 0.
-- `node --test test/run-steps.test.mjs test/web-runs.test.mjs` exits 0 (after `npm run build`).
-- `grep -n "supported yet" src/web-runs.ts` prints nothing.
+- `node --test test/cleanup.test.mjs test/openrouter.test.mjs test/run-steps.test.mjs` exits 0
+  (after `npm run build`).
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -166,16 +172,16 @@ None — do it sequentially.
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
 - The only checks to run are the **Acceptance** commands. Never boot a VM, start `hive run`, start
-  the server, or call `gh`/GitHub. If something outside Acceptance fails, note it in the report and
-  finish.
-- Don't change `ui/`, `vm/`, `image/`, `src/sandbox.ts` or `src/stall.ts`. Keep the stall
-  watchdog, `finalStatus`, the shared caches and export-on-failure behaviour exactly as they are.
-  No new dependencies.
+  the server, call `gh`/GitHub, or make real requests to openrouter.ai (tests use fake fetch). If
+  something outside Acceptance fails, note it in the report and finish.
+- Don't change `vm/`, `image/`, `src/sandbox.ts` or `src/stall.ts`. Keep the stall watchdog,
+  `finalStatus`, the shared caches, export-on-failure, follow-ups, reviews, new projects and the
+  queue working as they are. No new dependencies.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- `hive new` (new projects from the CLI), UI changes, run retention/cleanup.
+- Splitting `ui/src/main.ts`, packaging, a tray icon, a no-KVM fallback, a VM size editor.
 
 ## If blocked
 
