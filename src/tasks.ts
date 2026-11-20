@@ -133,6 +133,7 @@ export class Task extends EventEmitter {
   toJSON() {
     return {
       sessionId: this.id,
+      title: taskTitle(this.opts.prompt),
       status: this.status,
       isStreaming: this.busy,
       repo: this.repoUrl,
@@ -317,6 +318,13 @@ class AbortError extends Error {
   }
 }
 
+/** A one-line title for the run list: the prompt's first non-empty line, at most 120 chars. */
+function taskTitle(prompt: string): string {
+  const line = prompt.split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
+  const trimmed = line.trim();
+  return trimmed.length > 120 ? trimmed.slice(0, 120) + "…" : trimmed;
+}
+
 /** Plain text of a pi message: user content is a string or blocks; assistant content is blocks. */
 export function messageText(m: any): string {
   if (typeof m.content === "string") return m.content;
@@ -355,6 +363,14 @@ const tasks = new Map<string, Task>();
 
 export function getTask(id: string) {
   return tasks.get(id);
+}
+
+/** Every non-ephemeral task, newest first. */
+export function listTasks(): ReturnType<Task["toJSON"]>[] {
+  return [...tasks.values()]
+    .filter((task) => !task.opts.ephemeral)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((task) => task.toJSON());
 }
 
 export function taskCount() {

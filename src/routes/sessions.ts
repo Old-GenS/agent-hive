@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, isAbsolute } from "node:path";
 import { issueTicket } from "../auth.js";
-import { BusyError, createTask, destroyTask, getTask, openTaskIssue, openTaskPr, runPrompt, type Task } from "../tasks.js";
+import { BusyError, capacity, createTask, destroyTask, getTask, listTasks, openTaskIssue, openTaskPr, runPrompt, type Task } from "../tasks.js";
 
 const promptSchema = {
   body: {
@@ -127,6 +127,8 @@ export default async function sessionRoutes(app: FastifyInstance) {
       destroyTask(task.id);
     }
   });
+
+  app.get("/runs", async () => ({ runs: listTasks(), capacity: capacity() }));
 
   app.get("/status/:sessionId", async (req, reply) => {
     const task = taskOr404((req.params as any).sessionId, reply);

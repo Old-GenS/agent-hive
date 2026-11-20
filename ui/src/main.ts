@@ -7,7 +7,7 @@
  * formatContent(), which escapes first and only then adds a fixed set of formatting tags.
  */
 import "./app.css";
-import { createBeeIndicator, headerBee, type BeeIndicator, type BeeState } from "./bee.js";
+import { createBeeIndicator, headerBee, miniHive, type BeeIndicator, type BeeState } from "./bee.js";
 import { api, clearToken, el, esc, getToken, saveToken, setToken, serverUrl } from "./util.js";
 
 // ── types ──
@@ -271,6 +271,65 @@ interface RunState {
   currentAssistant: AssistantItem | null;
   currentStep: StatusItem | null;
   lastTool: ToolItem | null;
+  /** a saved PR/issue URL from GET /status, shown on the replay's hive_done banner */
+  pendingPrUrl?: string;
+  pendingIssueUrl?: string;
+}
+
+/** One row of GET /runs: what the run list shows. */
+interface RunSummary {
+  sessionId: string;
+  title: string;
+  status: Status;
+  repo: string | null;
+  newRepo: string | null;
+  model: string;
+  provider: string;
+  createdAt: number;
+  lastActivity: number;
+}
+
+function parseRunSummary(raw: unknown): RunSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.sessionId !== "string" || !r.sessionId) return null;
+  const status = typeof r.status === "string" && r.status in STATUS_LABEL ? (r.status as Status) : "idle";
+  return {
+    sessionId: r.sessionId,
+    title: typeof r.title === "string" ? r.title : "",
+    status,
+    repo: typeof r.repo === "string" && r.repo ? r.repo : null,
+    newRepo: typeof r.newRepo === "string" && r.newRepo ? r.newRepo : null,
+    model: typeof r.model === "string" ? r.model : "",
+    provider: typeof r.provider === "string" ? r.provider : "",
+    createdAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
+    lastActivity: typeof r.lastActivity === "number" ? r.lastActivity : Date.now(),
+  };
+}
+
+/** github.com URLs read better as owner/name. */
+function shortRepo(repo: string | null): string {
+  return (repo ?? "").replace(/^(?:https:\/\/github\.com\/|git@github\.com:)/, "").replace(/\.git$/, "");
+}
+
+function repoLabel(repo: string | null, newRepo: string | null): string {
+  if (newRepo) return `new project ${newRepo}`;
+  return shortRepo(repo) || "no repo";
+}
+
+/** mm:ss (or h:mm:ss) for a run that is still going. */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = String(total % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+function runTimeLabel(summary: RunSummary): string {
+  if (BUSY_STATUS.has(summary.status)) return formatElapsed(Date.now() - summary.createdAt);
+  const minutes = Math.max(0, Math.floor((Date.now() - summary.lastActivity) / 60000));
+  return `${minutes} min ago`;
 }
 
 interface RunUi {
@@ -295,6 +354,8 @@ let choices = { provider: "", model: "", thinking: "" };
 
 let mainEl: HTMLElement | null = null;
 let runsEl: HTMLElement | null = null;
+let runsListEl: HTMLElement | null = null;
+let runsViewEl: HTMLElement | null = null;
 let settingsEl: HTMLElement | null = null;
 let navRunsEl: HTMLButtonElement | null = null;
 let navSettingsEl: HTMLButtonElement | null = null;
@@ -302,6 +363,19 @@ let headerBeeEl: HTMLElement | null = null;
 
 let run: RunState | null = null;
 let runUi: RunUi | null = null;
+
+/** The latest GET /runs answer, and the signature last rendered (to skip identical re-renders). */
+let runList: RunSummary[] | null = null;
+let runListSignature = "";
+let runsExpanded = false;
+let runsPollTimer: number | undefined;
+let runsFetchSeq = 0;
+/** What the Runs page's right-hand pane currently shows: "#runs", a session id, or null. */
+let runsViewTarget: string | null = null;
+let openRunSeq = 0;
+
+const RUNS_POLL_MS = 3000;
+const MAX_VISIBLE_RUNS = 5;
 
 // ── small helpers ──
 
@@ -445,12 +519,16 @@ function renderApp(user: { name: string }): void {
   logout.title = `Log out (current user: ${user.name})`;
   logout.setAttribute("aria-label", `Log out (current user: ${user.name})`);
   logout.onclick = () => {
-    run?.ws?.close();
-    runUi?.bee.destroy();
-    run = null;
-    runUi = null;
+    stopRunsPolling();
+    closeRun();
     headerBeeEl = null;
     runsEl = null;
+    runsListEl = null;
+    runsViewEl = null;
+    runsViewTarget = null;
+    runList = null;
+    runListSignature = "";
+    runsExpanded = false;
     settingsEl = null;
     mainEl = null;
     providers = null;
@@ -477,24 +555,231 @@ function renderApp(user: { name: string }): void {
   route();
 }
 
+/** Close the run on screen: socket and bee indicator only; the task keeps going on the server. */
+function closeRun(): void {
+  run?.ws?.close();
+  runUi?.bee.destroy();
+  run = null;
+  runUi = null;
+}
+
+/** The Runs page shell: the run list on the left, the form or a run on the right. Built once. */
+function runsPage(): HTMLElement {
+  if (runsEl) return runsEl;
+  runsListEl = el("aside", { class: "runs-list", "aria-label": "Runs" });
+  runsViewEl = el("div", { class: "runs-view" });
+  runsEl = el("div", { class: "runs-layout" }, runsListEl, runsViewEl);
+  startRunsPolling();
+  return runsEl;
+}
+
+function runStateFromStatus(status: Record<string, unknown>): RunState {
+  const providerId = typeof status.provider === "string" ? status.provider : "";
+  const runStatus =
+    typeof status.status === "string" && status.status in STATUS_LABEL ? (status.status as Status) : "queued";
+  return {
+    sessionId: String(status.sessionId ?? ""),
+    repo: typeof status.repo === "string" && status.repo ? status.repo : null,
+    newRepo: typeof status.newRepo === "string" && status.newRepo ? status.newRepo : null,
+    providerLabel: providers?.providers.find((p) => p.id === providerId)?.label ?? providerId,
+    model: typeof status.model === "string" ? status.model : "",
+    title: typeof status.title === "string" && status.title ? status.title : "Untitled run",
+    status: runStatus,
+    busy: BUSY_STATUS.has(runStatus),
+    items: [],
+    ws: null,
+    currentAssistant: null,
+    currentStep: null,
+    lastTool: null,
+    pendingPrUrl: typeof status.prUrl === "string" ? status.prUrl : undefined,
+    pendingIssueUrl: typeof status.issueUrl === "string" ? status.issueUrl : undefined,
+  };
+}
+
+/** #runs/<id>: load the status, build the view and let the event replay fill in the rest. */
+async function openRun(id: string): Promise<void> {
+  const seq = ++openRunSeq;
+  closeRun();
+  runsViewEl?.replaceChildren(el("div", { class: "card" }, el("p", { class: "cell-muted" }, "Loading run\u2026")));
+  let status: Record<string, unknown> | null = null;
+  let missing = false;
+  try {
+    const res = await api(`/status/${encodeURIComponent(id)}`);
+    if (res.status === 404) missing = true;
+    else if (!res.ok) throw new Error(`status ${res.status}`);
+    else status = (await res.json()) as Record<string, unknown>;
+  } catch {
+    status = null;
+  }
+  if (seq !== openRunSeq || runsViewTarget !== id) return;
+  if (missing) {
+    runsViewTarget = `gone:${id}`;
+    showRunMessage("This run is gone (the server restarted or it expired).");
+    syncHeaderBee();
+    return;
+  }
+  if (!status) {
+    showRunMessage("Couldn't load this run.");
+    return;
+  }
+  run = runStateFromStatus(status);
+  runUi = null;
+  runsViewEl?.replaceChildren(buildRunView());
+  renderRunsList(true);
+  syncHeaderBee();
+  void connect();
+}
+
+/** The message shown in place of a run that cannot be opened, with a way back to the form. */
+function showRunMessage(message: string): void {
+  const newBtn = el("button", { class: "btn btn-primary", type: "button" }, "New run");
+  newBtn.onclick = () => {
+    location.hash = "#runs";
+  };
+  runsViewEl?.replaceChildren(el("div", { class: "card runs-message" }, el("p", {}, message), newBtn));
+}
+
 function route(): void {
   if (!mainEl || !navRunsEl || !navSettingsEl) return;
   const view = location.hash.startsWith("#settings") ? "settings" : "runs";
-  if (view === "runs") {
-    navRunsEl.setAttribute("aria-current", "page");
-    navSettingsEl.removeAttribute("aria-current");
-    if (!runsEl) {
-      runsEl = el("div", { class: "page-narrow" });
-      runsEl.append(run ? buildRunView() : buildForm());
-    }
-    mainEl.replaceChildren(runsEl);
-  } else {
+  if (view === "settings") {
     navSettingsEl.setAttribute("aria-current", "page");
     navRunsEl.removeAttribute("aria-current");
+    stopRunsPolling();
+    if (runsEl) {
+      // The run keeps going on the server; drop the socket and rebuild when it is reopened.
+      openRunSeq++;
+      closeRun();
+      runsViewTarget = null;
+    }
     // Rebuilt each time: the sub-page follows the hash and "This computer" reloads its checks.
     settingsEl = buildSettings(location.hash === "#settings/computer" ? "computer" : "keys");
     mainEl.replaceChildren(settingsEl);
+    syncHeaderBee();
+    return;
   }
+
+  navRunsEl.setAttribute("aria-current", "page");
+  navSettingsEl.removeAttribute("aria-current");
+  const page = runsPage();
+  if (mainEl.firstChild !== page) mainEl.replaceChildren(page);
+  startRunsPolling();
+  renderRunsList(true);
+
+  const id = location.hash.startsWith("#runs/") ? decodeURIComponent(location.hash.slice("#runs/".length)) : null;
+  const target = id ?? "#runs";
+  if (target !== runsViewTarget) {
+    runsViewTarget = target;
+    if (!id) {
+      openRunSeq++;
+      closeRun();
+      runsViewEl?.replaceChildren(buildForm());
+    } else if (run?.sessionId !== id) {
+      void openRun(id);
+    }
+  }
+  syncHeaderBee();
+}
+
+// ── run list: GET /runs while the page is open ──
+
+function startRunsPolling(): void {
+  if (runsPollTimer !== undefined) return;
+  void refreshRuns();
+  runsPollTimer = window.setInterval(() => {
+    if (document.visibilityState === "visible") void refreshRuns();
+  }, RUNS_POLL_MS);
+}
+
+function stopRunsPolling(): void {
+  if (runsPollTimer === undefined) return;
+  window.clearInterval(runsPollTimer);
+  runsPollTimer = undefined;
+}
+
+async function refreshRuns(): Promise<void> {
+  const seq = ++runsFetchSeq;
+  try {
+    const res = await api("/runs");
+    if (!res.ok) return;
+    const data = (await res.json()) as { runs?: unknown };
+    if (seq !== runsFetchSeq) return;
+    const parsed: RunSummary[] = [];
+    if (Array.isArray(data.runs)) {
+      for (const raw of data.runs) {
+        const summary = parseRunSummary(raw);
+        if (summary) parsed.push(summary);
+      }
+    }
+    parsed.sort((a, b) => b.createdAt - a.createdAt);
+    runList = parsed;
+    renderRunsList();
+    syncHeaderBee();
+  } catch {
+    // Keep the previous list; the next poll tries again.
+  }
+}
+
+function runItemElement(summary: RunSummary, index: number): HTMLElement {
+  const selected = run?.sessionId === summary.sessionId;
+  const item = el("a", { class: "run-item", href: `#runs/${encodeURIComponent(summary.sessionId)}` });
+  if (selected) item.setAttribute("aria-current", "page");
+  if (index >= MAX_VISIBLE_RUNS) item.classList.add("run-item-extra");
+  const status = summary.status;
+  const pill = el(
+    "span",
+    { class: `pill ${STATUS_PILL[status] ?? "pill-muted"}` },
+    STATUS_LABEL[status] ?? status,
+  );
+  const top = el(
+    "span",
+    { class: "run-item-top" },
+    el("span", { class: "run-item-icon" }, miniHive(BEE_STATE[status]?.state ?? "idle")),
+    el("span", { class: "run-item-title" }, summary.title || "Untitled run"),
+  );
+  const meta = el(
+    "span",
+    { class: "run-item-meta" },
+    `${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"} \u00b7 ${runTimeLabel(summary)}`,
+  );
+  item.append(top, meta, pill);
+  return item;
+}
+
+function renderRunsList(force = false): void {
+  if (!runsListEl) return;
+  const signature = JSON.stringify(runList ?? []);
+  if (!force && signature === runListSignature) return;
+  runListSignature = signature;
+  const list = runList ?? [];
+  const newBtn = el("button", { id: "newRunBtn", class: "btn btn-primary", type: "button" }, "New run");
+  newBtn.onclick = () => {
+    location.hash = "#runs";
+  };
+  const children: HTMLElement[] = [newBtn];
+  if (list.length === 0) {
+    children.push(el("p", { class: "runs-list-empty" }, "No runs yet. Give the bees a task."));
+  } else {
+    list.forEach((summary, index) => children.push(runItemElement(summary, index)));
+    if (list.length > MAX_VISIBLE_RUNS) {
+      const toggle = el(
+        "button",
+        { class: "btn btn-small text-btn runs-list-toggle", type: "button" },
+        runsExpanded ? "Show fewer" : `Show all (${list.length})`,
+      );
+      toggle.onclick = () => {
+        runsExpanded = !runsExpanded;
+        runsListEl?.classList.toggle("is-expanded", runsExpanded);
+        renderRunsList(true);
+      };
+      children.push(toggle);
+    } else {
+      runsExpanded = false;
+    }
+  }
+  runsListEl.classList.toggle("is-expanded", runsExpanded);
+  runsListEl.replaceChildren(...children);
+  syncHeaderBee();
 }
 
 window.addEventListener("hashchange", route);
@@ -860,7 +1145,12 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     lastTool: null,
   };
   runUi = null;
-  if (runsEl) runsEl.replaceChildren(buildRunView());
+  runsViewTarget = run.sessionId;
+  runsViewEl?.replaceChildren(buildRunView());
+  const id = run.sessionId;
+  if (id && location.hash !== `#runs/${encodeURIComponent(id)}`) location.hash = `#runs/${encodeURIComponent(id)}`;
+  // Show the new run in the list and the header bee right away.
+  void refreshRuns();
   void connect();
 }
 
@@ -929,8 +1219,7 @@ function buildRunView(): HTMLElement {
   const toolbar = el("div", { class: "run-toolbar" }, pill, el("span", { class: "spacer" }), stopBtn, newBtn);
 
   // github.com URLs read better as owner/name.
-  const shortRepo = state.repo?.replace(/^(?:https:\/\/github\.com\/|git@github\.com:)/, "").replace(/\.git$/, "");
-  const repoText = state.newRepo ? `new project ${state.newRepo}` : shortRepo || "no repo";
+  const repoText = repoLabel(state.repo, state.newRepo);
   const modelText = state.model || "default model";
   const bee = createBeeIndicator();
   const head = el(
@@ -976,13 +1265,27 @@ function buildRunView(): HTMLElement {
   return el("div", {}, head, timelineCard, followUp);
 }
 
+/** How many runs reported by GET /runs (plus one just started) are busy. */
+function busyRunCount(): number {
+  const list = runList ?? [];
+  const ids = new Set(list.map((summary) => summary.sessionId));
+  let count = list.filter((summary) => BUSY_STATUS.has(summary.status)).length;
+  if (run?.busy && !ids.has(run.sessionId)) count++;
+  return count;
+}
+
 function syncHeaderBee(): void {
   if (!navRunsEl) return;
-  if (run?.busy) {
+  const count = busyRunCount();
+  if (count > 0) {
     if (!headerBeeEl) {
       headerBeeEl = headerBee();
       navRunsEl.append(headerBeeEl);
     }
+    const text = `${count} run${count === 1 ? "" : "s"} in progress`;
+    headerBeeEl.title = text;
+    const sr = headerBeeEl.querySelector(".sr-only");
+    if (sr) sr.textContent = text;
   } else if (headerBeeEl) {
     headerBeeEl.remove();
     headerBeeEl = null;
@@ -994,7 +1297,6 @@ function syncRunUi(): void {
   runUi.pill.textContent = STATUS_LABEL[run.status] ?? run.status;
   runUi.pill.className = `pill ${STATUS_PILL[run.status] ?? "pill-muted"}`;
   runUi.stopBtn.hidden = !run.busy;
-  runUi.newBtn.hidden = run.busy;
   runUi.followInput.disabled = run.busy;
   runUi.followBtn.disabled = run.busy;
   const beeState = BEE_STATE[run.status];
@@ -1162,6 +1464,17 @@ function finishRun(event: any): void {
   } else {
     item = { kind: "banner", tone: "danger", title: "Failed", detail: event.error ? String(event.error) : "" };
   }
+  // A reopened run: the replayed hive_done carries no PR/issue URL, so use the saved status.
+  if (item.kind === "banner") {
+    const prUrl = run.pendingPrUrl;
+    const issueUrl = run.pendingIssueUrl;
+    run.pendingPrUrl = undefined;
+    run.pendingIssueUrl = undefined;
+    if (item.tone === "ok") {
+      if (prUrl && PR_URL.test(prUrl)) item.pr = { state: "open", url: prUrl };
+      if (issueUrl && ISSUE_URL.test(issueUrl)) item.issue = { state: "open", url: issueUrl };
+    }
+  }
   appendItem(item);
   setRunStatus(status === "idle" ? "idle" : status === "aborted" ? "aborted" : "failed");
   run.ws?.close();
@@ -1228,12 +1541,8 @@ async function sendFollowUp(): Promise<void> {
 }
 
 function newRun(): void {
-  run?.ws?.close();
-  runUi?.bee.destroy();
-  run = null;
-  runUi = null;
-  syncHeaderBee();
-  if (runsEl) runsEl.replaceChildren(buildForm());
+  location.hash = "#runs";
+  // If the hash is already #runs there is nothing to rebuild, but the button only shows on a run.
 }
 
 // ── settings: API keys ──

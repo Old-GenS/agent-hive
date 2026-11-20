@@ -167,3 +167,24 @@ export function headerBee(): HTMLElement {
   svg.append(clipDefs(clipId), ...beeParts(clipId));
   return el("span", { class: "header-bee" }, svg, el("span", { class: "sr-only" }, "Run in progress"));
 }
+
+/**
+ * A 20×20 honeycomb cell for the run list: the indicator's hexagon path scaled into the 20 px
+ * viewBox. The colours come from CSS, keyed off data-state.
+ */
+export function miniHive(state: BeeState | "idle"): SVGSVGElement {
+  const svg = svgNode("svg", {
+    class: "mini-hive",
+    "data-state": state,
+    width: "20",
+    height: "20",
+    viewBox: "0 0 20 20",
+    "aria-hidden": "true",
+  }) as SVGSVGElement;
+  svg.append(
+    svgNode("path", {
+      d: "M10 3.75l5.417 3.125v6.25L10 16.25 4.583 13.125V6.875z",
+    }),
+  );
+  return svg;
+}

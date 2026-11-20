@@ -27,7 +27,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply, push (never forced) and `gh pr create` |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
-| `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/pr`, `/issue`, `/abort`, `/session`, `/files`, `/events` |
+| `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/runs`, `/status`, `/messages`, `/pr`, `/issue`, `/abort`, `/session`, `/files`, `/events` |
 | `src/routes/github.ts` | `gh`-backed repo list, branches, search, fork for the UI |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
 | `src/routes/system.ts` | `/api/system`: sandbox setup and checks for Settings › This computer |

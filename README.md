@@ -206,6 +206,15 @@ The UI at `/ui/` follows the design in [docs/GUI.md](docs/GUI.md). `npm run buil
 into `ui/dist`, and the running server serves the new files without a restart.
 
 **Runs**
+- **Several runs at once:** the Runs page keeps a run list next to the current view (on a phone it
+  sits above it, showing the newest five with a **Show all (N)** toggle). It lists every run the
+  server knows about since it last started, newest first, each with its title, repo, model, status,
+  and either the elapsed time for a run still going or how long ago it finished. The header bee
+  shows while any run is busy. **New run** stays available, so another run can start while others
+  keep going, and switching between runs only switches the view.
+- **Reopening a run:** every run has its own URL, `/ui/#runs/<sessionId>`, so a link or a page
+  reload reopens it with its title, status, timeline and result (the server replays the latest
+  prompt's events). If the server has restarted since, the run is gone and the UI says so.
 - **New run:** the task; **Existing repo** (a repository list from `gh`, and once a repo is picked,
   its branches with the default shown) or **New project**; provider (only those with a key); a model
   box with a per-provider list you can pick from or type into; thinking level; review cycles.
@@ -250,6 +259,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/prompt` | Start a task (`prompt`, `repo`, `branch`, `newRepo` (`{name, private}`), `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`), or follow up with `sessionId` |
 | POST | `/snippet` | One-shot question about some code; waits and returns `{result}` |
 | GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `changes` (commits and files), `prUrl`, `newRepo` / `createdRepo`, usage, `error` |
+| GET | `/runs` | Every non-ephemeral run the server knows about, newest first, each with `sessionId`, `title`, `status`, repo and model, plus the current `capacity` |
 | GET | `/messages/:id` | Conversation so far |
 | POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
 | POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue. Returns `{url}` |

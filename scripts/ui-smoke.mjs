@@ -203,7 +203,7 @@ try {
 
   await page.unroute("**/prompt");
   await page.unroute("**/events/demo-session/ticket");
-  await page.click('button:has-text("New run")');
+  await page.click("#newRunBtn");
   await page.waitForSelector("#provider");
 
   // ── desktop: new-project form ──
@@ -249,7 +249,7 @@ try {
   );
   await page.unroute("**/prompt");
   await page.unroute("**/events/demo-new/ticket");
-  await page.click('button:has-text("New run")');
+  await page.click("#newRunBtn");
   await page.waitForSelector("#provider");
 
   // ── a faked review run that changes nothing: Post review as an issue ──
@@ -287,7 +287,104 @@ try {
   await page.unroute("**/prompt");
   await page.unroute("**/events/demo-review/ticket");
   await page.unroute("**/issue/demo-review");
-  await page.click("text=New run");
+  await page.click("#newRunBtn");
+  await page.waitForSelector("#provider");
+
+  // ── desktop: the run list, switching runs, and reopening one from the URL ──
+  const now = Date.now();
+  const listA = {
+    sessionId: "list-a",
+    title: "Fix the login form",
+    status: "running",
+    repo: "https://github.com/demo/repo.git",
+    model: "deepseek-flash",
+    provider: "deepseek",
+    createdAt: now - 60_000,
+    lastActivity: now,
+  };
+  const listB = {
+    sessionId: "list-b",
+    title: "code review and next steps",
+    status: "idle",
+    repo: "https://github.com/demo/repo.git",
+    model: "deepseek-flash",
+    provider: "deepseek",
+    createdAt: now - 600_000,
+    lastActivity: now - 300_000,
+    prUrl: "https://github.com/demo/repo/pull/9",
+  };
+  await page.route("**/runs", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ runs: [listA, listB], capacity: { running: 1, queued: 0, max: 3 } }),
+    }),
+  );
+  await page.route("**/status/list-b", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(listB) }),
+  );
+  await page.route("**/events/list-b/ticket", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ticket: "demo" }) }),
+  );
+  await page.routeWebSocket(/\/events\/list-b/, (ws) => {
+    ws.send(JSON.stringify({ type: "hive_status", status: "running" }));
+    ws.send(
+      JSON.stringify({
+        type: "hive_done",
+        status: "idle",
+        resultBranch: "hive/listb000",
+        commitsPushed: 1,
+        repoSlug: "demo/repo",
+        changes: { commits: ["Tidy the review flow"], files: [{ path: "src/review.ts", added: 4, removed: 2 }], moreFiles: 0 },
+      }),
+    );
+  });
+
+  // The WebSocket interception hook is an init script, so the document has to load after the
+  // routes are registered. Reloading at #runs lands on the form with the mocked list next to it.
+  await page.reload();
+  await page.goto(`${BASE}/ui/#runs`);
+  await page.waitForSelector("#newRunBtn");
+  await page.waitForSelector(".run-item");
+  const runTitles = await page.$$eval(".run-item", (nodes) =>
+    nodes.map((node) => (node.querySelector(".run-item-title")?.textContent ?? "").trim()),
+  );
+  assert(runTitles.length === 2, `the run list shows two runs (got ${runTitles.length})`);
+  assert(
+    runTitles[0] === "Fix the login form",
+    `the newest run comes first in the list (got ${JSON.stringify(runTitles[0])})`,
+  );
+  const listedHeaderBees = await page.$$eval(".header-bee", (nodes) => nodes.length);
+  assert(listedHeaderBees === 1, `the header bee shows while a listed run is busy (got ${listedHeaderBees})`);
+
+  await page.click('.run-item[href="#runs/list-b"]');
+  await page.waitForSelector(".item-banner-ok");
+  const listHash = await page.evaluate(() => location.hash);
+  assert(listHash === "#runs/list-b", `clicking a run sets its URL (got ${JSON.stringify(listHash)})`);
+  const listDoneTitle = await page.$eval(".item-banner-ok .banner-title", (node) => (node.textContent ?? "").trim());
+  assert(listDoneTitle === "Done", `the reopened run rebuilds its Done banner (got ${JSON.stringify(listDoneTitle)})`);
+  await page.waitForSelector("#prLink");
+  const restoredPrHref = await page.$eval("#prLink", (a) => a.getAttribute("href"));
+  assert(
+    restoredPrHref === "https://github.com/demo/repo/pull/9",
+    `the pull request link is restored from the saved status (got ${restoredPrHref})`,
+  );
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-runs-list.png") });
+
+  await page.reload();
+  await page.waitForSelector(".run-title");
+  const reopenedTitle = await page.$eval(".run-title", (node) => (node.textContent ?? "").trim());
+  assert(
+    reopenedTitle === "code review and next steps",
+    `a reload reopens the run from its URL (got ${JSON.stringify(reopenedTitle)})`,
+  );
+  await page.waitForSelector("#prLink");
+
+  await page.unroute("**/runs");
+  await page.unroute("**/status/list-b");
+  await page.unroute("**/events/list-b/ticket");
+  if (typeof page.unrouteWebSocket === "function") await page.unrouteWebSocket(/\/events\/list-b/);
+  await page.goto(`${BASE}/ui/#runs`);
   await page.waitForSelector("#provider");
 
   // ── desktop: settings ──

@@ -1,25 +1,22 @@
 ## Goal
 
-Manage provider API keys from the web UI (Settings › API keys) and the CLI (`hive keys`): list them
-masked, add a key (tested before it is saved), test a key, make a provider the default, and remove
-a saved key. Saved keys live in one private file, `~/.config/agent-hive/env` (mode 600), read by
-both the CLI and the server. Variables exported in the environment still win over saved keys.
+Let the web UI start, watch and switch between several runs at once. The server already runs up
+to `MAX_CONCURRENT_SESSIONS` tasks in parallel; the UI only follows the run it just started. Add a
+run list on the Runs page (every run the server knows about, with live status), keep **New run**
+available while runs are going, and make a run reopenable by URL (`#runs/<sessionId>`), including
+after a page reload.
 
 ## Files to touch
 
-- `src/keys.ts` (new)
-- `src/config.ts`
-- `src/routes/keys.ts` (new)
-- `src/index.ts`
-- `src/cli.ts`
+- `src/tasks.ts`
+- `src/routes/sessions.ts`
 - `ui/src/main.ts`
 - `ui/src/app.css`
-- `ui/vite.config.ts`
+- `ui/src/bee.ts`
 - `scripts/ui-smoke.mjs`
-- `test/keys.test.mjs` (new)
+- `test/runs-list.test.mjs` (new)
 - `README.md`
 - `AGENTS.md`
-- `docs/GUI.md`
 - `.handoff/report.md`
 - `.handoff/ui-*.png` (screenshots written by the smoke script)
 
@@ -27,173 +24,91 @@ both the CLI and the server. Variables exported in the environment still win ove
 
 1. Run `npm ci`, then `cd ui && npm ci && cd ..`, then `bash vm/build.sh`.
 
-2. `src/config.ts`:
-   - As the first statement after the imports, before `dotenv.config(...)`, capture the variables
-     that came from the real environment: `export const shellEnv: Readonly<Record<string, string | undefined>> = { ...process.env };`.
-   - Export `keysFilePath()`: `process.env.HIVE_KEYS_FILE || join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-hive/env")`,
-     read at call time.
-   - Replace `providerKey(provider)` with a version built on `keySource` from `src/keys.ts`
-     (step 3): it returns the value of the first `hostEnv` name that has one, looking in this
-     order: `shellEnv`, the keys file, then `process.env` (which includes a server `.env`).
-   - Add and export `setting(name: string): string | undefined` with the same order (shellEnv, keys
-     file, process.env), returning `undefined` for empty strings.
-   - `resolveProvider()` reads `setting("DEFAULT_PROVIDER")` instead of `process.env.DEFAULT_PROVIDER`;
-     `effectiveModel()` reads `setting("DEFAULT_MODEL")` instead of `config.defaultModel`;
-     `providerInfo()` uses `setting("DEFAULT_PROVIDER")` / `setting("DEFAULT_MODEL")` for its
-     `providerSource` / `modelSource` checks. Keep `config.defaultModel` as is (other code may read
-     it) but nothing in this task should rely on it.
-   - `config.ts` must not import from `src/keys.ts` in a way that creates an import cycle problem:
-     put the file reading/parsing in `src/keys.ts` with no import of `config.ts`, and import
-     `keysFilePath` into `keys.ts` only if it does not import back; otherwise define
-     `keysFilePath()` in `src/keys.ts` and re-export it from `config.ts`.
+2. `src/tasks.ts`:
+   - `Task.toJSON()` adds `title`: the first non-empty line of `this.opts.prompt`, trimmed, cut to
+     120 characters with `…` when longer (empty string if none).
+   - Export `listTasks(): ReturnType<Task["toJSON"]>[]`: every task in the registry except those
+     with `opts.ephemeral`, newest first by `createdAt`.
 
-3. `src/keys.ts` (new). No import of `src/config.ts` (see step 2). Export:
-   - `readKeysFile(path = keysFilePath()): Record<string, string>`: parses the file with
-     `dotenv.parse`; returns `{}` when it does not exist. Cache by path + `mtimeMs` + size so
-     repeated calls are cheap and edits made by another process are picked up.
-   - `setKeysFileValue(name: string, value: string | null, path = keysFilePath()): void`: sets
-     (or, with `null`, removes) one `NAME=value` line, keeping every other line and comment as it
-     was. `name` must match `/^[A-Z][A-Z0-9_]*$/`; `value` must match `/^[\x21-\x7E]{1,400}$/`
-     (printable ASCII, no spaces or newlines) and must not contain `"`, `'`, `#`, `\` or `` ` ``;
-     otherwise throw. Create the folder with mode 0o700 if missing. Write to a temp file in the same
-     folder with mode 0o600, then `renameSync` over the target; afterwards `chmodSync(path, 0o600)`.
-     Invalidate the read cache.
-   - `maskKey(key: string): string`: keys of 12+ chars → first 6 (or fewer so at least 4 stay
-     hidden) + `…` + last 4; shorter keys → `…` + last 2. Never returns the whole key.
-   - `type KeySource = "environment" | "saved" | "env-file"`.
-   - `keySource(names: string[], shellEnv, processEnv, fileValues): { value: string; source: KeySource; name: string } | undefined`:
-     the lookup order from step 2 (shellEnv → `"environment"`, keys file → `"saved"`,
-     processEnv → `"env-file"`).
-   - `testKey(provider: string, key: string, fetchImpl: typeof fetch = fetch): Promise<{ status: "works" | "refused" | "unchecked"; detail: string }>`:
-     one GET with a 10 s timeout (`AbortSignal.timeout(10_000)`), no request body:
-     - deepseek: `https://api.deepseek.com/models`, `Authorization: Bearer <key>`
-     - openrouter: `https://openrouter.ai/api/v1/key`, `Authorization: Bearer <key>`
-     - zai: `https://api.z.ai/api/coding/paas/v4/models`, `Authorization: Bearer <key>`
-     - anthropic: `https://api.anthropic.com/v1/models`, headers `x-api-key: <key>` and
-       `anthropic-version: 2023-06-01`
-     - openai: `https://api.openai.com/v1/models`, `Authorization: Bearer <key>`
-     2xx → `works` / `"The provider accepted the key"`; 401 or 403 → `refused` /
-     `"The provider refused the key (HTTP <n>)"`; any other status → `unchecked` /
-     `"Couldn't check the key (HTTP <n>)"`; a network error or timeout → `unchecked` /
-     `"Couldn't reach the provider"`. Unknown provider → throw. Never include the key in `detail`.
+3. `src/routes/sessions.ts`: add `GET /runs` (inside the same authenticated plugin as the other
+   session routes) returning `{ runs: listTasks(), capacity: capacity() }` (import `capacity` from
+   `../tasks.js`).
 
-4. `src/routes/keys.ts` (new), a default-exported Fastify plugin registered inside the
-   authenticated scope in `src/index.ts` (next to the other `api.register` calls). Use
-   `PROVIDERS` keys as an `enum` in every schema. Endpoints:
-   - `GET /api/keys` → `{ file: keysFilePath(), defaultProvider: string | null, providers: [{ id, label, hasKey, source: KeySource | null, masked: string | null, defaultModel: string | null, isDefault: boolean, envName: string }] }`.
-     `envName` is the provider's first `hostEnv` name; `defaultModel` is `effectiveModel(id) ?? null`;
-     `defaultProvider` / `isDefault` come from `resolveProvider()` (only when it is a known
-     provider with a key).
-   - `POST /api/keys` body `{ provider, key }` (`key`: string, 8–400 chars, `additionalProperties: false`):
-     reject with 409 `{ error: "<ENV_NAME> is set in the server's environment; change it there" }`
-     when the current source is `"environment"`. Run `testKey`; on `refused` return 400
-     `{ error: detail }` and save nothing; otherwise `setKeysFileValue(envName, key)` and return
-     `{ provider, status, detail, masked }`.
-   - `POST /api/keys/:provider/test` → tests the current key (any source) and returns
-     `{ provider, status, detail }`; 404 `{ error: "No key for <label>" }` when there is none.
-   - `DELETE /api/keys/:provider` → 409 when the source is `"environment"` (same message), 404 when
-     there's no saved key; otherwise remove every `hostEnv` name of that provider from the keys
-     file, and if `DEFAULT_PROVIDER` in the keys file names this provider remove that line too.
-     Returns `{ provider, removed: true }`.
-   - `PUT /api/keys/default` body `{ provider }` → 400 when that provider has no key; otherwise
-     `setKeysFileValue("DEFAULT_PROVIDER", provider)` and return `{ defaultProvider: provider }`.
-     If `shellEnv.DEFAULT_PROVIDER` is set, return 409 (it would win anyway).
-   - Never log or return a full key.
+4. `ui/src/bee.ts`: export `miniHive(state: BeeState | "idle"): SVGSVGElement`, a 20×20 inline SVG
+   of the honeycomb cell (same hexagon path as the indicator, scaled to the 20 px viewBox) with
+   class `mini-hive` and `data-state`. Built with `createElementNS`, `aria-hidden="true"`.
 
-5. `src/cli.ts`: add `hive keys` with subcommands, and add them to `USAGE` and the command table
-   used by `--help`:
-   - `hive keys` / `hive keys list`: one line per provider: label, masked key or `no key`, source
-     (`saved`, `environment`, `.env`), default model, and `(default)` on the default provider.
-   - `hive keys add <provider> [--no-test]`: reads the key from stdin when stdin is not a TTY,
-     otherwise prompts `Paste the <label> API key: ` with echo off (use `readline` with
-     `output` muted, or `process.stdin.setRawMode`). Tests it unless `--no-test` (refused → exit 1,
-     nothing saved; unchecked → save and print the warning), then saves to the keys file and prints
-     `Saved the <label> key to <file>`.
-   - `hive keys test [provider]`: tests one provider's key, or every provider that has one; prints
-     the status and detail; exit 1 if any was refused.
-   - `hive keys remove <provider>`: removes the saved key (refuses with a clear message when it
-     comes from the environment).
-   - `hive keys default <provider>`: sets `DEFAULT_PROVIDER` in the keys file (provider must have a
-     key).
+5. `ui/src/main.ts` and `ui/src/app.css`, **Runs page layout**:
+   - Desktop (wider than 900 px): two columns, a run list on the left (`<aside class="runs-list"
+     aria-label="Runs">`, 300 px) and the current view on the right (the New run form or a run).
+     900 px and narrower: one column, the run list above the view, with at most 5 runs visible and
+     a "Show all (N)" toggle.
+   - The list starts with a **New run** button (`#newRunBtn`, primary). Below it, one item per run
+     (`<a class="run-item" href="#runs/<id>">`), newest first:
+     - `miniHive(state)` coloured by status: queued → outline, working (cloning, running,
+       reviewing, pushing) → honey with the existing `honey-pulse` animation, done → filled honey,
+       failed/aborted → grey (no animation under `prefers-reduced-motion`);
+     - the run's `title` (one line, ellipsis), and under it in muted 13 px text: the repo as
+       `owner/name` (or `new project <name>`, or `no repo`), the model, and either the elapsed time
+       for a busy run or "<n> min ago" since `lastActivity` for a finished one;
+     - the existing status pill (same labels and colours as the run view).
+     - The selected run has `aria-current="page"` and the accent-soft background.
+   - Empty list: a short muted line under New run: "No runs yet. Give the bees a task."
+   - Fetch `GET /runs` when the Runs page opens, then every 3 seconds while the page is visible
+     (`document.visibilityState === "visible"`); stop polling when leaving the Runs page. Re-render
+     the list only when the data changed (compare a JSON string of the runs).
 
-6. `ui/src/main.ts` and `ui/src/app.css`: rebuild **Settings › API keys** after the design mockup
-   (screen 2), in the existing style (cards, pills, `.btn`, light and dark tokens). Fetch
-   `GET /api/keys` when the page opens.
-   - Heading "API keys", the existing lead sentence, and an **Add key** button (`#addKeyBtn`) on the
-     right of the heading row; hidden when every provider has a key.
-   - Add form (`#addKeyForm`), shown under the heading: provider chips (radio buttons, only providers
-     without a key), a password input `#newKey` labelled "<Label> API key", **Cancel**, and
-     **Test and save** (`#saveKeyBtn`, disabled until the key is at least 8 characters). Under it:
-     "Saved to <file>, readable only by you. hive makes one free request to check the key first."
-     On a 400/409 show the error inline and keep the form open; on success close it, reload the
-     table, and show the returned status on that row.
-   - Table `#keysTable` with columns **Provider**, **Key and default model** (masked key in
-     monospace, then "Default model: <model>" or "No default model (set one per run)"),
-     **Status** (pill: `Not tested` muted, `Testing…`, `Works` ok, `Refused` danger, `Unchecked` warn,
-     with the detail as the pill's `title`), **Default** (an accent `Default` pill on the default
-     provider; otherwise a **Make default** text button, only on providers with a key), and
-     **Actions**: **Test** and **Remove**. Providers without a key show `No key` and no actions.
-   - Keys whose source is `environment` show "From the environment (<ENV_NAME>)" under the masked
-     key; their **Remove** button is disabled with the title "Set in the server's environment;
-     change it there".
-   - **Remove** shows an inline confirmation row: "Remove the <Label> key? Runs that use <Label>
-     will stop working until you add one again." with **Keep it** and **Remove key**.
-   - Under the table, a card "Where keys are kept": "Saved keys live in <file>, readable only by
-     you. An exported variable such as OPENROUTER_API_KEY wins over a saved key." and a dark code
-     block with `hive keys list`, `hive keys add deepseek`, `hive keys test`,
-     `hive keys default openrouter`, `hive keys remove openai`.
-   - After any change (add, remove, make default) also refresh the module's `providers` data
-     (`/api/providers`) so the New run form's provider list and defaults update without a reload.
-   - Render every value with `el()` / `textContent`; never put the key the user typed anywhere but
-     the request body; clear `#newKey` after saving or cancelling.
+6. `ui/src/main.ts`, **routing and several runs**:
+   - `#runs` shows the New run form; `#runs/<sessionId>` shows that run. Starting a run sets
+     `location.hash = "#runs/" + sessionId` after `/prompt` returns. **New run** (in the list and
+     in the run view) sets `#runs`. The form keeps the remembered provider, model and thinking.
+   - Opening `#runs/<id>` (from the list, a link, or a reload): fetch `GET /status/<id>`; on 404
+     show "This run is gone (the server restarted or it expired)." with a New run button. Otherwise
+     build the run view from the status (title, repo, provider label, model, status), then connect
+     the WebSocket exactly as today. The server replays the latest prompt's events on connect, so the
+     timeline, the steps and the result rebuild themselves. After a `hive_done` arrives from the
+     replay, if the status had `prUrl` / `issueUrl`, show the banner's PR/issue box in the `open`
+     state with that URL (validated with the existing `PR_URL` / `ISSUE_URL` patterns).
+   - Switching runs closes the previous run's WebSocket and destroys its bee indicator; runs keep
+     going on the server.
+   - The header bee: shown while any run in the latest `/runs` data is busy (not only the run being
+     viewed). Its accessible text says "<n> run(s) in progress" and the header bee's `title` says
+     the same.
 
-7. `ui/vite.config.ts`: no change needed (`/api` is already proxied).
+7. `scripts/ui-smoke.mjs`: keep every existing check (adjust selectors only where the layout change
+   requires it, e.g. clicking `#newRunBtn` instead of a "New run" text button). Add, after the
+   existing run checks and before Settings:
+   - `page.route("**/runs", ...)` answering two runs: `{ sessionId: "list-a", title: "Fix the login form", status: "running", repo: "https://github.com/demo/repo.git", model: "deepseek-flash", provider: "deepseek", createdAt: Date.now() - 60000, lastActivity: Date.now() }` and
+     `{ sessionId: "list-b", title: "code review and next steps", status: "idle", repo: "https://github.com/demo/repo.git", model: "deepseek-flash", provider: "deepseek", createdAt: Date.now() - 600000, lastActivity: Date.now() - 300000, prUrl: "https://github.com/demo/repo/pull/9" }`, with `capacity: { running: 1, queued: 0, max: 3 }`;
+     `page.route("**/status/list-b", ...)` answering list-b's object; a `routeWebSocket` for
+     `/events/list-b` that sends `hive_status` running then `hive_done` idle with `resultBranch:
+     "hive/listb000"`, `commitsPushed: 1`, `repoSlug: "demo/repo"` and one-file `changes`. Reload so
+     the WebSocket route applies.
+   - Go to `#runs`; assert two `.run-item`s, the first titled "Fix the login form"; assert a
+     `.header-bee` exists (list-a is running).
+   - Click the list-b item; assert `location.hash === "#runs/list-b"`, the Done banner appears, and
+     `#prLink` has `href` `https://github.com/demo/repo/pull/9` (restored from the status).
+   - Save `.handoff/ui-runs-list.png`; reload the page and assert the list-b run view is shown
+     again; then unroute everything, go to `#runs` and continue with Settings.
 
-8. `scripts/ui-smoke.mjs`: keep every existing check. Start the smoke server with an extra env
-   `HIVE_KEYS_FILE` pointing at a file in a temp dir (and keep `DEEPSEEK_API_KEY` /
-   `OPENROUTER_API_KEY` in its environment as today). In the Settings section, after the existing
-   API keys checks (update those selectors to `#keysTable` if the id changes):
-   - assert the DeepSeek row says "From the environment (DEEPSEEK_API_KEY)" and its Remove button is
-     disabled;
-   - mock `POST /api/keys` with `page.route` to answer
-     `{ provider: "zai", status: "works", detail: "The provider accepted the key", masked: "…a1" }`
-     (so no real network call); click `#addKeyBtn`, pick Z.AI, type `test-key-123456`, click
-     `#saveKeyBtn`; assert the request body was `{ provider: "zai", key: "test-key-123456" }` and
-     the form closed; unroute;
-   - save `.handoff/ui-keys.png`.
+8. `test/runs-list.test.mjs` (new), `node:test` style: before importing from `dist/`, set
+   `HIVE_DOTENV_PATH` and `HIVE_KEYS_FILE` to missing files in a temp dir, `WORKSPACE` to a temp dir,
+   and `DEEPSEEK_API_KEY=sk-test`. Import `createTask`, `listTasks`, `destroyTask` from
+   `../dist/tasks.js`. Create a task with prompt `"First line\nmore"`, another with a 200-char first
+   line, and an `ephemeral: true` task (do not run them). Assert `listTasks()` has the two
+   non-ephemeral tasks newest first, titles `"First line"` and a 121-char string ending in `…`.
+   Destroy all three in a `finally`.
 
-9. `test/keys.test.mjs` (new), `node:test` style, with `HIVE_KEYS_FILE` and `HIVE_DOTENV_PATH`
-   pointing into a `mkdtempSync` dir before importing from `dist/`:
-   - `setKeysFileValue` writes `A=1`, then `B=2`, keeps a comment line and `A`, removes `A` with
-     `null`; the file mode is `0o600`; values with a newline, a space, a quote or `#` throw.
-   - `readKeysFile` picks up a change made after a first read.
-   - `maskKey("sk-or-v1-abcdefghijklmnop1234")` keeps the last 4 and hides the middle; no mask
-     equals its input.
-   - `keySource` prefers shellEnv over the file over processEnv, and reports the source.
-   - `testKey` with a fake `fetchImpl`: deepseek 200 → works (and the URL and Authorization header
-     are as specified); openrouter 401 → refused; anthropic sends `x-api-key` and
-     `anthropic-version`; a 500 → unchecked; a rejected fetch → unchecked.
-   - `hive keys add zai --no-test` with the key on stdin (`spawnSync(process.execPath, ["dist/cli.js", "keys", "add", "zai", "--no-test"], { input: "zk-test-1234567890\n", env: { ...process.env, HIVE_KEYS_FILE: file } })`)
-     exits 0 and writes `ZAI_API_KEY=zk-test-1234567890` to the file; `hive keys list` then shows
-     a masked Z.AI key that does not contain `zk-test-1234567890`.
-
-10. `README.md`: in Settings and the web UI section, describe key management (Settings › API keys
-    and `hive keys`), the keys file and its precedence (environment > keys file > server `.env`),
-    and that the server reads the keys file too. Add `hive keys` to the CLI command table and the
-    new endpoints to the API table. `AGENTS.md`: layout rows for `src/keys.ts` and
-    `src/routes/keys.ts`; a security invariant: keys are written only to the keys file (mode 600,
-    atomic rename), never logged or returned whole, and values are validated so they can't inject
-    other lines. Remove "key management" from "Not built yet". `docs/GUI.md`: Settings › API keys is
-    built (Test, Make default, Remove, Add key; storage is the private file; no keychain).
+9. `README.md`: in the web UI section, describe the run list, reopening runs by URL, starting runs
+   while others are going, and that the list only covers runs since the server last started; add
+   `GET /runs` to the API table. `AGENTS.md`: update the `src/routes/sessions.ts` row (`/runs`).
 
 ## Acceptance
 
-- `npm test` exits 0 and includes the tests from `test/keys.test.mjs` passing.
+- `npm test` exits 0 and includes `test/runs-list.test.mjs` passing.
 - `npm run build:ui` exits 0.
 - `npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs` prints `ui-smoke: ok`
-  and exits 0, and `.handoff/ui-keys.png` exists.
-- `HIVE_KEYS_FILE=$(mktemp -d)/env node dist/cli.js keys list` exits 0 and prints one line per
-  provider.
+  and exits 0, and `.handoff/ui-runs-list.png` exists.
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -208,18 +123,16 @@ None — do it sequentially.
   the plan", one line each saying why. Installing dependencies (`npm ci`, `npm i --no-save`) and
   temporary files outside the repo are fine.
 - The only checks to run are the **Acceptance** commands. Don't write or run other end-to-end
-  tests; never call a real provider API from a test or script (tests use a fake `fetchImpl`, the
-  smoke test mocks `/api/keys`); never write to the real `~/.config/agent-hive/env` (tests and the
-  smoke server set `HIVE_KEYS_FILE`). If something outside Acceptance fails, note it in the report
-  and finish.
-- Every new route stays in the authenticated scope. No key is ever logged, put in an error
-  message, or returned whole. No new dependencies; no emoji in the UI.
+  tests; never let a script reach the real `/prompt` endpoint or start an agent. If something
+  outside Acceptance fails, note it in the report and finish.
+- `/runs` stays in the authenticated scope. Agent and task text in the UI is rendered as text only
+  (`el()` / `textContent`). No new dependencies, no emoji.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- The server's own login tokens, per-provider default models in Settings, the system keychain,
-  the first-run onboarding screens, the run form itself (beyond refreshing provider data).
+- Keeping runs across server restarts, splitting one goal into parallel tasks (swarm), deleting
+  runs from the UI, showing timelines of earlier prompts in a multi-prompt session, the CLI.
 
 ## If blocked
 
