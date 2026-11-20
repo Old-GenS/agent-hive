@@ -132,8 +132,7 @@ result with commits, files, a diff link and Open pull request) and Settings (API
 This computer). Checked by `scripts/ui-smoke.mjs`.
 
 **Not built yet:**
-- web UI: a review-only mode, and pushing only when the user clicks (today every repo run pushes
-  its commits to a `hive/<id>` branch); posting a no-change review as a GitHub issue
+- web UI: posting a no-change review as a GitHub issue
 - web UI: key management and the first-run onboarding from `docs/GUI.md` (needs `hive keys`)
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)

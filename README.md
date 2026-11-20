@@ -215,8 +215,8 @@ into `ui/dist`, and the running server serves the new files without a restart.
   the agent's write-up followed by the commit and file lists from git.
 
 Every repo run is set up to change code: the agent commits in the VM and hive pushes its commits to
-a `hive/<id>` branch, even for a review. A review-only mode isn't built yet; until then, say "don't
-edit or commit" in the task.
+a `hive/<id>` branch (never `main`), even for a review. For a review without changes, say "don't
+edit or commit" in the task; its findings are the last message.
 
 **New project** starts from an empty repo: give it a name and, when the run finishes with
 commits, the host creates that repository under the `gh` account (private by default) and pushes
