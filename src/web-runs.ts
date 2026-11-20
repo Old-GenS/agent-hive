@@ -385,7 +385,6 @@ export default async function webRunRoutes(app: FastifyInstance) {
         startedMeta = meta;
         live = liveEntry(abort);
         liveRuns.set(id, live);
-        publish(id, { type: "hive_status", status: "queued" });
         didStart = true;
         startResolve();
       },
