@@ -77,6 +77,7 @@ export interface RunMeta {
   /** where `hive push` put the run's commits */
   pushed?: { branch: string; url: string; at: number };
   prUrl?: string;
+  issueUrl?: string;
   error?: string;
   createdAt: number;
   finishedAt?: number;
@@ -358,6 +359,8 @@ export interface StartRunOptions {
   thinking?: string;
   onEvent: (e: any) => void;
   signal: AbortSignal;
+  /** Called once the run dir and meta.json exist and the run's status is "running". */
+  onStart?: (dir: string, meta: RunMeta) => void;
 }
 
 /**
@@ -399,6 +402,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     createdAt: Date.now(),
   };
   writeMeta(dir, meta);
+  o.onStart?.(dir, meta);
 
   const mounts: SandboxOptions["mounts"] = [
     { host: join(dir, "work"), container: "/work" },

@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadTokens, requireAuth } from "./auth.js";
 import { checkSandbox, runtimeInfo } from "./sandbox.js";
+import { liveCount, default as webRunRoutes } from "./web-runs.js";
 import githubRoutes from "./routes/github.js";
 import providerRoutes from "./routes/providers.js";
 import systemRoutes from "./routes/system.js";
@@ -50,6 +51,8 @@ app.get("/health", async () => ({
 // ── API: everything registered in this scope requires auth ──
 await app.register(async (api) => {
   api.addHook("onRequest", requireAuth);
+  api.get("/capacity", async () => ({ running: liveCount(), queued: 0, max: config.maxConcurrent }));
+  await api.register(webRunRoutes);
   await api.register(githubRoutes);
   await api.register(providerRoutes);
   await api.register(systemRoutes);

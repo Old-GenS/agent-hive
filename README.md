@@ -249,6 +249,10 @@ see in the shell. The login token also lives in the keys file as `API_TOKEN` —
 The UI at `/ui/` follows the design in [docs/GUI.md](docs/GUI.md). `npm run build:ui` builds it
 into `ui/dist`, and the running server serves the new files without a restart.
 
+The web UI uses the same run engine and run folders as `hive run`, so `hive list` shows web runs
+and the web run list shows CLI runs. Follow-ups, review cycles and new projects aren't available
+from the web UI yet.
+
 **Runs**
 - **Several runs at once:** the Runs page keeps a run list next to the current view (on a phone it
   sits above it, showing the newest five with a **Show all (N)** toggle). It lists every run the
