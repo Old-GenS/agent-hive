@@ -179,10 +179,12 @@ pi release, bump `PI_VERSION` in `image/Containerfile` and rebuild both.
 
 ## Server (optional)
 
-The same core can also run as an HTTP server with a web UI, REST API and MCP, for a VPS or for
-using it from a phone or another computer. The server runs each task in the libkrun microVM above
-when it can (`HIVE_RUNTIME=auto`), or in a podman sandbox (a krun microVM, gVisor, or a rootless
-container where there's no KVM). It clones and pushes over HTTPS with the server's own `gh` login
+The same core can also run as an HTTP server with a web UI and REST API, for a VPS or for
+using it from a phone or another computer. The server runs each task in the libkrun microVM above;
+`HIVE_RUNTIME=auto` uses it when it is available and `libkrun` requires it. Machines need `/dev/kvm`
+(a gVisor fallback for machines without it is on the roadmap, see `docs/ROADMAP.md`). The separate
+[hive-mcp](https://github.com/stansz/hive-mcp) package no longer works with this server; a built-in
+`hive mcp` is planned. The server clones and pushes over HTTPS with the server's own `gh` login
 by default, or with per-repo SSH deploy keys (`HIVE_GIT_PROTOCOL=ssh`, handy across several
 VPSes), and pushes each run's commits to a `hive/<id>` branch. It also supports new projects,
 pull requests on click, review cycles and follow-up messages. `hive serve` runs the server and web
@@ -280,9 +282,11 @@ the agent's work to its `main` branch. No commits, no repository.
   confirmation). Keys are written to the private keys file, which the CLI also reads; only
   providers with a key can be used for a run. The same thing is on the command line as
   `hive keys`.
-- **This computer:** how runs are isolated (microVM via libkrun, podman with krun or gVisor, or a
-  plain container) with a short explanation, the checks behind it, the GitHub connection (the
-  `gh` login and how runs clone and push), and the limits (VM size, time limit, runs at once).
+- **This computer:** how runs are isolated (microVM via libkrun) with a short explanation, the
+  checks behind it, a live **Right now** section (CPU use, memory, disk space for runs, CPU
+  temperature when reported, and runs in progress, refreshed every 5 seconds), the GitHub
+  connection (the `gh` login and how runs clone and push), and the limits (VM size, time limit,
+  runs at once).
 
 The header has a light/dark toggle (it follows the device until you pick) and Log out, whose
 tooltip shows the current user.
@@ -294,19 +298,17 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/prompt` | Start a task (`prompt`, `repo`, `branch`, `newRepo` (`{name, private}`), `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`), or follow up with `sessionId` |
-| POST | `/snippet` | One-shot question about some code; waits and returns `{result}` |
-| GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `changes` (commits and files), `prUrl`, `newRepo` / `createdRepo`, usage, `error` |
-| GET | `/runs` | Every non-ephemeral run the server knows about, newest first, each with `sessionId`, `title`, `status`, repo and model, plus the current `capacity` |
-| GET | `/messages/:id` | Conversation so far |
+| GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `changes` (commits and files), `prUrl`, `newRepo` / `createdRepo`, usage, `stepStartedAt` / `finishedAt`, `error` |
+| GET | `/runs` | Every run the server knows about, newest first, each with `sessionId`, `title`, `status`, repo and model, plus the current `capacity` |
 | POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
 | POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue. Returns `{url}` |
 | POST | `/abort/:id` | Stop the running sandbox |
 | DELETE | `/session/:id` | Delete the session and its files |
-| GET | `/files/:id?path=`, `/file/:id?path=` | Browse the agent's working copy |
 | POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |
-| WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` (`hive_done` carries `changes`, `resultBranch`, `repoSlug`, `createdRepo` and usage) |
+| WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` (`hive_done` carries `stepStartedAt`, `finishedAt`, `changes`, `resultBranch`, `repoSlug`, `createdRepo` and usage) |
 | GET | `/capacity` | Running / queued sandboxes |
-| GET | `/api/system` | Sandbox setup (microVM via libkrun, podman with krun or gVisor, or plain containers), its checks, the `gh` login, VM size, capacity and git transport |
+| GET | `/api/system` | Sandbox setup (microVM via libkrun), its checks, the `gh` login, VM size, capacity and git transport |
+| GET | `/api/system/usage` | What this computer is doing right now: CPU, memory, disk space for runs, CPU temperature when reported, and runs in progress |
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
 | GET | `/api/models?provider=` | Models to offer for a provider (OpenRouter's live list, a fixed list for the others) |
 | GET | `/api/keys` | Each provider's key status (masked, and whether it comes from the environment, the keys file or `.env`), default model, the keys file path and the default provider. Never a full key |
@@ -314,9 +316,8 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | POST | `/api/keys/:provider/test` | Test a provider's current key |
 | DELETE | `/api/keys/:provider` | Remove a saved key (and the default provider if it pointed at it) |
 | PUT | `/api/keys/default` | Make a provider the default (`provider`) |
-| GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
+| GET | `/api/github/repos` | Repo list (via `gh`) |
 | GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first (via `gh`) |
-| POST | `/api/github/fork` | Fork into the `gh` account; returns `{repo}` |
 | GET | `/health` | Health check (no auth) |
 
 ### Server configuration
@@ -329,8 +330,7 @@ In addition to the provider and sandbox settings above:
 | `PORT` / `HOST` | `8080` / `127.0.0.1` | Listen address |
 | `MAX_CONCURRENT_SESSIONS` / `MAX_QUEUED_SESSIONS` | `2` / `10` | Sandboxes at once / queue length before `503` |
 | `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Idle sessions and their files are deleted after this |
-| `HIVE_RUNTIME` | `auto` | `auto`, `libkrun`, `krun`, `runsc`, `crun`, `runc` |
-| `HIVE_IMAGE` | `localhost/agent-hive-sandbox:latest` | Sandbox image |
+| `HIVE_RUNTIME` | `auto` | `auto` or `libkrun`; `auto` uses libkrun when it is available |
 | `WORKSPACE` | `/tmp/hive-workspace` | Task directories |
 | `HIVE_GIT_PROTOCOL` | `https` | How the server clones and pushes `owner/name` repos: `https` uses the host's git credentials (e.g. `gh auth login`), `ssh` uses the host's SSH keys (per-repo deploy keys, handy across several VPSes) |
 | `HIVE_KEYS_FILE` | `~/.config/agent-hive/env` | The private file (mode 600) where the CLI and the server keep provider keys and `DEFAULT_PROVIDER` |

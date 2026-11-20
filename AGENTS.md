@@ -9,36 +9,37 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
   prompt goes in as a file, the agent's events come out as a log file, and its commits come back
   as patches. You then apply them, or push a branch and open a PR.
 - **The same core also runs as an optional HTTP server** (`src/index.ts`, `src/tasks.ts`) with a
-  REST API, a web UI at `/ui/`, and MCP via the separate
-  [hive-mcp](https://github.com/stansz/hive-mcp) package.
+  REST API and a web UI at `/ui/`. The separate
+  [hive-mcp](https://github.com/stansz/hive-mcp) package no longer works with this server; a
+  built-in `hive mcp` is planned.
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `src/index.ts` | Fastify setup: public routes (landing, `/ui/`, `/health`) and the authenticated API scope |
+| `src/index.ts` | Fastify setup: public routes (the `/` and `/docs` redirects to `/ui/`, `/ui/`, `/health`) and the authenticated API scope |
 | `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
 | `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
 | `src/tasks.ts` | Task lifecycle: queue → clone (or a new empty repo) → agent run → review cycles → export → push (or create the GitHub repo); change summary; pull requests on request; idle cleanup |
-| `src/sandbox.ts` | `podman run` / `pasta` + `hive-vm` wrapper, runtime detection (libkrun / krun / runsc / plain container), JSONL parsing; under libkrun the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
+| `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
 | `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/push/list/clean/serve/service); sets the commit identity from the user's git config |
 | `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
 | `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply, push (never forced) and `gh pr create` |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
-| `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/runs`, `/status`, `/messages`, `/pr`, `/issue`, `/abort`, `/session`, `/files`, `/events` |
-| `src/routes/github.ts` | `gh`-backed repo list, branches, search, fork for the UI |
+| `src/routes/sessions.ts` | `/prompt`, `/runs`, `/status`, `/pr`, `/issue`, `/abort`, `/session`, `/events` |
+| `src/routes/github.ts` | `gh`-backed repo list and branches for the UI |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
-| `src/routes/system.ts` | `/api/system`: sandbox setup and checks for Settings › This computer |
+| `src/routes/system.ts` | `/api/system` (sandbox setup and checks) and `/api/system/usage` (live CPU, memory, disk, temperature, runs) for Settings › This computer |
+| `src/usage.ts` | `usageNow()`: the live numbers behind the UI's Right now section, reading `/proc` and `/sys` under a configurable root |
 | `src/routes/keys.ts` | `/api/keys`: list (masked), add (tested first), test, remove and make-default provider keys for Settings › API keys |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
 | `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), release build and signing |
-| `public/landing.html` | Landing page served at `/` |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
 backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `npm test`.
@@ -47,9 +48,9 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 
 1. **The sandbox gets nothing secret except one LLM key.** Mounts are only the task's `work/`,
    `session/` and `io/` (plus `out/` for export). Keys are passed with `-e NAME` from the child env, never
-   on the command line. Don't add host mounts or env vars casually. The libkrun backend also maps
-   no guest ports to the host and runs in a pasta namespace that cannot reach the host's loopback,
-   gateway or own addresses; its root is a read-only export of the image with an in-RAM overlay.
+   on the command line. Don't add host mounts or env vars casually. The libkrun backend maps no guest ports to the
+   host and runs in a pasta namespace that cannot reach the host's loopback, gateway or own
+   addresses; its root is a read-only export of the image with an in-RAM overlay.
 2. **The host never runs git in `work/`.** The agent controls `work/.git` (hooks, config,
    filters, fsmonitor). Host git runs only in `origin/`, which no sandbox mounts, with hooks
    disabled. Changes cross over only as patch files applied with `git am`.
@@ -89,7 +90,7 @@ Two setups, picked with `HIVE_GIT_PROTOCOL`:
 | Account | Role | Auth | Scope |
 |---------|------|------|-------|
 | **<owner>** | Repo owner | SSH deploy keys (per repo, write access) | Only repos with a key installed |
-| **<bot>** | Hive's bot account | `gh` CLI login | Repo list/search, forks, pull requests, new repos |
+| **<bot>** | Hive's bot account | `gh` CLI login | Repo list and branches, pull requests, new repos |
 
 In the `ssh` setup a compromised server exposes the bot account and the per-repo deploy keys, not
 full access to the owner's GitHub. The sandbox gets neither in either setup.
@@ -97,7 +98,7 @@ full access to the owner's GitHub. The sandbox gets neither in either setup.
 - **Your repos:** task with `repo=<owner>/<repo>` → host clones → agent works in the sandbox →
   host pushes `hive/<id>`. Open a PR from the UI's **Open pull request** button
   (`POST /pr/:id`, via `gh pr create`), or merge yourself.
-- **External repos:** fork into the `gh` account (`POST /api/github/fork`), then run the task on
+- **External repos:** fork it yourself (for example with `gh repo fork`), then run the task on
   the fork.
 - **New projects:** a task with `newRepo` starts from an empty repo; when the agent has commits,
   the host runs `gh repo create <login>/<name>` (private by default) and pushes to `main`. Needs a
@@ -128,16 +129,17 @@ Settings come from env vars or `~/.config/agent-hive/env`, and nothing is tied t
 Tested on Linux with KVM: real runs in libkrun VMs, a push to a branch, and a PR opened on
 GitHub.
 
-**Done, server:** sandboxed runs (libkrun/podman krun/runsc/container) with live events from
-libkrun VMs, HTTPS (default) or SSH git, branch push, new projects (`gh repo create`), a change
-summary per run, pull requests on click, review cycles with an optional second model, follow-ups
-in the same session, WebSocket streaming with replay, snippet endpoint, a shared npm cache and
-per-task token/cost totals.
+**Done, server:** sandboxed runs in libkrun microVMs with live events, HTTPS (default) or SSH git,
+branch push, new projects (`gh repo create`), a change summary per run, pull requests on click,
+review cycles with an optional second model, follow-ups in the same session, WebSocket streaming
+with replay, a shared npm cache and per-task token/cost totals. Settings › This computer also shows
+live CPU, memory, disk, temperature and runs in progress (`GET /api/system/usage`).
 
 **Done, web UI:** the new design (light and dark): Runs (new-run form with repo and branch lists,
 per-provider model lists, New project; the bee indicator, a timeline with step check-offs, the
 result with commits, files, a diff link and Open pull request) and Settings (API keys: Add key,
-Test, Make default and Remove, with keys kept in the private file; This computer). Checked by
+Test, Make default and Remove, with keys kept in the private file; This computer, with a live
+Right now section). Checked by
 `scripts/ui-smoke.mjs`.
 
 **Not built yet:**

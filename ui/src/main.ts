@@ -274,6 +274,10 @@ interface RunState {
   /** a saved PR/issue URL from GET /status, shown on the replay's hive_done banner */
   pendingPrUrl?: string;
   pendingIssueUrl?: string;
+  /** when the current step started, for the bee's timer */
+  stepStartedAt?: number;
+  /** when the run finished, for the bee's real duration */
+  finishedAt?: number;
 }
 
 /** One row of GET /runs: what the run list shows. */
@@ -287,6 +291,8 @@ interface RunSummary {
   provider: string;
   createdAt: number;
   lastActivity: number;
+  stepStartedAt?: number;
+  finishedAt?: number;
 }
 
 function parseRunSummary(raw: unknown): RunSummary | null {
@@ -304,6 +310,8 @@ function parseRunSummary(raw: unknown): RunSummary | null {
     provider: typeof r.provider === "string" ? r.provider : "",
     createdAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
     lastActivity: typeof r.lastActivity === "number" ? r.lastActivity : Date.now(),
+    stepStartedAt: typeof r.stepStartedAt === "number" ? r.stepStartedAt : undefined,
+    finishedAt: typeof r.finishedAt === "number" ? r.finishedAt : undefined,
   };
 }
 
@@ -327,7 +335,7 @@ function formatElapsed(ms: number): string {
 }
 
 function runTimeLabel(summary: RunSummary): string {
-  if (BUSY_STATUS.has(summary.status)) return formatElapsed(Date.now() - summary.createdAt);
+  if (BUSY_STATUS.has(summary.status)) return formatElapsed(Date.now() - (summary.stepStartedAt ?? summary.createdAt));
   const minutes = Math.max(0, Math.floor((Date.now() - summary.lastActivity) / 60000));
   return `${minutes} min ago`;
 }
@@ -540,6 +548,7 @@ function renderApp(user: { name: string }): void {
   logout.setAttribute("aria-label", `Log out (current user: ${user.name})`);
   logout.onclick = () => {
     stopRunsPolling();
+    stopUsagePolling();
     closeRun();
     headerBeeEl = null;
     runsEl = null;
@@ -613,6 +622,8 @@ function runStateFromStatus(status: Record<string, unknown>): RunState {
     lastTool: null,
     pendingPrUrl: typeof status.prUrl === "string" ? status.prUrl : undefined,
     pendingIssueUrl: typeof status.issueUrl === "string" ? status.issueUrl : undefined,
+    stepStartedAt: typeof status.stepStartedAt === "number" ? status.stepStartedAt : undefined,
+    finishedAt: typeof status.finishedAt === "number" ? status.finishedAt : undefined,
   };
 }
 
@@ -661,6 +672,7 @@ function showRunMessage(message: string): void {
 
 function route(): void {
   if (!mainEl || !navRunsEl || !navSettingsEl) return;
+  stopUsagePolling();
   const view = location.hash.startsWith("#settings") ? "settings" : "runs";
   if (view === "settings") {
     navSettingsEl.setAttribute("aria-current", "page");
@@ -1190,6 +1202,8 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     currentAssistant: null,
     currentStep: null,
     lastTool: null,
+    stepStartedAt: typeof data.stepStartedAt === "number" ? data.stepStartedAt : undefined,
+    finishedAt: typeof data.finishedAt === "number" ? data.finishedAt : undefined,
   };
   runUi = null;
   runsViewTarget = run.sessionId;
@@ -1347,7 +1361,10 @@ function syncRunUi(): void {
   runUi.followInput.disabled = run.busy;
   runUi.followBtn.disabled = run.busy;
   const beeState = BEE_STATE[run.status];
-  runUi.bee.set(beeState.state, beeState.label);
+  runUi.bee.set(beeState.state, beeState.label, {
+    startedAt: run.stepStartedAt,
+    endedAt: run.finishedAt,
+  });
   syncHeaderBee();
 }
 
@@ -1449,6 +1466,8 @@ function handleEvent(event: any): void {
       }
       break;
     case "hive_done":
+      if (typeof event.stepStartedAt === "number") run.stepStartedAt = event.stepStartedAt;
+      if (typeof event.finishedAt === "number") run.finishedAt = event.finishedAt;
       finishRun(event);
       break;
   }
@@ -1579,6 +1598,8 @@ async function sendFollowUp(): Promise<void> {
     const res = await api("/prompt", { method: "POST", body: JSON.stringify({ prompt: text, sessionId: run.sessionId }) });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    if (typeof data.stepStartedAt === "number") run.stepStartedAt = data.stepStartedAt;
+    run.finishedAt = typeof data.finishedAt === "number" ? data.finishedAt : undefined;
     await connect();
   } catch (err) {
     appendItem({ kind: "banner", tone: "danger", title: "Couldn't send", detail: (err as Error).message });
@@ -2022,46 +2043,139 @@ interface SystemInfo {
 
 const ISOLATION_TEXT: Record<string, string> = {
   microvm: "MicroVM",
-  gvisor: "gVisor sandbox",
-  container: "Plain container",
+  unavailable: "Nothing available",
 };
 
-/** One plain sentence on what each runtime is, and where to read more. */
+/** One plain sentence on what the runtime is, and where to read more. */
 const RUNTIME_ABOUT: Record<string, { text: string; href: string; label: string }> = {
   libkrun: {
     text: "libkrun is a small library that boots a lightweight virtual machine with your CPU's built-in virtualization (KVM). Each run gets its own Linux kernel, so the agent can't touch this computer's files or processes.",
     href: "https://github.com/containers/libkrun",
     label: "What is libkrun?",
   },
-  krun: {
-    text: "krun is podman's runtime built on libkrun: each container runs inside its own lightweight virtual machine with its own Linux kernel.",
-    href: "https://github.com/containers/libkrun",
-    label: "What is krun?",
-  },
-  runsc: {
-    text: "gVisor puts its own kernel, written in Go, between the agent and this computer's kernel, so most system calls never reach the host.",
-    href: "https://gvisor.dev/docs/",
-    label: "What is gVisor?",
-  },
-  crun: {
-    text: "A plain podman container shares this computer's Linux kernel. It keeps files apart, but a kernel bug could let the agent out.",
-    href: "https://podman.io/docs",
-    label: "About podman",
-  },
-  runc: {
-    text: "A plain podman container shares this computer's Linux kernel. It keeps files apart, but a kernel bug could let the agent out.",
-    href: "https://podman.io/docs",
-    label: "About podman",
-  },
 };
 
 const RUNTIME_TEXT: Record<string, string> = {
   libkrun: "libkrun, started directly",
-  krun: "podman with the krun runtime",
-  runsc: "podman with gVisor (runsc)",
-  crun: "podman (crun)",
-  runc: "podman (runc)",
 };
+
+interface UsageResponse {
+  cpu: { percent: number; cores: number; load1: number };
+  memory: { usedBytes: number; totalBytes: number };
+  disk: { path: string; freeBytes: number; totalBytes: number };
+  temperature: { celsius: number; sensor: string } | null;
+  runs: { running: number; queued: number; max: number };
+}
+
+let usageTimer: number | undefined;
+
+function stopUsagePolling(): void {
+  if (usageTimer === undefined) return;
+  window.clearInterval(usageTimer);
+  usageTimer = undefined;
+}
+
+/** "not reported" handling and one-decimal numbers for the usage tiles. */
+function formatNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatGB(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 100 ? String(Math.round(gb)) : gb.toFixed(1);
+}
+
+/** One tile: a label, a big value, an optional detail and a bar (0-100, warn/danger marks). */
+function usageTile(
+  label: string,
+  value: string,
+  detail: string,
+  bar?: { percent: number; warnAt: number; dangerAt: number },
+): HTMLElement {
+  const tile = el("div", { class: "usage-tile" }, el("span", { class: "usage-label" }, label), el("span", { class: "usage-value" }, value));
+  if (detail) tile.append(el("span", { class: "usage-detail" }, detail));
+  if (bar) {
+    const fill = el("div", { class: "usage-bar-fill" });
+    fill.style.width = `${Math.min(100, Math.max(0, bar.percent))}%`;
+    if (bar.percent >= bar.dangerAt) fill.classList.add("is-danger");
+    else if (bar.percent >= bar.warnAt) fill.classList.add("is-warn");
+    tile.append(el("div", { class: "usage-bar", role: "presentation" }, fill));
+  }
+  return tile;
+}
+
+function renderUsage(section: HTMLElement, data: UsageResponse): void {
+  const usedMemoryPercent = data.memory.totalBytes > 0 ? (data.memory.usedBytes / data.memory.totalBytes) * 100 : 0;
+  const usedDiskPercent = data.disk.totalBytes > 0 ? ((data.disk.totalBytes - data.disk.freeBytes) / data.disk.totalBytes) * 100 : 0;
+  const temperature = data.temperature;
+  const tiles = [
+    usageTile("CPU", `${formatNumber(data.cpu.percent)}%`, `${data.cpu.cores} core${data.cpu.cores === 1 ? "" : "s"} \u00b7 load ${formatNumber(data.cpu.load1)}`, {
+      percent: data.cpu.percent,
+      warnAt: 75,
+      dangerAt: 90,
+    }),
+    usageTile("Memory", `${formatGB(data.memory.usedBytes)} of ${formatGB(data.memory.totalBytes)} GB`, "in use", {
+      percent: usedMemoryPercent,
+      warnAt: 75,
+      dangerAt: 90,
+    }),
+    usageTile("Disk free", `${formatGB(data.disk.freeBytes)} GB free of ${formatGB(data.disk.totalBytes)} GB`, "for runs", {
+      percent: usedDiskPercent,
+      warnAt: 75,
+      dangerAt: 90,
+    }),
+    temperature
+      ? usageTile("CPU temperature", `${formatNumber(temperature.celsius)} \u00b0C`, temperature.sensor)
+      : usageTile("CPU temperature", "Not reported", ""),
+    usageTile(
+      "Runs",
+      `${data.runs.running} running \u00b7 ${data.runs.queued} queued`,
+      `of ${data.runs.max}`,
+    ),
+  ];
+  // A temperature has no bar; the value itself turns warn/danger when the CPU runs hot.
+  const tempTile = tiles[3];
+  if (temperature) {
+    const valueEl = tempTile.querySelector(".usage-value");
+    if (valueEl) {
+      if (temperature.celsius >= 90) valueEl.classList.add("is-danger");
+      else if (temperature.celsius >= 80) valueEl.classList.add("is-warn");
+    }
+  }
+  const grid = section.querySelector(".usage-grid");
+  if (grid) grid.replaceChildren(...tiles);
+}
+
+function usageSection(): HTMLElement {
+  return el(
+    "section",
+    { class: "card usage-section", id: "usageSection" },
+    el("h2", { class: "section-title" }, "Right now"),
+    el("div", { class: "usage-grid" }, el("p", { class: "cell-muted" }, "Loading\u2026")),
+  );
+}
+
+/** Poll /api/system/usage while the page is open and visible; stop when it leaves the document. */
+function startUsagePolling(section: HTMLElement): void {
+  stopUsagePolling();
+  const tick = async (): Promise<void> => {
+    if (!section.isConnected) {
+      stopUsagePolling();
+      return;
+    }
+    if (document.visibilityState !== "visible") return;
+    try {
+      const res = await api("/api/system/usage");
+      if (!res.ok) return;
+      const data = (await res.json()) as UsageResponse;
+      if (section.isConnected) renderUsage(section, data);
+    } catch {
+      // Keep the last numbers; the next tick tries again.
+    }
+  };
+  void tick();
+  usageTimer = window.setInterval(() => void tick(), 5000);
+}
 
 /** Settings > This computer: what runs are isolated with, and the checks behind it. */
 function buildComputerPage(): HTMLElement {
@@ -2078,6 +2192,8 @@ function buildComputerPage(): HTMLElement {
       const res = await api("/api/system");
       if (!res.ok) throw new Error(String(res.status));
       body.replaceChildren(...computerSections((await res.json()) as SystemInfo));
+      const section = body.querySelector<HTMLElement>("#usageSection");
+      if (section) startUsagePolling(section);
     } catch {
       body.replaceChildren(el("p", { class: "alert alert-danger" }, "Couldn't load this computer's setup."));
     }
@@ -2164,7 +2280,7 @@ function computerSections(info: SystemInfo): HTMLElement[] {
     ),
   );
 
-  return [summary, el("h2", { class: "section-title" }, "GitHub"), ghCard, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
+  return [summary, usageSection(), el("h2", { class: "section-title" }, "GitHub"), ghCard, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
 }
 
 // ── theme ──

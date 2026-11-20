@@ -318,6 +318,8 @@ try {
     createdAt: now - 600_000,
     lastActivity: now - 300_000,
     prUrl: "https://github.com/demo/repo/pull/9",
+    stepStartedAt: now - 300_000,
+    finishedAt: now - 240_000,
   };
   await page.route("**/runs", (route) =>
     route.fulfill({
@@ -365,6 +367,8 @@ try {
 
   await page.click('.run-item[href="#runs/list-b"]');
   await page.waitForSelector(".item-banner-ok");
+  const beeTime = await page.$eval(".bee-time", (node) => (node.textContent ?? "").trim());
+  assert(beeTime === "1:00", `the reopened run's bee shows its real duration (got ${JSON.stringify(beeTime)})`);
   const listHash = await page.evaluate(() => location.hash);
   assert(listHash === "#runs/list-b", `clicking a run sets its URL (got ${JSON.stringify(listHash)})`);
   const listDoneTitle = await page.$eval(".item-banner-ok .banner-title", (node) => (node.textContent ?? "").trim());
@@ -451,6 +455,14 @@ try {
   await page.waitForSelector("#isolationCard");
   const checkRows = await page.$$eval("#checksTable tbody tr", (nodes) => nodes.length);
   assert(checkRows >= 2, `this computer lists its checks (got ${checkRows})`);
+  await page.waitForSelector("#usageSection");
+  await page.waitForFunction(() => document.querySelectorAll("#usageSection .usage-tile").length === 5, null, {
+    timeout: 10_000,
+  });
+  const usageTiles = await page.$$eval("#usageSection .usage-tile", (nodes) => nodes.length);
+  assert(usageTiles === 5, `the Right now section has five tiles (got ${usageTiles})`);
+  const cpuValue = await page.$eval("#usageSection .usage-tile .usage-value", (node) => (node.textContent ?? "").trim());
+  assert(/^\d+(\.\d)?%$/.test(cpuValue), `the CPU tile shows a percentage (got ${JSON.stringify(cpuValue)})`);
   await page.waitForSelector("#githubCard");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-computer.png") });
 

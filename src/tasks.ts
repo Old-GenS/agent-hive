@@ -50,8 +50,6 @@ export interface TaskOptions {
   reviewModel?: string;
   /** start from an empty repository and create the GitHub repo when the run has commits */
   newRepo?: { name: string; private?: boolean };
-  /** one-shot: no session kept, task removed once its result is read */
-  ephemeral?: boolean;
 }
 
 export interface ChatMessage {
@@ -86,6 +84,10 @@ export class Task extends EventEmitter {
   /** token and cost totals over every agent run of this task */
   usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   messages: ChatMessage[] = [];
+  /** when the current prompt started (the UI's run timer counts from here) */
+  stepStartedAt?: number;
+  /** when the last prompt ended: idle, failed or aborted */
+  finishedAt?: number;
   /** events of the current prompt, replayed to WebSocket clients that connect late */
   replay: any[] = [];
   lastAssistantText = "";
@@ -155,6 +157,8 @@ export class Task extends EventEmitter {
       isolation: runtimeInfo.isolation,
       createdAt: this.createdAt,
       lastActivity: this.lastActivity,
+      stepStartedAt: this.stepStartedAt,
+      finishedAt: this.finishedAt,
     };
   }
 
@@ -235,7 +239,8 @@ export class Task extends EventEmitter {
       ],
       env: gitIdentity(),
       command: ["hive-export", this.baseSha!],
-      ioDir: join(this.dir, "io"),
+      // Its own folder, so the export never touches the agent step's event log.
+      ioDir: join(this.dir, "io-export"),
     });
     const r = await exp.done;
     if (r.code !== 0) throw new Error(`Exporting changes failed: ${(r.stderr || r.stdout).trim().slice(-2000)}`);
@@ -365,10 +370,9 @@ export function getTask(id: string) {
   return tasks.get(id);
 }
 
-/** Every non-ephemeral task, newest first. */
+/** Every task, newest first. */
 export function listTasks(): ReturnType<Task["toJSON"]>[] {
   return [...tasks.values()]
-    .filter((task) => !task.opts.ephemeral)
     .sort((a, b) => b.createdAt - a.createdAt)
     .map((task) => task.toJSON());
 }
@@ -449,6 +453,8 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
   task.resetAbort();
   task.replay = [];
   task.error = undefined;
+  task.stepStartedAt = Date.now();
+  task.finishedAt = undefined;
   task.setStatus("queued", capacity());
   await acquire();
   try {
@@ -478,7 +484,7 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
     task.lastAssistantText = await task.runAgent(intro + prompt, {
       model: task.model,
       continueSession: task.sessionStarted,
-      keepSession: !task.opts.ephemeral,
+      keepSession: true,
     });
 
     if ((task.repoUrl || task.newRepoName) && task.baseSha) {
@@ -495,10 +501,13 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
       task.setStatus("pushing");
       await task.exportAndPush();
     }
+    task.finishedAt = Date.now();
     task.setStatus("idle");
     task.emitEvent({
       type: "hive_done",
       status: "idle",
+      stepStartedAt: task.stepStartedAt,
+      finishedAt: task.finishedAt,
       resultBranch: task.resultBranch,
       commitsPushed: task.commitsPushed,
       createdRepo: task.createdRepo,
@@ -509,8 +518,9 @@ export async function runPrompt(task: Task, prompt: string): Promise<void> {
   } catch (err) {
     const aborted = err instanceof AbortError;
     task.error = aborted ? undefined : (err as Error).message;
+    task.finishedAt = Date.now();
     task.setStatus(aborted ? "aborted" : "failed", task.error ? { error: task.error } : {});
-    task.emitEvent({ type: "hive_done", status: task.status, error: task.error, resultBranch: task.resultBranch, createdRepo: task.createdRepo, usage: task.usage });
+    task.emitEvent({ type: "hive_done", status: task.status, error: task.error, stepStartedAt: task.stepStartedAt, finishedAt: task.finishedAt, resultBranch: task.resultBranch, createdRepo: task.createdRepo, usage: task.usage });
     if (!aborted) console.error(`task ${task.id} failed:`, task.error);
   } finally {
     release();

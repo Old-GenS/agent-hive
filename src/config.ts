@@ -89,8 +89,7 @@ export const config = {
     "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so.",
   runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
   sandbox: {
-    image: process.env.HIVE_IMAGE || "localhost/agent-hive-sandbox:latest",
-    runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun | krun | runsc | crun | runc
+    runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun
     memory: process.env.HIVE_SANDBOX_MEMORY || "1g",
     cpus: process.env.HIVE_SANDBOX_CPUS || "1",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),

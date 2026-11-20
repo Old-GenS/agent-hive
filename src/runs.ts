@@ -376,7 +376,6 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
 
   const mounts: SandboxOptions["mounts"] = [
     { host: join(dir, "work"), container: "/work" },
-    { host: join(dir, "io"), container: "/io" },
     { host: join(dir, "session"), container: "/session" },
   ];
   // The npm cache is shared with the server's sandboxes (and survives them); export runs skip it.
@@ -386,7 +385,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   }
 
   const command = [
-    "bash", "-c", 'exec hive-agent "$@" > /io/events.jsonl 2> /io/stderr.log', "hive-agent",
+    "hive-agent",
     "-p",
     "--provider", provider,
     "--model", model,
@@ -402,6 +401,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     mounts,
     env: { [PROVIDERS[provider].sandboxEnv]: key, ...gitIdentity() },
     command,
+    ioDir: join(dir, "io"),
   });
 
   let summary: string | undefined;
@@ -454,6 +454,8 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
       ],
       env: gitIdentity(),
       command: ["hive-export", base],
+      // Its own folder, so the export never touches the agent's event log (hive log reads it).
+      ioDir: join(dir, "io-export"),
     });
     const r = await exp.done;
     if (r.code !== 0) {

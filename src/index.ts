@@ -41,8 +41,7 @@ const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
 await app.register(fWebSocket);
 
-// ── public: landing page, UI assets, health ──
-await app.register(fStatic, { root: join(here, "..", "public"), prefix: "/public/" });
+// ── public: UI assets, health ──
 const uiDist = join(here, "..", "ui", "dist");
 if (existsSync(uiDist)) {
   await app.register(fStatic, { root: uiDist, prefix: "/ui/", decorateReply: false });
@@ -50,8 +49,8 @@ if (existsSync(uiDist)) {
 } else {
   app.log.warn("ui/dist not found; build the UI with: npm run build:ui");
 }
-app.get("/", (_req, reply) => reply.sendFile("landing.html"));
-app.get("/docs", (_req, reply) => reply.sendFile("landing.html"));
+app.get("/", (_req, reply) => reply.redirect("/ui/"));
+app.get("/docs", (_req, reply) => reply.redirect("/ui/"));
 app.get("/health", async () => ({
   status: "ok",
   uptime: Math.floor(process.uptime()),
@@ -71,7 +70,7 @@ await app.register(async (api) => {
 });
 
 for (const problem of checkSandbox()) app.log.error(problem);
-app.log.info(`sandbox isolation: ${runtimeInfo.isolation}${runtimeInfo.runtime ? ` (--runtime ${runtimeInfo.runtime})` : ""}`);
+app.log.info(`sandbox isolation: ${runtimeInfo.isolation} (${runtimeInfo.runtime})`);
 if (runtimeInfo.warning) app.log.warn(runtimeInfo.warning);
 
 try {

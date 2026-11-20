@@ -9,9 +9,14 @@ import { el } from "./util.js";
 
 export type BeeState = "queued" | "working" | "done" | "failed" | "stopped";
 
+export interface BeeTimes {
+  startedAt?: number;
+  endedAt?: number;
+}
+
 export interface BeeIndicator {
   root: HTMLElement;
-  set(state: BeeState, label: string): void;
+  set(state: BeeState, label: string, times?: BeeTimes): void;
   destroy(): void;
 }
 
@@ -111,6 +116,7 @@ export function createBeeIndicator(): BeeIndicator {
   let currentState: BeeState | null = null;
   let currentLabel = "";
   let startedAt = 0;
+  let endedAt: number | null = null;
   let interval: number | undefined;
 
   function formatTime(ms: number): string {
@@ -122,26 +128,35 @@ export function createBeeIndicator(): BeeIndicator {
   }
 
   function tick(): void {
-    timeEl.textContent = formatTime(Date.now() - startedAt);
+    timeEl.textContent = formatTime((endedAt ?? Date.now()) - startedAt);
   }
 
-  function set(state: BeeState, label: string): void {
+  /**
+   * `times.startedAt` makes the timer count from when the current step really started (a reopened
+   * run keeps its elapsed time); `times.endedAt` freezes it at the run's real duration.
+   */
+  function set(state: BeeState, label: string, times?: BeeTimes): void {
     const changed = state !== currentState || label !== currentLabel;
     currentState = state;
     currentLabel = label;
     root.dataset.state = state;
     if (changed) labelEl.textContent = label;
-    if (!startedAt) {
-      startedAt = Date.now();
-      tick();
+    if (times?.startedAt !== undefined) {
+      startedAt = times.startedAt;
+      endedAt = times.endedAt ?? null;
+    } else if (!startedAt) {
+      startedAt = times?.endedAt ?? Date.now();
+      if (times?.endedAt !== undefined) endedAt = times.endedAt;
+    } else if (times?.endedAt !== undefined) {
+      endedAt = times.endedAt;
     }
-    const running = state === "queued" || state === "working";
+    tick();
+    const running = (state === "queued" || state === "working") && endedAt === null;
     if (running && interval === undefined) {
       interval = window.setInterval(tick, 1000);
     } else if (!running && interval !== undefined) {
       window.clearInterval(interval);
       interval = undefined;
-      tick();
     }
   }
 

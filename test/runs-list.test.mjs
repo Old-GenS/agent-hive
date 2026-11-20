@@ -1,5 +1,5 @@
-// The run list: every non-ephemeral task, newest first, with a one-line title. The env points at
-// temp paths before anything from dist/ is imported, so no real keys file or workspace is touched.
+// The run list: every task, newest first, with a one-line title. The env points at temp paths
+// before anything from dist/ is imported, so no real keys file or workspace is touched.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -16,7 +16,7 @@ const { createTask, listTasks, destroyTask } = await import("../dist/tasks.js");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("listTasks returns non-ephemeral tasks newest first with one-line titles", async () => {
+test("listTasks returns tasks newest first with one-line titles", async () => {
   const longLine = "x".repeat(200);
   const created = [];
   try {
@@ -26,18 +26,18 @@ test("listTasks returns non-ephemeral tasks newest first with one-line titles", 
     const newest = createTask({ prompt: "First line\nmore", provider: "deepseek" });
     created.push(newest.id);
     await sleep(5);
-    created.push(createTask({ prompt: "Throwaway", provider: "deepseek", ephemeral: true }).id);
+    created.push(createTask({ prompt: "Throwaway", provider: "deepseek" }).id);
 
     const tasks = listTasks();
-    assert.equal(tasks.length, 2, "ephemeral tasks are left out");
+    assert.equal(tasks.length, 3, "every task is listed");
     assert.deepEqual(
       tasks.map((task) => task.title),
-      ["First line", `${longLine.slice(0, 120)}\u2026`],
+      ["Throwaway", "First line", `${longLine.slice(0, 120)}\u2026`],
     );
-    assert.equal(tasks[0].sessionId, newest.id);
-    assert.equal(tasks[0].title, "First line");
-    assert.equal(tasks[1].title.length, 121);
-    assert.ok(tasks[1].title.endsWith("\u2026"));
+    assert.equal(tasks[1].sessionId, newest.id);
+    assert.equal(tasks[1].title, "First line");
+    assert.equal(tasks[2].title.length, 121);
+    assert.ok(tasks[2].title.endsWith("\u2026"));
   } finally {
     for (const id of created) destroyTask(id);
   }

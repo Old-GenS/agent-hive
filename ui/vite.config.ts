@@ -13,15 +13,19 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      '/runs': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/session': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
       '/prompt': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
       '/status': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/messages': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
@@ -43,10 +47,6 @@ export default defineConfig({
         ws: true,
       },
       '/health': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/system-prompt': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },

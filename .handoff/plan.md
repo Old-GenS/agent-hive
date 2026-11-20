@@ -1,152 +1,148 @@
 ## Goal
 
-Two new CLI commands so the server and web UI are easy to run anywhere:
+Before merging the CLI and server engines (`docs/CORE.md`), remove the server parts nothing uses,
+and fix two UI details:
 
-- `hive serve`: start the server and web UI from the CLI, on a laptop or a headless box. If no
-  login token exists yet, create one and keep it in the keys file. `--open` opens the browser
-  already logged in (the token travels in the URL fragment, which the UI reads and strips).
-- `hive service install | status | restart | logs | uninstall`: run `hive serve` as a background
-  service that starts at login/boot: a systemd user unit on Linux, a launchd agent on macOS.
+1. **Remove:** the podman sandbox backends (krun, gVisor/runsc, crun/runc), the `/snippet`,
+   `/files`, `/file` and `/messages` routes, `/api/github/search`, `/api/github/fork`, and the old
+   landing page (`/` and `/docs` now redirect to `/ui/`). libkrun is the only backend.
+2. **Run timer:** the bee's elapsed timer restarts at 0:00 when you switch pages or reopen a run. It
+   must show the real time since the current step started, and a finished run's real duration.
+3. **Settings › This computer:** a live "Right now" section with CPU use, memory, free disk space
+   for runs, CPU temperature (when the machine reports one) and runs in progress, refreshed every
+   5 seconds while the page is open.
 
 ## Files to touch
 
-- `src/cli.ts`
-- `src/service.ts` (new)
-- `src/auth.ts`
+- `src/sandbox.ts`
+- `src/config.ts`
 - `src/index.ts`
+- `src/routes/sessions.ts`
+- `src/routes/github.ts`
+- `src/routes/system.ts`
+- `src/tasks.ts`
+- `src/usage.ts` (new)
+- `public/landing.html` (delete; delete `public/` if it is then empty)
 - `ui/src/main.ts`
-- `test/service.test.mjs` (new)
-- `README.md`
-- `AGENTS.md`
-- `docs/ROADMAP.md`
-- `.handoff/report.md`
+- `ui/src/bee.ts`
+- `ui/src/app.css`
+- `ui/vite.config.ts`
+- `scripts/ui-smoke.mjs`
+- `test/*.test.mjs` (only to remove or adjust tests for removed code)
+- `test/usage.test.mjs` (new)
+- `README.md`, `AGENTS.md`, `.env.example`
+- `.handoff/report.md`, `.handoff/ui-*.png`
 
 ## Steps
 
 1. Run `npm ci`, then `cd ui && npm ci && cd ..`, then `bash vm/build.sh`.
 
-2. `src/auth.ts`: `loadTokens()` uses `setting("API_TOKEN")` / `setting("API_TOKENS")` from
-   `./config.js` instead of reading `process.env` directly, so a token saved in the keys file
-   (`~/.config/agent-hive/env`) works for the server too. Keep the existing validation (minimum
-   length 16, JSON for `API_TOKENS`) and error messages.
+2. **Remove the podman backends** (`src/sandbox.ts`, `src/config.ts`):
+   - Delete `spawnPodman`, the podman branches of `runSandbox`'s `stop`, the podman part of
+     `checkSandbox` and `systemInfo`, `CONTAINER_WARNING`, and krun/runsc/crun/runc detection.
+   - `detectRuntime()` returns `{ runtime: "libkrun", isolation: "microvm" }` when
+     `libkrunAvailable()`, else `{ runtime: "libkrun", isolation: "unavailable", warning: "<what is missing, from checkSandbox()>" }`
+     (add `"unavailable"` to the `Isolation` type; remove `"gvisor"` and `"container"`).
+   - `HIVE_RUNTIME`: accept only `auto` or `libkrun` (anything else: the existing kind of error,
+     listing `auto, libkrun`). Remove `config.sandbox.image` and `HIVE_IMAGE` from runtime code (the
+     image name stays only in `package.json`'s `build:image` script and `vm/build-rootfs.sh`).
+   - `runSandbox` always uses the libkrun path. `ioDir` becomes required in `SandboxOptions` (every
+     caller already passes it or must: give the export sandbox its own `io` dir as today); remove
+     the stdout JSONL parsing so events only come from `io/events.jsonl`. Keep `onEvent`.
+   - `src/cli.ts` already forces libkrun; only adjust it if it referenced removed names.
+   - Keep `vm/`, `image/` and the `build:image` / `build:rootfs` scripts: podman is still used once to
+     build the VM filesystem.
 
-3. `src/index.ts`: change the "no token" fatal message to
-   `FATAL: no API token. Run hive serve (it creates one), or set API_TOKEN in .env or ~/.config/agent-hive/env; generate one with: openssl rand -hex 32`.
-   No other behaviour change: `node dist/index.js` keeps working as today.
+3. **Remove unused routes:**
+   - `src/routes/sessions.ts`: delete `POST /snippet`, `GET /files/:sessionId`, `GET /file/:sessionId`,
+     `GET /messages/:sessionId` and the helpers only they use (`insideWork`, etc.). Keep
+     `DELETE /session/:sessionId`.
+   - `src/routes/github.ts`: delete `GET /api/github/search` and `POST /api/github/fork`.
+   - `src/tasks.ts`: remove the `ephemeral` option and its uses (only `/snippet` used it).
+   - `src/index.ts`: delete the `public/` static registration and the landing routes; add
+     `app.get("/", (_req, reply) => reply.redirect("/ui/"))` and the same for `/docs`. Delete
+     `public/landing.html`.
+   - `ui/vite.config.ts`: drop proxy entries for removed paths (`/messages`, `/system-prompt`, …);
+     add `/runs` and `/session`.
 
-4. `src/cli.ts`, `hive serve [--host <addr>] [--port <n>] [--open]`:
-   - Defaults: host `127.0.0.1`, port `8080` (or `HOST` / `PORT` when set and no flag is given).
-     `--port` must be 1–65535.
-   - If `setting("API_TOKEN")` and `setting("API_TOKENS")` are both empty: generate
-     `randomBytes(24).toString("hex")`, save it with `setKeysFileValue("API_TOKEN", token)` and
-     print `hive: created a login token and saved it to <keys file>`.
-   - Set `process.env.HOST` / `process.env.PORT`, `process.env.API_TOKEN` (to the token now in use
-     when it came from the keys file, so `loadTokens` sees it even if config was imported first),
-     then `await import("./index.js")` to start the server in this process.
-   - Once listening (poll `http://127.0.0.1:<port>/health` every 200 ms for up to 15 s), print:
-     `hive: serving on http://<host>:<port>/ui/` and, when host is `0.0.0.0`, also the LAN
-     addresses from `os.networkInterfaces()` (IPv4, not internal); then
-     `hive: log in with the token in <keys file> (hive keys list does not show it; see API_TOKEN there)`.
-     Never print the token itself.
-   - `--open`: open `http://127.0.0.1:<port>/ui/#token=<token>` with `xdg-open` (Linux) or `open`
-     (macOS) via `spawn(..., { detached: true, stdio: "ignore" }).unref()`; if that fails print the
-     URL without the token and the hint above.
-   - Ctrl+C stops the server (the server's own handling is fine; exit 0).
-   - Add to `USAGE` / help and the README command table.
+4. **Run timer** (`src/tasks.ts`, `ui/src/bee.ts`, `ui/src/main.ts`):
+   - `Task` gets `stepStartedAt?: number` (set to `Date.now()` when `runPrompt` starts a prompt,
+     before queueing) and `finishedAt?: number` (set when the prompt ends: idle, failed or aborted;
+     cleared when a new prompt starts). `toJSON()` includes both. Add `stepStartedAt` and
+     `finishedAt` to the `hive_done` events too.
+   - `createBeeIndicator()` / `set()`: `set(state, label, times?: { startedAt?: number; endedAt?: number })`.
+     When `startedAt` is given, the timer counts from it (not from the first `set` call); when
+     `endedAt` is given, the timer shows `endedAt - startedAt` and stops. Without times, keep today's
+     behaviour.
+   - The UI passes `stepStartedAt` (and `finishedAt` when done) from `/status` when it opens a run,
+     from `/runs` entries, and from `hive_done`; a run started from the form uses the time `/prompt`
+     returned. Switching pages or reloading must show the same elapsed time as before the switch.
+   - The run list's elapsed time for busy runs uses `stepStartedAt` too.
 
-5. `src/service.ts` (new). Pure functions plus thin runners, so tests never touch the real system:
-   - `export const SERVICE_NAME = "agent-hive"`.
-   - `serviceCommand(o: { host: string; port: number }): string[]`: `[process.execPath, <absolute path of dist/cli.js>, "serve", "--host", host, "--port", String(port)]`
-     (use `fileURLToPath(new URL("./cli.js", import.meta.url))`).
-   - `systemdUnit(o: { command: string[]; workdir: string; path: string }): string`: a unit like
+5. **Live usage** (`src/usage.ts` new, `src/routes/system.ts`):
+   - `export async function usageNow(o?: { sysRoot?: string; diskPath?: string }): Promise<Usage>` with
+     ```ts
+     interface Usage {
+       cpu: { percent: number; cores: number; load1: number };
+       memory: { usedBytes: number; totalBytes: number };
+       disk: { path: string; freeBytes: number; totalBytes: number };
+       temperature: { celsius: number; sensor: string } | null;
+     }
      ```
-     [Unit]
-     Description=Agent Hive server and web UI
-     After=network-online.target
-     Wants=network-online.target
+     - CPU percent: two `os.cpus()` samples 250 ms apart; busy share of all cores, 0–100, one
+       decimal. `load1` from `os.loadavg()[0]`.
+     - Memory: total from `os.totalmem()`; used = total − `MemAvailable` from `<sysRoot>/proc/meminfo`
+       (fall back to `os.freemem()`).
+     - Disk: `fs.statfsSync(diskPath)` for `diskPath` = the folder runs live in
+       (`config.workspace`, creating it if missing); free = `bavail * bsize`, total = `blocks * bsize`.
+     - Temperature: first of `<sysRoot>/sys/class/hwmon/hwmon*/` whose `name` is `coretemp`,
+       `k10temp`, `zenpower` or `cpu_thermal`, reading `temp1_input` (millidegrees); else the
+       `<sysRoot>/sys/class/thermal/thermal_zone*` whose `type` is `x86_pkg_temp`; else `null`.
+       `sensor` is that name/type. `sysRoot` defaults to `/` (tests pass a fake tree).
+   - `GET /api/system/usage` (authenticated, in `src/routes/system.ts`) returns `usageNow()` plus
+     `runs: capacity()`.
 
-     [Service]
-     WorkingDirectory=<workdir>
-     Environment=PATH=<path>
-     ExecStart=<command, each argument quoted for systemd with double quotes; reject arguments containing a double quote, backslash or newline>
-     Restart=on-failure
-     RestartSec=10
-     TimeoutStopSec=20
+6. **This computer UI** (`ui/src/main.ts`, `ui/src/app.css`): a "Right now" section between the
+   isolation card and GitHub: five tiles in a responsive grid (two columns on phones), each with a
+   label, a big value and a thin bar where it makes sense:
+   - **CPU**: `37%` and `4 cores · load 1.2`, bar = percent;
+   - **Memory**: `2.4 of 7.6 GB`, bar = used share;
+   - **Disk free**: `220 GB free of 236 GB` (for the runs folder), bar = used share;
+   - **CPU temperature**: `58 °C` (`coretemp`), or "Not reported" when null; no bar;
+   - **Runs**: `1 running · 0 queued` of `3`.
+   Bars use `--accent`, turning `--warn` at 75% and `--danger` at 90% (temperature value turns warn
+   at 80 °C and danger at 90 °C). Fetch `/api/system/usage` when the page opens and every 5 seconds
+   while it is open and visible; stop when leaving the page. Text only via `el()`/`textContent`.
+   Give the section `id="usageSection"`.
 
-     [Install]
-     WantedBy=default.target
-     ```
-   - `launchdPlist(o: { command: string[]; workdir: string; path: string; logFile: string }): string`:
-     a plist with `Label` `dev.agent-hive.server`, `ProgramArguments` (each argument XML-escaped),
-     `WorkingDirectory`, `EnvironmentVariables` → `PATH`, `RunAtLoad` true, `KeepAlive` →
-     `SuccessfulExit` false, `StandardOutPath` and `StandardErrorPath` = `logFile`.
-   - `servicePaths(platform = process.platform)`: Linux → unit file
-     `$XDG_CONFIG_HOME/systemd/user/agent-hive.service` (default `~/.config/...`); macOS → plist
-     `~/Library/LaunchAgents/dev.agent-hive.server.plist` and log `~/Library/Logs/agent-hive.log`.
-     `HIVE_SERVICE_DIR`, when set, replaces the folder (tests and dry runs use it).
-   - Runners (each calls `systemctl --user ...` or `launchctl ...` with `execFileSync`/`spawnSync`
-     and argument arrays; skipped with `--dry-run`):
-     - install: write the file (mode 0o644), then Linux `systemctl --user daemon-reload` and
-       `systemctl --user enable --now agent-hive.service`; macOS `launchctl bootout gui/<uid>/dev.agent-hive.server`
-       (ignore failure) then `launchctl bootstrap gui/<uid> <plist>`. On Linux, check
-       `loginctl show-user <user> -p Linger`; if it is not `Linger=yes`, print
-       `hive: to keep it running after you log out (e.g. on a headless box): sudo loginctl enable-linger <user>`.
-     - status: Linux `systemctl --user status agent-hive.service --no-pager`; macOS
-       `launchctl print gui/<uid>/dev.agent-hive.server` (print a short "not installed" when the file
-       is missing).
-     - restart: Linux `systemctl --user restart agent-hive.service`; macOS
-       `launchctl kickstart -k gui/<uid>/dev.agent-hive.server`.
-     - logs: Linux `journalctl --user -u agent-hive.service -f -n 100`; macOS `tail -n 100 -f <log>`.
-     - uninstall: Linux `systemctl --user disable --now agent-hive.service`, delete the unit file,
-       `daemon-reload`; macOS `launchctl bootout ...` and delete the plist.
-     - Other platforms: throw `Error("hive service supports Linux (systemd) and macOS (launchd)")`.
+7. `scripts/ui-smoke.mjs`: keep every existing check (remove only checks for removed features, if
+   any). On This computer, wait for `#usageSection` and assert it has five tiles and the CPU tile's
+   value matches `/^\d+(\.\d)?%$/`. In the faked run-list check, give list-b a
+   `stepStartedAt: Date.now() - 300000` and `finishedAt: Date.now() - 240000` and assert the bee
+   time for the reopened run reads `1:00`.
 
-6. `src/cli.ts`, `hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>] [--dry-run]`
-   (host/port only for install; defaults `127.0.0.1` / `8080`):
-   - install: before writing, if `setting("API_TOKEN")` and `setting("API_TOKENS")` are empty,
-     create and save a token exactly as `hive serve` does. Use `workdir` = the user's home folder and
-     `path` = the current `PATH`. Warn, without failing, for each provider whose key is present only
-     in this process's shell environment (`shellEnv`) and not in the keys file:
-     `hive: <LABEL> key comes from your shell; the service won't see it. Save it with: hive keys add <id>`.
-     With `--dry-run`, print the file that would be written and its path, and run nothing.
-     Otherwise print the file path, `hive: started; open http://<host>:<port>/ui/` and the linger hint
-     when relevant.
-   - Add to `USAGE` / help and the README command table.
+8. **Tests:** remove tests that only cover removed code (podman command building, snippet,
+   files); keep everything else passing. `test/usage.test.mjs` (new): build a fake tree in a temp dir
+   with `proc/meminfo` (`MemAvailable: 2097152 kB`) and `sys/class/hwmon/hwmon3/name` = `coretemp`,
+   `temp1_input` = `58000`; `usageNow({ sysRoot, diskPath: tmp })` returns `temperature`
+   `{ celsius: 58, sensor: "coretemp" }`, `memory.usedBytes === os.totalmem() - 2097152 * 1024`,
+   `cpu.cores === os.cpus().length`, `0 <= cpu.percent <= 100`, and `disk.totalBytes > 0`; a tree
+   with only `sys/class/thermal/thermal_zone0/type` = `x86_pkg_temp` and `temp` = `61000` gives
+   61 °C; an empty tree gives `temperature: null`.
 
-7. `ui/src/main.ts`: at startup, before the login check, if `location.hash` starts with `#token=`,
-   take the token (URL-decoded), call `saveToken`/`setToken` as the login form does, then
-   `history.replaceState(null, "", "#runs")` so the token leaves the address bar and history entry.
-   An invalid token falls through to the normal login screen with its error.
-
-8. `test/service.test.mjs` (new), `node:test` style, never calling `systemctl`, `launchctl` or
-   `loginctl` (set `HIVE_SERVICE_DIR`, `HIVE_KEYS_FILE` and `HIVE_DOTENV_PATH` to temp paths):
-   - `systemdUnit` contains `ExecStart="<node>" "<cli.js>" "serve" "--host" "0.0.0.0" "--port" "8080"`,
-     `Restart=on-failure` and `WantedBy=default.target`; an argument with a double quote throws.
-   - `launchdPlist` is well-formed enough that `ProgramArguments` lists each argument in its own
-     `<string>`, escapes `&` and `<`, and contains `RunAtLoad` and the log path.
-   - `servicePaths("linux")` and `servicePaths("darwin")` use `HIVE_SERVICE_DIR`.
-   - `spawnSync(process.execPath, ["dist/cli.js", "service", "install", "--host", "0.0.0.0", "--dry-run"], { env: {...process.env, HIVE_SERVICE_DIR: dir, HIVE_KEYS_FILE: keys} })`
-     exits 0, prints the unit (or the plist on macOS) and creates no file in `dir`; afterwards the
-     keys file contains an `API_TOKEN=` line of 48 hex characters, and stdout does not contain that
-     token.
-   - `hive serve` is not started in tests.
-
-9. `README.md`: a "Run it as a service" section: `hive serve` (laptop, on demand, `--open`),
-   `hive service install` (starts at login/boot; Linux user service with the linger note for
-   headless boxes; macOS launchd agent), `hive service status|restart|logs|uninstall`, that keys must
-   be in the keys file for the service (`hive keys add`), and that the login token lives in the keys
-   file as `API_TOKEN`. Add both commands to the command table. `AGENTS.md`: layout row for
-   `src/service.ts`; `src/cli.ts` row mentions `serve` and `service`. `docs/ROADMAP.md`: mark
-   `hive serve` as started (the server now runs from the CLI; the server code is still the
-   separate `src/index.ts` core).
+9. **Docs:** README and AGENTS.md: remove the podman backends, the removed routes and the landing
+   page; `HIVE_RUNTIME` is `auto` or `libkrun`; machines need KVM (the roadmap's gVisor step will
+   cover the rest); note that the separate hive-mcp package no longer works (a built-in `hive mcp`
+   is planned); add `/api/system/usage` and the "Right now" section. `.env.example`: drop the
+   podman/runtime comments that no longer apply.
 
 ## Acceptance
 
-- `npm test` exits 0 and includes `test/service.test.mjs` passing.
+- `npm test` exits 0 and includes `test/usage.test.mjs` passing.
 - `npm run build:ui` exits 0.
-- `HIVE_SERVICE_DIR=$(mktemp -d) HIVE_KEYS_FILE=$(mktemp -d)/env node dist/cli.js service install --dry-run`
-  exits 0 and prints a systemd unit containing `serve`.
-- `node dist/cli.js --help` lists `hive serve` and `hive service`.
+- `npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs` prints `ui-smoke: ok`.
+- `grep -rnE "spawnPodman|runsc|/snippet|github/fork|landing.html" src ui/src` prints nothing.
+- `test -e public/landing.html` exits 1.
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -160,18 +156,17 @@ None — do it sequentially.
   throwaway VM and is discarded), but every such file must appear in the report under "outside
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
-- The only checks to run are the **Acceptance** commands. Never run `systemctl`, `launchctl`,
-  `loginctl` or `journalctl` for real, never start `hive serve` or the server, and never write to
-  the real `~/.config/systemd`, `~/Library` or `~/.config/agent-hive/env` (tests use the override
-  variables). If something outside Acceptance fails, note it in the report and finish.
-- Never print or log the login token. Commands run with argument arrays, never a shell.
-- No new dependencies.
+- The only checks to run are the **Acceptance** commands. Never start the real server outside the
+  smoke script, never let a script reach the real `/prompt`. If something outside Acceptance fails,
+  note it in the report and finish.
+- No behaviour change for anything that is kept (runs, PRs, issues, new projects, keys, run list,
+  review cycles). Every route stays authenticated except `/health` and the redirects.
+- No new dependencies, no emoji.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- The desktop tray app (next step), Windows, changing the server code beyond steps 2–3, TLS or
-  tunnels.
+- The engine merge itself (`docs/CORE.md` stages 1–3), the tray app, run retention.
 
 ## If blocked
 

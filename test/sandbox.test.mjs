@@ -48,3 +48,25 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
   ]);
   assert.ok(!cmd.args.join(" ").includes("sk-or-secret"));
 });
+
+test("resetIoDir keeps prompt files, empties the logs and never writes through a symlink", async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, symlinkSync, lstatSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { resetIoDir } = await import("../dist/sandbox.js");
+  const dir = mkdtempSync(join(tmpdir(), "hive-io-reset-"));
+  const io = join(dir, "io");
+  resetIoDir(io);
+  writeFileSync(join(io, "prompt.md"), "the task");
+  writeFileSync(join(io, "stderr.log"), "old errors");
+  const hostFile = join(dir, "host-file");
+  writeFileSync(hostFile, "keep me");
+  // the agent replaces events.jsonl with a link to a host file
+  rmSync(join(io, "events.jsonl"));
+  symlinkSync(hostFile, join(io, "events.jsonl"), "file");
+  resetIoDir(io);
+  assert.equal(readFileSync(join(io, "prompt.md"), "utf8"), "the task");
+  assert.equal(readFileSync(join(io, "stderr.log"), "utf8"), "");
+  assert.equal(lstatSync(join(io, "events.jsonl")).isSymbolicLink(), false);
+  assert.equal(readFileSync(hostFile, "utf8"), "keep me");
+});
