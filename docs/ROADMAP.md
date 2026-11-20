@@ -1,7 +1,8 @@
 # Roadmap
 
-Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine,
-on one branch (`main`).
+Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine.
+`main` is stable; `beta` carries the newest dependencies before they're fully tested (see
+"Keeping it up to date").
 
 ## Step 1 — Releases, `hive update`, system libkrun *(code done; first release not published)*
 
@@ -51,7 +52,47 @@ This is what makes `hive` work beyond Fedora (Ubuntu, Debian, WSL2 with nested v
   Each run prints which one it picked, e.g. `isolation: microvm (system libkrun)`, and
   `hive doctor` explains why.
 - **Cost of this step:** whoever publishes releases has to rebuild them for libkrun security
-  fixes, and the download grows by about 30 MB.
+  fixes, and the download grows by about 30 MB. "Keeping it up to date" below automates that.
+
+## Keeping it up to date
+
+A release bundles or builds on pieces that each move on their own:
+
+| Piece | Source | Changes |
+|---|---|---|
+| libkrun | built from source (step 2) | security fixes, a few times a year |
+| libkrunfw (guest kernel) | upstream prebuilt | kernel fixes, more often |
+| pasta | built from passt.top | occasionally |
+| pi (in the VM image) | `PI_VERSION` in `image/Containerfile` | often |
+| Fedora base, Chromium, node in the VM | `dnf` when the rootfs is built | weekly security updates |
+| Bundled Node | release build | monthly |
+
+How they stay current:
+
+1. **One pin file.** Every version above is pinned in one file (`versions.json`), so a release is
+   reproducible and a bump is a small change you can review. `image/Containerfile` and the release
+   scripts read it.
+2. **A weekly check.** A scheduled GitHub Actions job looks for a new upstream release of each
+   pinned piece and, when there is one, opens a pull request against `beta` that bumps the pin.
+3. **CI on every bump.** The pull request builds libkrun, the bundle and the rootfs, runs
+   `npm test`, and boots one real VM run where the runner has KVM.
+4. **Rootfs rebuilt every release,** even with no pin change, so Fedora's security updates reach
+   the VMs.
+5. **Security fixes skip the wait.** A libkrun, libkrunfw or Chromium security fix goes to `beta`
+   and, once its CI passes, straight on to a stable release. Other bumps batch.
+
+### The beta channel
+
+- **`beta` branch:** the newest of everything above. Bump pull requests merge into it automatically
+  once CI passes, so it's always the latest, but only CI-tested, not used in real work yet.
+- **Beta releases:** every merge to `beta` publishes a signed GitHub prerelease,
+  `v<version>-beta.<n>`. `hive update --channel beta` (or `HIVE_UPDATE_CHANNEL=beta`) follows
+  them; the default channel follows only full releases. `hive doctor` and Settings › This computer
+  show the channel.
+- **Promotion:** after a beta has run real tasks for a few days without trouble, merge `beta` into
+  `main` and publish a full release from `main`.
+- **Rollback:** `hive update --rollback` works the same on both channels; going back to stable is
+  `hive update --channel stable`.
 
 ## Step 3 — gVisor fallback when there is no KVM
 
@@ -59,21 +100,18 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
 
 - `runsc` is one static Go binary, published upstream, so it's easy to bundle.
 - It's a user-space kernel, not a VM, but still a strong boundary.
-- It needs a CLI backend that starts pi with the same `work/`, `io/` and `session/` shares and
-  the same pasta network isolation. The file-based design (prompt in, event log out, patches back)
+- It needs a CLI backend that starts pi with the same `work/` and `io/` shares (pi's session lives
+  in `io/session`) and the same pasta network isolation. The file-based design (prompt in, event log out, patches back)
   stays the same.
 - It needs testing on a machine without KVM.
 
 ## Later
 
-- **`hive continue [run] "<prompt>"`:** a follow-up on the same run. It boots a fresh VM on the
-  same `work/` and pi `session/`, so the agent remembers what it did. The old server did follow-ups
-  this way.
 - **`hive mcp`:** a stdio MCP server, so Claude Code, pi or other agents can hand tasks to hive.
-- **`hive serve`** *(started)*: the HTTP server and web UI on top of the CLI core, for phone and
-  remote use. `hive serve` now runs the server from the CLI, and `hive service
-  install|status|restart|logs|uninstall` keeps it running as a systemd user unit (Linux) or a
-  launchd agent (macOS). The server code is still the separate `src/index.ts` core.
+- **`hive serve`** *(done)*: the HTTP server and web UI, a thin layer over the CLI's run engine
+  (`src/web-runs.ts` over `src/runs.ts`), so web runs and `hive run` runs share one engine and one
+  run list. `hive service install|status|restart|logs|uninstall` keeps it running as a systemd user
+  unit (Linux) or a launchd agent (macOS).
 - **macOS:**
   - libkrun on Apple's Hypervisor.framework;
   - a launcher build for Apple silicon (arm64), plus an arm64 rootfs;
@@ -81,23 +119,21 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   - code signing with the hypervisor entitlement: an ad-hoc signature (free) is enough to run it on
     your own Mac; a notarized download for other people needs an Apple Developer account (US$99/year).
 - **Packages:** `.rpm` and `.deb` for system updates; a signed `.pkg` or Homebrew on macOS.
-- **Stall detection:** stop a run when the agent stops making progress, not only at
-  `HIVE_SANDBOX_TIMEOUT_MIN`. Signal: no file in `work/` changed for N minutes (default 15,
-  configurable). Event gaps alone aren't enough, since a model can think for minutes before
-  writing. dsh-vm does this already (`DSH_VM_STALL_MIN`).
 - **Agent adapters (pi and dsh):** one adapter per harness. Each starts its agent in the VM
   (pi: `pi --mode json`; dsh: `dsh --profile headless --json - < /io/prompt.md`) and turns its
   events into common ones (text, tool started or failed, usage, done) for `render.ts` and the
   cost totals. dsh's `--session-id` makes `hive continue` work for it too. The rootfs ships both.
 - **Web search for the agent:** a search key passed like the LLM key (Tavily or Exa free tiers),
   or a keyless fallback; pi supports search through plug-in packages.
-- **GUI with onboarding:** the web UI's new design, Runs and Settings (API keys read-only, This
-  computer) are built. Still to do: first run (welcome, the `hive doctor` checks with a rootfs
-  download, adding a model key) and key management, following the clickable mockup. Design and
-  progress in `docs/GUI.md`.
-- **Server restarts without losing runs:** refuse to restart, or let running tasks finish, and keep
-  finished runs across restarts.
-- **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor
+- **GUI onboarding:** the first-run screens (welcome, the `hive doctor` checks with a rootfs
+  download, adding a model key, GitHub), following the clickable mockup. Design and progress in
+  `docs/GUI.md`.
+- **Server restarts without stopping runs:** finished runs already survive restarts (they're run
+  folders on disk), but a restart stops runs in progress (they're marked "interrupted"). Refuse to
+  restart, or wait for them to finish.
+- **VM size in Settings:** `HIVE_SANDBOX_MEMORY` and `HIVE_SANDBOX_CPUS` are env settings only;
+  an editor under Settings › This computer, maybe a size per run.
+- **Split `ui/src/main.ts`** (about 2,200 lines) into modules.- **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor
   from step 3 where there's no KVM.
 - **`hive serve` front end:** follow opencode's split (the agent as a local server, every UI a
   client over HTTP and server-sent events) and borrow OpenHands' UI patterns (action timeline,
@@ -113,7 +149,8 @@ Roughly in order of value (from `docs/RESEARCH.md`):
    fail in the summary.
 4. **The same task on two models side by side,** then pick the better diff.
 5. **Notifications** to the desktop or phone when a run finishes.
-6. **Per-repo caches** for faster starts, extending the npm cache to pip and others.
+6. **Per-repo caches** for faster starts. The shared VM cache (`~/.cache` in the VM, which holds
+   npm, pip and browser downloads) already covers the common case.
 
 ## Isolation backends considered
 

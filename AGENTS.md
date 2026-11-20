@@ -8,8 +8,9 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
   repo, or a remote with `--repo`, and boots a libkrun VM with `vm/hive-vm` under pasta. The
   prompt goes in as a file, the agent's events come out as a log file, and its commits come back
   as patches. You then apply them, or push a branch and open a PR.
-- **The same core also runs as an optional HTTP server** (`src/index.ts`, `src/tasks.ts`) with a
-  REST API and a web UI at `/ui/`. The separate
+- **The same engine also runs behind an optional HTTP server** (`hive serve`: `src/index.ts`,
+  `src/web-runs.ts`) with a REST API and a web UI at `/ui/`. There is one run engine
+  (`src/runs.ts`); web runs and `hive run` runs share one run list. The separate
   [hive-mcp](https://github.com/stansz/hive-mcp) package no longer works with this server; a
   built-in `hive mcp` is planned.
 
@@ -21,19 +22,20 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
 | `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
-| `src/tasks.ts` | Task lifecycle: queue → clone (or a new empty repo) → agent run → review cycles → export → push (or create the GitHub repo); change summary; pull requests on request; idle cleanup |
+| `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session`, `/pr`, `/issue`, `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
+| `src/stall.ts` | Stall watchdog: stop a run when nothing in `work/` changed and no event arrived for `HIVE_STALL_MIN` minutes |
+| `src/openrouter.ts` | OpenRouter runs: pi's `models.json` from OpenRouter's model data, and a fixed provider order (maker first, then uptime, then price; low-precision endpoints skipped) |
 | `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
-| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/log/diff/apply/push/list/clean/serve/service); sets the commit identity from the user's git config |
+| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keys/serve/service); sets the commit identity from the user's git config |
 | `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
-| `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply, push (never forced) and `gh pr create` |
+| `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
-| `src/routes/sessions.ts` | `/prompt`, `/runs`, `/status`, `/pr`, `/issue`, `/abort`, `/session`, `/events` |
 | `src/routes/github.ts` | `gh`-backed repo list and branches for the UI |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
 | `src/routes/system.ts` | `/api/system` (sandbox setup and checks) and `/api/system/usage` (live CPU, memory, disk, temperature, runs) for Settings › This computer |
-| `src/usage.ts` | `usageNow()`: the live numbers behind the UI's Right now section, reading `/proc` and `/sys` under a configurable root |
+| `src/usage.ts` | `usageNow()`: the live numbers behind the UI's Resources section, reading `/proc` and `/sys` under a configurable root |
 | `src/routes/keys.ts` | `/api/keys`: list (masked), add (tested first), test, remove and make-default provider keys for Settings › API keys |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
@@ -79,10 +81,13 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
     rename). They are never logged or returned whole (the UI and API only see a masked form), and a
     value is validated (`^[\x21-\x7E]{1,400}$`, no quotes, `#`, `\` or backticks) before it is
     written so it cannot inject another `NAME=value` line.
-11. **A VM never outlives its owner or its time limit.** The launcher (`vm/hive-vm`) is given the
-    starting process's pid (`--watch-pid`) and the time limit (`--timeout`); it stops the VM when
-    that process is gone or the time limit passes, so a crashed CLI or server never leaves a VM
-    running.
+11. **A VM never outlives its time limit, and a crashed hive leaves no VM behind.** The launcher
+    (`vm/hive-vm`) gets the time limit (`--timeout`) and stops the VM itself when it passes, even if
+    the CLI or server died. Its owner check (`--watch-pid`) exists but isn't used: under pasta the
+    launcher is in its own PID namespace and can't see the owner. Instead, at start the server and
+    the CLI run `recoverRuns()`: a run still marked running whose owner is gone has its leftover
+    `hive-vm` stopped and is marked "interrupted". The stall watchdog stops a run that makes no
+    progress for `HIVE_STALL_MIN` minutes.
 
 ## GitHub access (server)
 
@@ -131,32 +136,30 @@ Commits made in the sandbox use `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from `.en
 
 ## Status
 
-**Done, CLI:** `hive run` on a local repo or `--repo`, with live progress. Also `log`, `diff`,
-`apply`, `push` (branch, never forced), `push --pr` (GitHub PR via `gh`), `list`, `clean` and
-`keys` (list, add, test, remove, default).
-Settings come from env vars or `~/.config/agent-hive/env`, and nothing is tied to an account.
-Tested on Linux with KVM: real runs in libkrun VMs, a push to a branch, and a PR opened on
-GitHub.
+**Done, run engine (CLI and server alike):** runs on your checkout, a `--repo` URL or a new empty
+repo; follow-ups in the same pi session (`hive continue`); review cycles with an optional second
+model (`--review`, `--review-model`); a queue (`MAX_CONCURRENT_SESSIONS`); the stall watchdog, the
+time limit and a deadline note to the agent; committed work kept on a timeout, stall, failure or
+stop; success read from pi's last message (`stopReason`); startup cleanup of leftover VMs; finished
+runs deleted after `HIVE_RUN_RETENTION_DAYS` (14); OpenRouter routing and `models.json`; the shared
+VM cache (`~/.cache`, npm inside it); the Fedora VM image with headless Chromium and corepack.
 
-**Done, server:** sandboxed runs in libkrun microVMs with live events, HTTPS (default) or SSH git,
-branch push, new projects (`gh repo create`), a change summary per run, pull requests on click,
-review cycles with an optional second model, follow-ups in the same session, WebSocket streaming
-with replay, a shared VM cache and per-task token/cost totals. Settings › This computer also shows
-live CPU, memory, disk, temperature and runs in progress (`GET /api/system/usage`).
+**Done, CLI:** `run`, `new`, `continue`, `log`, `diff`, `apply`, `push` (a new branch, never
+forced; updates the run's own branch after a follow-up), `push --pr`, `list`, `clean`, `keys`,
+`serve` and `service`. Settings come from env vars or `~/.config/agent-hive/env`.
 
-**Done, web UI:** the new design (light and dark): Runs (new-run form with repo and branch lists,
-per-provider model lists, New project; the bee indicator, a timeline with step check-offs, the
-result with commits, files, a diff link and Open pull request) and Settings (API keys: Add key,
-Test, Make default and Remove, with keys kept in the private file; This computer, with a live
-Right now section). Checked by
-`scripts/ui-smoke.mjs`.
+**Done, server and web UI:** `hive serve` over the same engine, so runs survive restarts and the web
+run list shows CLI runs too. The new design (light and dark): Runs (new-run form with repo and
+branch lists, per-provider model lists, review cycles, New project; the bee indicator, a timeline
+with step check-offs, the result with commits, files, Open pull request and Post review as an
+issue; follow-ups) and Settings (API keys: Add, Test, Make default, Remove; This computer, with the
+checks, GitHub, a live Resources section and limits). Checked by `scripts/ui-smoke.mjs`.
 
 **Not built yet:**
 - web UI: the first-run onboarding from `docs/GUI.md`
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
-- `hive serve` (the server on top of the CLI core)
+- releases: the first signed release, bundled libkrun (step 2), the beta channel and the weekly
+  update check (`docs/ROADMAP.md`)
 - macOS: the launcher build for Apple silicon, and network isolation without pasta
-- follow-up prompts and review cycles in the CLI
-- server persistence across restarts
 - a per-run network allowlist
