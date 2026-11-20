@@ -294,7 +294,7 @@ the agent's work to its `main` branch. No commits, no repository.
   providers with a key can be used for a run. The same thing is on the command line as
   `hive keys`.
 - **This computer:** how runs are isolated (microVM via libkrun) with a short explanation, the
-  checks behind it, a live **Right now** section (CPU use, memory, disk space for runs, CPU
+  checks behind it, a live **Resources** section (CPU use, memory, disk space for runs, CPU
   temperature when reported, and runs in progress, refreshed every 5 seconds), the GitHub
   connection (the `gh` login and how runs clone and push), and the limits (VM size, time limit,
   runs at once).

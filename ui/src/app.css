@@ -1630,7 +1630,7 @@ a.btn {
   max-width: 720px;
 }
 
-/* Settings > This computer: the live "Right now" tiles */
+/* Settings > This computer: the live "Resources" tiles */
 .usage-section {
   display: flex;
   flex-direction: column;

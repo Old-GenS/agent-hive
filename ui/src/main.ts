@@ -2060,6 +2060,7 @@ const RUNTIME_TEXT: Record<string, string> = {
 };
 
 interface UsageResponse {
+  hostname?: string;
   cpu: { percent: number; cores: number; load1: number };
   memory: { usedBytes: number; totalBytes: number };
   disk: { path: string; freeBytes: number; totalBytes: number };
@@ -2142,6 +2143,8 @@ function renderUsage(section: HTMLElement, data: UsageResponse): void {
       else if (temperature.celsius >= 80) valueEl.classList.add("is-warn");
     }
   }
+  const title = section.querySelector(".usage-title");
+  if (title) title.textContent = data.hostname ? `Resources \u00b7 ${data.hostname}` : "Resources";
   const grid = section.querySelector(".usage-grid");
   if (grid) grid.replaceChildren(...tiles);
 }
@@ -2150,7 +2153,7 @@ function usageSection(): HTMLElement {
   return el(
     "section",
     { class: "usage-section", id: "usageSection" },
-    el("h2", { class: "section-title" }, "Right now"),
+    el("h2", { class: "section-title usage-title" }, "Resources"),
     el("div", { class: "usage-grid" }, el("p", { class: "cell-muted" }, "Loading\u2026")),
   );
 }
