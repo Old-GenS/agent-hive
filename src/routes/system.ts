@@ -9,6 +9,7 @@ import { githubLogin } from "../git.js";
 import { currentVersion } from "../release.js";
 import { systemInfo } from "../sandbox.js";
 import { usageNow } from "../usage.js";
+import { capacity } from "../web-runs.js";
 
 /** Whether the server's gh login works, and as whom. */
 async function githubStatus(): Promise<{ connected: boolean; login?: string; error?: string }> {
@@ -28,7 +29,7 @@ export default async function systemRoutes(app: FastifyInstance) {
       cpus: config.sandbox.cpus,
       timeoutMin: config.sandbox.timeoutMin,
     },
-    maxConcurrent: config.maxConcurrent,
+    capacity: capacity(),
     gitProtocol: config.git.protocol,
     npmCache: Boolean(config.sandbox.npmCache),
     version: currentVersion() ?? "dev (from source)",
@@ -37,5 +38,6 @@ export default async function systemRoutes(app: FastifyInstance) {
   // The "Right now" tiles on the same page; polled every few seconds while it is open.
   app.get("/api/system/usage", async () => ({
     ...(await usageNow()),
+    runs: capacity(),
   }));
 }
