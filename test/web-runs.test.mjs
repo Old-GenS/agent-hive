@@ -84,6 +84,21 @@ test("GET /status is 404 for a missing or malformed id", async () => {
   }
 });
 
+test("GET /export validates the format, then reports an empty run and an unknown id", async () => {
+  const badFormat = await app.inject({ method: "GET", url: `/export/${ID}?format=tar` });
+  assert.equal(badFormat.statusCode, 400);
+  assert.deepEqual(badFormat.json(), { error: "format must be zip or bundle" });
+
+  // This run has no out/*.patch, so there is nothing to build an archive from.
+  const empty = await app.inject({ method: "GET", url: `/export/${ID}?format=zip` });
+  assert.equal(empty.statusCode, 400);
+  assert.deepEqual(empty.json(), { error: "no commits to export" });
+
+  const missing = await app.inject({ method: "GET", url: "/export/nope?format=zip" });
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(missing.json(), { error: "Session not found" });
+});
+
 test("POST /prompt rejects repo and newRepo together and a missing repository", async () => {
   const both = await app.inject({
     method: "POST",

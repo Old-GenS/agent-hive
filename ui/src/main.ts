@@ -85,6 +85,8 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 type Tone = "ok" | "warn" | "danger";
 
+type ExportFormat = "zip" | "bundle";
+
 interface AssistantItem {
   kind: "assistant";
   text: string;
@@ -120,6 +122,8 @@ type RunItem =
       pr?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
       /** set when a review that changed nothing can be posted as an issue */
       issue?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
+      /** set when the run has commits, so its result can be downloaded */
+      export?: { state: "idle" | "preparing" | "error"; format?: ExportFormat; error?: string };
     };
 
 /** What a run's push changed, from hive_done (agent-controlled text: render as text only). */
@@ -224,6 +228,62 @@ async function postIssue(item: Extract<RunItem, { kind: "banner" }>): Promise<vo
     item.issue = { state: "open", url: data.url };
   } catch (err) {
     item.issue = { state: "error", error: err instanceof Error ? err.message : String(err) };
+  }
+  updateItem(item);
+}
+
+/** Download the run's result: a zip of the files or a git bundle of the commits, built on the host. */
+function exportElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
+  const state = item.export ?? { state: "idle" };
+  item.export = state;
+  const box = el("div", { class: "pr-actions" });
+  const preparing = state.state === "preparing";
+  const zipBtn = el(
+    "button",
+    { class: "btn", id: "downloadZipBtn", type: "button" },
+    preparing && state.format === "zip" ? "Preparing…" : "Download zip",
+  );
+  const bundleBtn = el(
+    "button",
+    { class: "btn", id: "downloadBundleBtn", type: "button" },
+    preparing && state.format === "bundle" ? "Preparing…" : "Download git bundle",
+  );
+  zipBtn.disabled = preparing;
+  bundleBtn.disabled = preparing;
+  zipBtn.onclick = () => void downloadExport(item, "zip");
+  bundleBtn.onclick = () => void downloadExport(item, "bundle");
+  box.append(zipBtn, bundleBtn, el("span", { class: "pr-hint" }, "Built from the run's commits on this computer."));
+  if (state.state === "error" && state.error) box.append(el("p", { class: "alert alert-danger" }, state.error));
+  return box;
+}
+
+async function downloadExport(
+  item: Extract<RunItem, { kind: "banner" }>,
+  format: ExportFormat,
+): Promise<void> {
+  if (!run || item.export?.state === "preparing") return;
+  const sessionId = run.sessionId;
+  item.export = { state: "preparing", format };
+  updateItem(item);
+  try {
+    const res = await api(`/export/${encodeURIComponent(sessionId)}?format=${format}`);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+      throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${sessionId}.${format}`;
+    const url = URL.createObjectURL(blob);
+    const link = el("a", { href: url, download: filename });
+    link.style.display = "none";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    item.export = { state: "idle" };
+  } catch (err) {
+    item.export = { state: "error", error: err instanceof Error ? err.message : String(err) };
   }
   updateItem(item);
 }
@@ -1249,6 +1309,7 @@ function fillItem(li: HTMLElement, item: RunItem): void {
       }
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
       if (item.changes) banner.append(changesElement(item.changes));
+      if (item.changes && item.changes.commits.length > 0) banner.append(exportElement(item));
       if (item.pr) banner.append(prElement(item));
       if (item.issue) banner.append(issueElement(item));
       li.replaceChildren(banner);

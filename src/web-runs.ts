@@ -5,7 +5,8 @@
  * runs are read back from meta.json and io/events.jsonl.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { issueTicket } from "./auth.js";
 import { config } from "./config.js";
@@ -14,6 +15,7 @@ import { runtimeInfo } from "./sandbox.js";
 import {
   cleanRun,
   continueRun,
+  exportRun,
   isLive,
   listRuns,
   openPr,
@@ -504,6 +506,39 @@ export default async function webRunRoutes(app: FastifyInstance) {
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
+  });
+
+  // Download a finished run's result, built from its patches in a fresh clone of the trusted
+  // source (never from the agent's work/ copy): a zip of the files or a git bundle of the commits.
+  app.get("/export/:sessionId", async (req, reply) => {
+    const id = (req.params as any).sessionId as string;
+    const dir = runDir(id);
+    if (!dir) return notFound(reply);
+    const format = (req.query as any)?.format;
+    if (format !== "zip" && format !== "bundle") {
+      return reply.code(400).send({ error: "format must be zip or bundle" });
+    }
+    const meta = metaOf(dir);
+    if (!meta) return notFound(reply);
+    if (liveRuns.has(id) || isLive(meta)) return reply.code(409).send({ error: "Run is still going" });
+
+    const ext = format === "zip" ? "zip" : "bundle";
+    const tmp = mkdtempSync(join(tmpdir(), "hive-export-"));
+    let data = Buffer.alloc(0);
+    try {
+      const outPath = join(tmp, `run.${ext}`);
+      try {
+        await exportRun(dir, format, outPath);
+      } catch (err) {
+        return reply.code(400).send({ error: (err as Error).message });
+      }
+      data = readFileSync(outPath);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    reply.header("Content-Type", format === "zip" ? "application/zip" : "application/x-git-bundle");
+    reply.header("Content-Disposition", `attachment; filename="${id}.${ext}"`);
+    return reply.send(data);
   });
 
   // One-time ticket for opening /events/:sessionId from a browser (which can't send headers).

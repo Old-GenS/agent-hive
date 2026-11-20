@@ -13,7 +13,8 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from "./config.js";
 import { runSandbox, type SandboxOptions } from "./sandbox.js";
@@ -339,6 +340,59 @@ export async function applyRun(dir: string, repo: string, branch?: string): Prom
     throw err;
   }
   return `on branch ${branch}: ${meta.commits} commit(s)`;
+}
+
+/**
+ * Build a downloadable result from a finished run's exported patches: a zip of the project files
+ * or a git bundle of its commits. Like a push, this applies the patches to a fresh clone of the
+ * trusted source on the host; it never reads, copies or runs git in <run>/work, whose .git the
+ * agent controls.
+ */
+export async function exportRun(
+  dir: string,
+  format: "zip" | "bundle",
+  outPath: string,
+): Promise<{ path: string; commits: number }> {
+  const meta = readMeta(dir);
+  if (isLive(meta)) throw new Error("run is still going");
+  const patches = patchFiles(dir);
+  if (patches.length === 0) throw new Error("no commits to export");
+
+  // A remote or new-project run keeps the pristine clone in origin/, as does a local run after
+  // `hive push`; a local run without one falls back to the user's own checkout.
+  const origin = join(dir, "origin");
+  const source = existsSync(origin) ? origin : meta.repo;
+  const runName = basename(dir);
+  const tmp = mkdtempSync(join(tmpdir(), "hive-export-"));
+  try {
+    await git(["clone", "-q", "--no-hardlinks", "--no-checkout", "--", source, tmp], undefined, 120_000);
+    try {
+      await git(["cat-file", "-e", `${meta.base}^{commit}`], tmp);
+    } catch {
+      throw new Error(`the run's base commit is no longer in ${source}`);
+    }
+    await git(["checkout", "-q", "-B", "hive-export", meta.base], tmp);
+    const ident = ["-c", `user.name=${config.git.authorName}`, "-c", `user.email=${config.git.authorEmail}`];
+    try {
+      await git([...ident, "am", "-q", "--keep-cr", ...patches], tmp, 120_000);
+    } catch (err) {
+      await git(["am", "--abort"], tmp).catch(() => {});
+      throw new Error(`couldn't apply the run's commits: ${(err as Error).message}`);
+    }
+
+    if (format === "zip") {
+      const repoName = runName.replace(/-\d{8}-\d{6}(-\d+)?$/, "") || "project";
+      await git(["archive", "--format=zip", `--prefix=${repoName}/`, "-o", outPath, "hive-export"], tmp);
+    } else {
+      const branch = "hive/" + runName;
+      await git(["branch", "-M", branch], tmp);
+      // HEAD rides along so a plain `git clone <file>.bundle` checks the branch out.
+      await git(["bundle", "create", outPath, branch, "HEAD"], tmp, 120_000);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  return { path: outPath, commits: patches.length };
 }
 
 /** Subject of the first `Subject: ` line in a format-patch file, with the `[PATCH …]` tag off. */

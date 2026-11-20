@@ -22,14 +22,14 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
 | `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
-| `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session`, `/pr`, `/issue`, `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
+| `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session`, `/pr`, `/issue`, `/export` (a run's result as a zip or git bundle), `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
 | `src/stall.ts` | Stall watchdog: stop a run when nothing in `work/` changed and no event arrived for `HIVE_STALL_MIN` minutes |
 | `src/openrouter.ts` | OpenRouter runs: pi's `models.json` from OpenRouter's model data, and a fixed provider order (maker first, then uptime, then price; low-precision endpoints skipped) |
 | `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
 | `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keys/serve/service); sets the commit identity from the user's git config |
 | `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
-| `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
+| `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; downloadable results (`exportRun`: a zip of the files or a git bundle of the commits); push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
 | `src/routes/github.ts` | `gh`-backed repo list and branches for the UI |
@@ -57,7 +57,9 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
    addresses; its root is a read-only export of the image with an in-RAM overlay.
 2. **The host never runs git in `work/`.** The agent controls `work/.git` (hooks, config,
    filters, fsmonitor). Host git runs only in `origin/`, which no sandbox mounts, with hooks
-   disabled. Changes cross over only as patch files applied with `git am`.
+   disabled. Changes cross over only as patch files applied with `git am`. Exports (`exportRun`,
+   `hive export`, `GET /export`) are built like pushes: from `out/*.patch` applied in a fresh
+   clone of `origin/` (or a local run's own repo), never from `work/`.
 3. **Every API route lives inside the authenticated scope** in `index.ts`. Don't add path-based
    auth exceptions.
 4. **Anything from GitHub or the agent is untrusted in the UI** — render with `esc()` only.

@@ -21,6 +21,7 @@ hive continue [run] "<prompt>"
 hive log [run] [--json]
 hive diff [run] [--stat]
 hive apply [run] [--branch <name>]
+hive export [run] [--zip | --bundle] [-o <path>] [--force]
 hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
 hive list
 hive clean <run> | --all
@@ -392,6 +393,30 @@ async function cmdApply(args: string[]): Promise<number> {
   const { applyRun, resolveRun } = await import("./runs.js");
   const result = await applyRun(resolveRun(positionals[0]), await repoTop(process.cwd()), values.branch);
   process.stdout.write(result + "\n");
+  return 0;
+}
+
+async function cmdExport(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      zip: { type: "boolean" },
+      bundle: { type: "boolean" },
+      output: { type: "string", short: "o" },
+      force: { type: "boolean" },
+    },
+  });
+  if (values.zip && values.bundle) throw new Error("pick one of --zip or --bundle");
+  const { exportRun, resolveRun } = await import("./runs.js");
+  const dir = resolveRun(positionals[0]);
+  const format = values.bundle ? "bundle" : "zip";
+  const runName = basename(dir);
+  const outPath = values.output ?? join(process.cwd(), `${runName}.${format}`);
+  if (existsSync(outPath) && !values.force) throw new Error(`${outPath} already exists; use --force to overwrite`);
+  const result = await exportRun(dir, format, outPath);
+  process.stdout.write(`hive: exported ${result.commits} commit(s) to ${result.path}\n`);
+  if (format === "bundle") process.stdout.write(`git clone ${result.path} ${runName}\n`);
   return 0;
 }
 
@@ -1077,6 +1102,9 @@ async function main(): Promise<void> {
       return;
     case "apply":
       process.exitCode = await cmdApply(rest);
+      return;
+    case "export":
+      process.exitCode = await cmdExport(rest);
       return;
     case "push":
       process.exitCode = await cmdPush(rest);
