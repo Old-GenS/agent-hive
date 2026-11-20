@@ -1,104 +1,117 @@
 ## Goal
 
-1. **Fewer shared folders per VM.** libkrun runs out of interrupt slots (`IrqsExhausted`) when a VM
-   has more than 5 `--share` folders, and the VM then never boots. An agent step uses 5 today
-   (`/work`, `/session`, `/root/.npm`, `/root/.cache`, plus `/io` added by `runSandbox`). Bring it
-   to 3: pi's session moves inside `/io` (`/io/session`), and the npm cache moves inside the shared
-   `~/.cache` (`NPM_CONFIG_CACHE=/root/.cache/npm`). `runSandbox` refuses more than 5 shares with a
-   clear error instead of a VM that silently fails.
-2. **Launcher errors reach the run's error message.** When hive starts the launcher (through
-   pasta, from Node), the launcher's stderr never reaches hive, so a failed boot shows as
-   `agent exited 1:` with nothing after it. The launcher gets `--stderr-file <path>` and sends its
-   own stderr (including libkrun's log lines) there; hive reads that file.
+Let the user download a finished run's result: a **zip of the project files** at the end of the
+run, or a **git bundle** of its commits. Both are built **on the host, only from the run's exported
+patches** (`<run>/out/*.patch`) applied to a fresh copy of trusted source code — the same way
+pushes work. **Never read, copy or zip the run's `work/` folder**: its `.git` is controlled by the
+agent (hooks, `core.fsmonitor`, `core.hooksPath`, filters), and the host never runs git there
+(security rule #2 in `AGENTS.md`).
+
+Surfaces: `hive export [run] [--zip | --bundle] [-o <path>] [--force]` in the CLI, and **Download
+zip** / **Download git bundle** buttons on a finished run in the web UI.
 
 ## Files to touch
 
-- `vm/hive-vm.c`
-- `src/sandbox.ts`
 - `src/runs.ts`
-- `src/config.ts`
-- `src/routes/system.ts`
-- `test/hive-vm.test.mjs`
-- `test/hive-vm-watchdog.test.mjs`
-- `test/sandbox.test.mjs`
-- `test/run-steps.test.mjs`
+- `src/web-runs.ts`
+- `src/cli.ts`
+- `ui/src/main.ts`
+- `ui/src/app.css`
+- `test/export.test.mjs` (new)
+- `test/web-runs.test.mjs`
 - `README.md`
-- `.env.example`
 - `AGENTS.md`
 - `.handoff/report.md`
 
 ## Steps
 
-1. Run `npm ci`, then `bash vm/build.sh`.
+1. Run `npm ci`, then `npm run build:vm`.
 
-2. `vm/hive-vm.c`: add an optional `--stderr-file <path>` (absolute path, else usage error starting
-   `hive-vm: `). Include it in the `--dry-run` JSON as `"stderr_file"` (`null` when not given). As
-   soon as arguments are parsed (before loading libkrun and before `fork()`), open the path with
-   `O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC`, mode `0600`, and `dup2` it onto fd 2
-   (then close the original fd); failure to open → `fail_runtime` (which still goes to the
-   original stderr). Update the usage text. Keep `-std=c11 -O2 -Wall -Wextra -Werror` clean. No
-   other behaviour change.
+2. `src/runs.ts`: `export async function exportRun(dir: string, format: "zip" | "bundle", outPath:
+   string): Promise<{ path: string; commits: number }>`:
+   - Refuse with `"run is still going"` when `isLive(meta)`, and with `"no commits to export"` when
+     `patchFiles(dir)` is empty.
+   - **Trusted source:** `<dir>/origin` when it exists (remote and new-project runs, and local runs
+     after `hive push`); otherwise `meta.repo` (a local run's own checkout, which is the user's
+     repo). Never `<dir>/work`.
+   - Make a temp dir (`mkdtempSync(join(tmpdir(), "hive-export-"))`), clone the source into it with
+     the existing `git()` helper from `src/git.ts` (it already disables hooks and fsmonitor):
+     `git(["clone", "-q", "--no-hardlinks", "--no-checkout", "--", source, tmp], undefined,
+     120_000)`, then `git(["checkout", "-q", "-B", "hive-export", meta.base], tmp)`, then
+     `git([...identity, "am", "-q", "--keep-cr", ...patchFiles(dir)], tmp, 120_000)` with the
+     configured author identity (`-c user.name=... -c user.email=...` from `config.git`, as
+     `applyAndPush` in `src/git.ts` does). A base commit missing from the source → throw
+     `` `the run's base commit is no longer in ${source}` ``; a failing `git am` → run `git am
+     --abort` and throw `` `couldn't apply the run's commits: <message>` ``.
+   - **zip:** `git(["archive", "--format=zip", "--prefix=<repo name>/", "-o", outPath,
+     "hive-export"], tmp)`, where `<repo name>` is the run folder name without its
+     `-YYYYMMDD-HHMMSS` suffix (`basename(dir).replace(/-\d{8}-\d{6}(-\d+)?$/, "")`), or `project`
+     if that is empty.
+   - **bundle:** rename the branch to `hive/<run name>` (`git branch -M hive/<run name>`), then
+     `git(["bundle", "create", outPath, "hive/<run name>"], tmp, 120_000)` (full history, so
+     `git clone <file>.bundle` works on its own).
+   - Always remove the temp dir in `finally`. Return `{ path: outPath, commits: patchFiles(dir).length }`.
 
-3. `src/sandbox.ts`:
-   - `buildLibkrunCommand` gets a new `stderrFile: string` in its second parameter and passes
-     `"--stderr-file", stderrFile` to `hive-vm` (before `--share`). `spawnLibkrun` sets it to
-     `<ioDir>.launcher.log` (a sibling of the io folder, e.g. `<run>/io.launcher.log` and
-     `<run>/io-export.launcher.log`; never inside the io folder, which the VM can write).
-   - In `runSandbox`'s close handler, the returned `stderr` is: the tail of the launcher log, then
-     the tail of `<ioDir>/stderr.log`, then whatever arrived on the pipe (each part only when
-     non-empty, joined with `\n`, the whole kept to `MAX_KEPT_OUTPUT` from the end).
-   - `export const MAX_SHARES = 5`. `runSandbox` throws
-     `` `too many shared folders for one VM: ${n} (libkrun supports ${MAX_SHARES})` `` when
-     `opts.mounts.length + 1` (the `/io` share) is more than `MAX_SHARES`, before anything starts.
-   - Update the existing `buildLibkrunCommand` test in `test/sandbox.test.mjs` for the new argument.
+3. `src/cli.ts`: `hive export [run] [--zip | --bundle] [-o <path>] [--force]` (default `--zip`;
+   both flags → usage error). The run defaults to the newest, like `hive diff`, via `resolveRun`.
+   Default output: `<cwd>/<run name>.zip` or `.bundle`. Refuse to overwrite an existing file unless
+   `--force`. Print the path, the number of commits, and for a bundle the hint
+   `git clone <path> <folder>`. Add it to the usage text.
 
-4. `src/config.ts`: remove `sandbox.npmCache` (`HIVE_NPM_CACHE`). `src/routes/system.ts`: replace
-   `npmCache: Boolean(config.sandbox.npmCache)` with `vmCache: Boolean(config.sandbox.vmCache)`,
-   **and** keep the old key too as `npmCache: Boolean(config.sandbox.vmCache)` (the UI reads
-   `npmCache`).
+4. `src/web-runs.ts`: `GET /export/:sessionId?format=zip|bundle` (inside the authenticated scope
+   like the other routes; 404 for an unknown run as the others do; 400 `{ error: "format must be
+   zip or bundle" }`; 409 `{ error: "Run is still going" }` when live; 400 with the `exportRun`
+   message for other errors). Build into a temp file (`mkdtempSync` under `tmpdir()`), then reply
+   with the file contents, `Content-Type` `application/zip` or `application/x-git-bundle`, and
+   `Content-Disposition: attachment; filename="<run name>.<ext>"`. Delete the temp dir after the
+   reply is sent (read the file into a Buffer first, then remove the dir, then send the Buffer).
 
-5. `src/runs.ts`:
-   - `export function stepMounts(dir: string): SandboxOptions["mounts"]` returns `/work` and, when
-     `config.sandbox.vmCache` is non-empty, `{ host: config.sandbox.vmCache, container:
-     "/root/.cache", shared: true }` (after `mkdirSync(vmCache, { recursive: true })`). Every agent
-     step uses it; there is no `/session` and no `/root/.npm` mount any more.
-   - The agent step's env adds `NPM_CONFIG_CACHE=/root/.cache/npm` when `vmCache` is set.
-   - pi's session lives in `<run>/io/session` (`--session-dir /io/session`, plus `--continue` for
-     follow-ups as today). `makeRunDir` creates `io/session` and no longer creates `session/`.
-     Before each agent step, if `<run>/session` exists and `<run>/io/session` does not, move it
-     there with `renameSync` (runs made before this change keep their session); if both exist,
-     leave both and use `io/session`.
-   - Update the run-folder layout comment at the top of the file.
+5. `ui/src/main.ts`: in the finished-run banner (where `changesElement`, `prElement` and
+   `issueElement` are appended, around `banner.append(changesElement(item.changes))`), when the run
+   has commits (`item.changes` with at least one commit), append an `exportElement(item)` with two
+   buttons, **Download zip** (`id="downloadZipBtn"`) and **Download git bundle**
+   (`id="downloadBundleBtn"`), and a hint: `Built from the run's commits on this computer.` Each
+   button fetches `/export/<sessionId>?format=...` with the existing `api()` helper (it sends the
+   token), shows `Preparing…` while waiting, turns the response into a Blob, and saves it through a
+   temporary `<a download="<filename from Content-Disposition, else run id + ext>">` with an object
+   URL (revoke it afterwards). On an error response show the server's `error` in an
+   `alert alert-danger` under the buttons, like `prElement` does. Reuse the existing `.pr-actions`
+   and button classes; add CSS to `ui/src/app.css` only if something needs it.
 
 6. Tests:
-   - `test/hive-vm.test.mjs`: `--dry-run ... --stderr-file /tmp/x.log` shows
-     `"stderr_file":"/tmp/x.log"`; without it `"stderr_file":null`; a relative path fails with a
-     usage error starting `hive-vm: `.
-   - `test/hive-vm-watchdog.test.mjs`: add a case with a second fake libkrun whose
-     `krun_start_enter` returns `-22` immediately: run the launcher with `--stderr-file <tmp file>`;
-     it exits non-zero within 10 s and the file contains `krun_start_enter failed`. Follow the
-     file's existing compile/skip/cleanup pattern.
-   - `test/sandbox.test.mjs`: `runSandbox` with 5 mounts (5 + `/io` = 6) throws the
-     "too many shared folders" error and starts nothing (the throw happens before spawning).
-   - `test/run-steps.test.mjs`: `stepMounts(dir)` returns at most 2 mounts, none at `/session` or
-     `/root/.npm`, and `/root/.cache` only when `vmCache` is set (temp `HIVE_VM_CACHE` set before
-     importing, like the other tests).
+   - `test/export.test.mjs` (new; set `HIVE_RUNS_DIR`, `HIVE_KEYS_FILE`, `HIVE_DOTENV_PATH` to temp
+     paths before importing `../dist/`, like `test/web-runs.test.mjs`). Build a fake run folder:
+     an `origin/` git repo with one base commit (`README.md`), an `out/0001-*.patch` made with
+     `git format-patch` from a scratch clone that adds `hello.txt` in one commit, and a
+     `meta.json` (`status: "done"`, `commits: 1`, `source: "remote"`, `base` = the base sha, plus
+     the other required fields). **Do not create `work/`** (export must not need it). Check:
+     - zip: the file exists and its central directory lists `<name>/hello.txt` and
+       `<name>/README.md` (read it with `python3 -m zipfile -l <file>` or by searching the bytes for
+       the names; pick one that works in the VM);
+     - bundle: `git clone <file> <dir>` works and `git log --format=%s` there includes the patch's
+       subject;
+     - a run with no patches rejects with `no commits to export`;
+     - a run whose meta says `status: "running"` with `pid: process.pid` rejects with
+       `run is still going`;
+     - a `work/` folder containing a `.git/hooks/post-checkout` script that writes a marker file
+       is **not** run: create it, export, and assert the marker file does not exist.
+   - `test/web-runs.test.mjs`: `GET /export/<id>?format=zip` on the fake run from that file's
+     setup returns 400 `no commits to export` (it has 0 commits); `format=tar` → 400; an unknown id
+     → 404.
 
-7. Docs: `README.md` and `.env.example` — drop `HIVE_NPM_CACHE`, say the npm cache now lives inside
-   the shared VM cache (`HIVE_VM_CACHE`), update the run-folder layout (`io/session`), and add a
-   note that a VM can have at most 5 shared folders (libkrun's interrupt limit). `AGENTS.md` — in
-   the security section, note that the launcher log (`<io>.launcher.log`) sits outside the
-   VM-writable io folder, and that a VM only ever shares its own run's `work/` and `io/` plus the
-   VM cache, never the run folder itself (it holds `origin/`, which the host pushes from).
+7. Docs: `README.md` — `hive export` and the web UI's Download buttons, and that exports are built
+   from the run's patches on the host. `AGENTS.md` — add `exportRun` to the `src/runs.ts` row and
+   `/export` to the `src/web-runs.ts` row of the layout table, and add to security rule #2 that
+   exports, like pushes, are built from the patches in a fresh clone, never from `work/`.
 
 ## Acceptance
 
-- `bash vm/build.sh` exits 0.
 - `npm run build` exits 0.
+- `npm run build:ui` exits 0.
 - `npm test` exits 0.
-- `vm/hive-vm --dry-run --rootfs / --stderr-file /tmp/x.log -- true` prints JSON containing
-  `"stderr_file":"/tmp/x.log"` (spacing as the launcher prints it).
-- `grep -rn "npmCache\b" src | grep -v "routes/system.ts"` prints nothing.
+- `node --test test/export.test.mjs test/web-runs.test.mjs` exits 0 (after `npm run build`).
+- `grep -n '"work"' src/runs.ts` shows no new use of `work` inside `exportRun` (check by reading
+  the function; note the result in the report).
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -112,17 +125,18 @@ None — do it sequentially.
   throwaway VM and is discarded), but every such file must appear in the report under "outside
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
-- The only checks to run are the **Acceptance** commands. Never boot a real VM with the real
-  libkrun, start `hive run`, start the server or call GitHub/OpenRouter. If something outside
-  Acceptance fails, note it in the report and finish.
-- Don't change `image/` or `ui/`. Keep the stall watchdog, time note, slim logs, OpenRouter config
-  in `/io/pi-agent`, follow-ups, reviews, new projects and the queue working as they are. No new
-  dependencies.
+- The only checks to run are the **Acceptance** commands. Never boot a VM, start `hive run`, start
+  the server or call GitHub. If something outside Acceptance fails, note it in the report and
+  finish.
+- `exportRun` must never read, copy, archive or run git in `<run>/work`. All host git goes through
+  the `git()` helper in `src/git.ts`. No new dependencies (no zip library: `git archive` makes the
+  zip).
+- Don't change `vm/`, `image/`, `src/sandbox.ts` or the run steps.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Bind mounts inside the VM, changes to `hive-vm-init`, rebuilding the VM image.
+- Exporting a run with no commits, exporting uncommitted work, uploads anywhere.
 
 ## If blocked
 
