@@ -32,6 +32,7 @@ import {
   validateBranch,
   validateRepoName,
 } from "./git.js";
+import type { ChangeSummary } from "./git.js";
 import { followJsonl } from "./follow.js";
 import { openrouterSetup } from "./openrouter.js";
 import { addUsage, emptyUsage, type Usage } from "./render.js";
@@ -91,6 +92,8 @@ export interface RunMeta {
   reviewModel?: string;
   /** OpenRouter routing used for this run (from openrouterSetup), if any */
   routing?: unknown;
+  /** the web UI's commit and file list for the run, saved when it finishes */
+  changes?: ChangeSummary;
   /** agent steps run so far; earlier event logs are kept as io/events-<n>.jsonl */
   steps?: number;
   /** text of the agent's latest assistant message, written when the run ends */

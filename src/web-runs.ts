@@ -205,7 +205,8 @@ export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: Ch
     createdRepo: meta.createdRepo,
     resultBranch: meta.pushed?.branch,
     commitsPushed: meta.pushed ? meta.commits : 0,
-    changes: changes ?? changesById.get(id),
+    changes: changes ?? changesById.get(id) ?? meta.changes,
+    commits: meta.commits,
     prUrl: meta.prUrl,
     issueUrl: meta.issueUrl,
     repoSlug: meta.createdRepo ?? githubSlug(meta.pushed?.url ?? meta.repo),
@@ -281,6 +282,11 @@ async function finishRun(id: string): Promise<void> {
   if (changes) changesById.set(id, changes);
 
   const finalMeta = metaOf(dir) ?? meta;
+  // Kept in meta.json too, so the commit and file lists survive a server restart.
+  if (changes) {
+    finalMeta.changes = changes;
+    writeMeta(dir, finalMeta);
+  }
   const done: any = { type: "hive_done", ...runToJSON(id, finalMeta, false, changes) };
   if (pushFailed) done.status = "failed";
   publish(id, done);

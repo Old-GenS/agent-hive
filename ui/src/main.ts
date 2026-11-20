@@ -118,6 +118,8 @@ type RunItem =
       detail: string;
       link?: { href: string; label: string };
       changes?: Changes;
+      /** how many commits the run made */
+      commits?: number;
       /** set when this run's branch can become a pull request */
       pr?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
       /** set when a review that changed nothing can be posted as an issue */
@@ -1309,7 +1311,7 @@ function fillItem(li: HTMLElement, item: RunItem): void {
       }
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
       if (item.changes) banner.append(changesElement(item.changes));
-      if (item.changes && item.changes.commits.length > 0) banner.append(exportElement(item));
+      if ((item.commits ?? 0) > 0 || (item.changes && item.changes.commits.length > 0)) banner.append(exportElement(item));
       if (item.pr) banner.append(prElement(item));
       if (item.issue) banner.append(issueElement(item));
       li.replaceChildren(banner);
@@ -1595,6 +1597,7 @@ function finishRun(event: any): void {
       detail: parts.join(" · "),
       link,
       changes: parseChanges(event.changes),
+      commits: Number(event.commits ?? 0),
       pr: canPr ? { state: "ready" } : undefined,
       issue: canIssue ? { state: "ready" } : undefined,
     };
