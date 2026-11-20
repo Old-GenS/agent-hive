@@ -11,7 +11,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from "./config.js";
 import { runSandbox, type SandboxOptions } from "./sandbox.js";
@@ -30,6 +30,7 @@ import {
   validateRepoName,
 } from "./git.js";
 import { followJsonl } from "./follow.js";
+import { openrouterSetup } from "./openrouter.js";
 import { addUsage, emptyUsage, type Usage } from "./render.js";
 import { startStallWatch } from "./stall.js";
 
@@ -85,6 +86,8 @@ export interface RunMeta {
   createdRepo?: string;
   reviewCycles?: number;
   reviewModel?: string;
+  /** OpenRouter routing used for this run (from openrouterSetup), if any */
+  routing?: unknown;
   /** agent steps run so far; earlier event logs are kept as io/events-<n>.jsonl */
   steps?: number;
   /** text of the agent's latest assistant message, written when the run ends */
@@ -161,6 +164,83 @@ export function listRuns(): { name: string; dir: string; meta: RunMeta }[] {
     runs.push({ name: entry.name, dir, meta });
   }
   return runs.sort((a, b) => b.meta.createdAt - a.meta.createdAt);
+}
+
+/** The hive-vm processes visible under procRoot: [pid, NUL-separated argv]. Unreadable entries skipped. */
+function hiveVmProcs(procRoot: string): { pid: number; args: string[] }[] {
+  let entries;
+  try {
+    entries = readdirSync(procRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const procs: { pid: number; args: string[] }[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry.name)) continue;
+    let text: string;
+    try {
+      text = readFileSync(join(procRoot, entry.name, "cmdline"), "utf8");
+    } catch {
+      continue;
+    }
+    const args = text.split("\0").filter((arg) => arg !== "");
+    if (!args.some((arg) => arg.endsWith("hive-vm"))) continue;
+    procs.push({ pid: Number(entry.name), args });
+  }
+  return procs;
+}
+
+/**
+ * Stop a VM left behind by a crashed hive and mark its run failed. For every run still marked
+ * running (or queued) whose recorded owner process is gone, any `hive-vm` process whose command
+ * line mentions the run's folder is sent SIGTERM and the run becomes failed. Returns the recovered
+ * run names.
+ */
+export function recoverRuns(
+  o: { procRoot?: string; kill?: (pid: number) => void } = {},
+): string[] {
+  const procRoot = o.procRoot ?? "/proc";
+  const kill = o.kill ?? ((pid: number) => process.kill(pid, "SIGTERM"));
+  const stale = listRuns().filter(
+    ({ meta }) => (meta.status === "running" || meta.status === "queued") && !isLive(meta),
+  );
+  if (stale.length === 0) return [];
+  const procs = hiveVmProcs(procRoot);
+  const recovered: string[] = [];
+  for (const { name, dir, meta } of stale) {
+    for (const proc of procs) {
+      if (!proc.args.some((arg) => arg.includes(dir + "/"))) continue;
+      try {
+        kill(proc.pid);
+      } catch {
+        // ESRCH: already gone.
+      }
+    }
+    meta.status = "failed";
+    meta.error = "interrupted (hive stopped)";
+    meta.finishedAt = Date.now();
+    writeMeta(dir, meta);
+    recovered.push(name);
+  }
+  return recovered;
+}
+
+/**
+ * Delete finished runs older than config.runRetentionDays (0 = keep forever). Returns the deleted
+ * run names.
+ */
+export function pruneRuns(now = Date.now()): string[] {
+  const days = config.runRetentionDays;
+  if (days === 0) return [];
+  const cutoff = days * 86_400_000;
+  const pruned: string[] = [];
+  for (const { name, dir, meta } of listRuns()) {
+    if (isLive(meta) || meta.finishedAt === undefined) continue;
+    if (now - meta.finishedAt <= cutoff) continue;
+    cleanRun(dir);
+    pruned.push(name);
+  }
+  return pruned;
 }
 
 /**
@@ -454,6 +534,13 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   const cycles = o.reviewCycles ?? 0;
   if (!Number.isInteger(cycles) || cycles < 0 || cycles > 5) throw new Error("reviewCycles must be 0-5");
 
+  // OpenRouter routing needs its model list and provider ranking first: an error here rejects the
+  // run before anything is created on disk.
+  let openrouter: { modelsJson: any; routing: any; note?: string } | undefined;
+  if (provider === "openrouter") {
+    openrouter = await openrouterSetup(model, config.openrouterRouting);
+  }
+
   const dir = makeRunDir(newRepo ? newRepo.name : (o.remote ? o.remote.name : (o.repo as string)));
   const meta: RunMeta = {
     repo: o.remote ? o.remote.url : newRepo ? "" : (o.repo as string),
@@ -472,8 +559,15 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   if (newRepo) meta.newRepo = newRepo;
   if (cycles > 0) meta.reviewCycles = cycles;
   if (o.reviewModel !== undefined) meta.reviewModel = o.reviewModel;
+  if (openrouter) {
+    meta.routing = openrouter.routing;
+    mkdirSync(join(dir, "agent"), { recursive: true });
+    writeFileSync(join(dir, "agent", "models.json"), JSON.stringify(openrouter.modelsJson, null, 2));
+    writeFileSync(join(dir, "agent", "settings.json"), JSON.stringify({ enableInstallTelemetry: false }, null, 2));
+  }
   writeMeta(dir, meta);
   o.onStart?.(dir, meta);
+  if (openrouter?.note !== undefined) o.onEvent({ type: "hive_note", text: openrouter.note });
 
   try {
     await o.waitTurn?.(o.signal);
@@ -501,7 +595,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   meta.status = "running";
   writeMeta(dir, meta);
 
-  writeFileSync(join(dir, "io", "system.md"), o.systemPrompt || config.systemPrompt);
+  writeFileSync(join(dir, "io", "system-base.md"), o.systemPrompt || config.systemPrompt);
 
   const prefix = newRepo
     ? `/work is an empty git repository for a new project. Create the project there and commit your work with clear messages. You cannot push; when you finish, hive creates the GitHub repository ${newRepo.name} and pushes your commits to it.\n\n`
@@ -559,6 +653,40 @@ export async function continueRun(dir: string, o: ContinueRunOptions): Promise<{
   });
 }
 
+/**
+ * The note appended to the agent's system prompt for every step: its deadline, so it commits in
+ * time instead of running out of time with everything uncommitted.
+ */
+export function timeNote(minutes: number, start: Date): string {
+  const deadline = new Date(start.getTime() + minutes * 60_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  return (
+    `This run has a time limit of ${minutes} minutes and is stopped at ${deadline} (UTC; check with ` +
+    "`date -u`). Commit as you go. When 10 minutes are left, start no new work: commit what you " +
+    "have and finish."
+  );
+}
+
+/**
+ * Drop streaming-only events from a saved event log: `message_update` and `tool_execution_update`
+ * only matter while the run is live. Lines that don't parse are kept as they are.
+ */
+export function slimEvents(text: string): string {
+  const kept = text
+    .split("\n")
+    .filter((line) => {
+      if (line.trim() === "") return true;
+      let event: any;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return true;
+      }
+      return event?.type !== "message_update" && event?.type !== "tool_execution_update";
+    })
+    .join("\n");
+  return text.endsWith("\n") && !kept.endsWith("\n") ? kept + "\n" : kept;
+}
+
 /** One agent step's outcome. */
 interface AgentStepResult {
   status: RunStatus;
@@ -590,12 +718,34 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   }
   meta.steps = steps + 1;
 
+  // The base prompt is written once, at startRun; each step appends its own deadline to a fresh
+  // io/system.md so the agent knows the clock (older runs only have io/system.md).
+  let systemBase: string;
+  try {
+    systemBase = readFileSync(join(dir, "io", "system-base.md"), "utf8");
+  } catch {
+    systemBase = config.systemPrompt;
+  }
+  writeFileSync(join(dir, "io", "system.md"), systemBase + "\n\n" + timeNote(config.sandbox.timeoutMin, new Date()));
+
   writeFileSync(join(dir, "io", "prompt.md"), o.prompt);
 
   const mounts: SandboxOptions["mounts"] = [
     { host: join(dir, "work"), container: "/work" },
     { host: join(dir, "session"), container: "/session" },
   ];
+  // An OpenRouter run's models.json and settings.json live in <run>/agent. pi writes lock and
+  // state files into its config folder, so each step gets a fresh writable copy in its io folder
+  // (/io/pi-agent): whatever pi changes there is thrown away before the next step. It rides on the
+  // io share rather than a share of its own: the VM doesn't boot with one more share than a
+  // normal run already uses.
+  const agentDir = join(dir, "agent");
+  const useAgentDir = meta.provider === "openrouter" && existsSync(agentDir);
+  if (useAgentDir) {
+    const agentVm = join(dir, "io", "pi-agent");
+    rmSync(agentVm, { recursive: true, force: true });
+    cpSync(agentDir, agentVm, { recursive: true });
+  }
   // The npm cache is shared with the server's sandboxes (and survives them); export runs skip it.
   if (config.sandbox.npmCache) {
     mkdirSync(config.sandbox.npmCache, { recursive: true });
@@ -622,10 +772,12 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   ];
 
   const key = providerKey(meta.provider)!;
+  const env: Record<string, string> = { [PROVIDERS[meta.provider].sandboxEnv]: key, ...gitIdentity() };
+  if (useAgentDir) env.PI_CODING_AGENT_DIR = "/io/pi-agent";
   const handle = runSandbox({
     name: "hive-" + basename(dir),
     mounts,
-    env: { [PROVIDERS[meta.provider].sandboxEnv]: key, ...gitIdentity() },
+    env,
     command,
     ioDir: join(dir, "io"),
   });
@@ -669,6 +821,17 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   follower.stop();
   stallWatch.stop();
   o.signal.removeEventListener("abort", onAbort);
+
+  // The VM has exited: drop streaming-only events from the saved log (the live stream is over and
+  // a replay rebuilds assistant text from message_end).
+  try {
+    const log = join(dir, "io", "events.jsonl");
+    const tmp = log + ".tmp";
+    writeFileSync(tmp, slimEvents(readFileSync(log, "utf8")));
+    renameSync(tmp, log);
+  } catch {
+    // no log to slim
+  }
 
   let stderrText = "";
   try {

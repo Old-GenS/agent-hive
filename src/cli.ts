@@ -15,6 +15,8 @@ import { basename, join } from "node:path";
 
 const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
 hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
+hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] "<prompt>"
+hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] -f <prompt-file>
 hive continue [run] "<prompt>"
 hive log [run] [--json]
 hive diff [run] [--stat]
@@ -64,10 +66,14 @@ async function cmdRun(args: string[]): Promise<number> {
     },
   });
   const { normalizeCliRepo, repoTop, isDirty } = await import("./git.js");
-  const { startRun, listRuns } = await import("./runs.js");
+  const { startRun, listRuns, recoverRuns, pruneRuns } = await import("./runs.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
   const { renderEvent } = await import("./render.js");
   const { bundleRoot, updateNotice } = await import("./release.js");
+
+  // Stop VMs left by a crashed hive and drop finished runs past the retention limit.
+  recoverRuns();
+  pruneRuns();
 
   const prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[0] ?? "");
   if (!prompt.trim()) throw new Error("a prompt is required");
@@ -144,6 +150,10 @@ async function cmdRun(args: string[]): Promise<number> {
   const meta = run.meta;
 
   const name = basename(dir);
+  const routing = meta.routing as any;
+  if (Array.isArray(routing?.order) && routing.order.length > 0) {
+    console.error(`hive: providers, in order: ${routing.order.join(", ")}`);
+  }
   if (meta.status === "done") {
     console.error(
       `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
@@ -165,15 +175,118 @@ async function cmdRun(args: string[]): Promise<number> {
   return 1;
 }
 
+/**
+ * `hive new <name> "<prompt>"`: start a new project from an empty repository. When the agent has
+ * commits, `hive push <run>` creates the GitHub repository and pushes to main.
+ */
+async function cmdNew(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      public: { type: "boolean" },
+      model: { type: "string", short: "m" },
+      provider: { type: "string", short: "p" },
+      thinking: { type: "string", short: "t" },
+      file: { type: "string", short: "f" },
+      review: { type: "string" },
+      "review-model": { type: "string" },
+    },
+  });
+  const projectName = positionals[0];
+  if (!projectName) throw new Error("hive new needs a project name");
+  const prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[1] ?? "");
+  if (!prompt.trim()) throw new Error("a prompt is required");
+
+  const { startRun, listRuns, recoverRuns, pruneRuns } = await import("./runs.js");
+  const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
+  const { renderEvent } = await import("./render.js");
+  recoverRuns();
+  pruneRuns();
+
+  if (!libkrunAvailable()) {
+    console.error("hive: can't start a VM:");
+    for (const problem of checkSandbox()) console.error(problem);
+    console.error(
+      "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)",
+    );
+    return 1;
+  }
+
+  const abort = new AbortController();
+  let stopping = false;
+  const onSigint = () => {
+    if (stopping) process.exit(130);
+    stopping = true;
+    console.error("hive: stopping…");
+    abort.abort();
+  };
+  process.on("SIGINT", onSigint);
+
+  // startRun() reports the run only when it finishes, so watch the runs dir for the new one.
+  const before = new Set(listRuns().map((r) => r.dir));
+  const announce = setInterval(() => {
+    const fresh = listRuns().find((r) => !before.has(r.dir));
+    if (fresh) {
+      console.error(`hive: run ${fresh.name}`);
+      clearInterval(announce);
+    }
+  }, 100);
+
+  let run: Awaited<ReturnType<typeof startRun>>;
+  try {
+    run = await startRun({
+      newRepo: { name: projectName, private: !values.public },
+      prompt,
+      provider: values.provider,
+      model: values.model,
+      thinking: values.thinking,
+      reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
+      reviewModel: values["review-model"],
+      signal: abort.signal,
+      onEvent: (e) => writeEvent(false, renderEvent, e),
+    });
+  } finally {
+    clearInterval(announce);
+    process.removeListener("SIGINT", onSigint);
+  }
+
+  const runName = basename(run.dir);
+  const meta = run.meta;
+  const routing = meta.routing as any;
+  if (Array.isArray(routing?.order) && routing.order.length > 0) {
+    console.error(`hive: providers, in order: ${routing.order.join(", ")}`);
+  }
+  if (meta.status === "done") {
+    console.error(
+      `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
+    );
+    console.error(`hive: new project ${projectName} (run ${runName})`);
+    if (meta.commits === 0) {
+      console.error("hive: no changes");
+      return 0;
+    }
+    console.error(`hive push ${runName}`);
+    return 0;
+  }
+  if (meta.status === "aborted") {
+    console.error("hive: aborted");
+    return 130;
+  }
+  console.error(`hive: failed: ${meta.error}`);
+  return 1;
+}
+
 async function cmdContinue(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
     options: { json: { type: "boolean" } },
   });
-  const { continueRun, resolveRun } = await import("./runs.js");
+  const { continueRun, recoverRuns, resolveRun } = await import("./runs.js");
   const { renderEvent } = await import("./render.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
+  recoverRuns();
 
   // `hive continue <prompt>` continues the newest run; with two positionals the first is the run.
   const runArg = positionals.length >= 2 ? positionals[0] : undefined;
@@ -310,7 +423,8 @@ async function cmdPush(args: string[]): Promise<number> {
 
 async function cmdList(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
-  const { listRuns } = await import("./runs.js");
+  const { listRuns, recoverRuns } = await import("./runs.js");
+  recoverRuns();
   const runs = listRuns();
   if (runs.length === 0) {
     process.stdout.write("no runs\n");
@@ -948,6 +1062,9 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "run":
       process.exitCode = await cmdRun(rest);
+      return;
+    case "new":
+      process.exitCode = await cmdNew(rest);
       return;
     case "log":
       process.exitCode = await cmdLog(rest);

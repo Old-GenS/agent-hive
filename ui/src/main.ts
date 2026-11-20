@@ -1446,6 +1446,18 @@ function handleEvent(event: any): void {
       break;
     case "message_end":
       if (run.currentAssistant) {
+        // A replayed run has no message_update events, so take the final text from message_end.
+        if (!run.currentAssistant.text) {
+          const content = Array.isArray(event.message?.content) ? event.message.content : [];
+          const text = content
+            .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+            .map((block: any) => block.text)
+            .join("");
+          if (text) {
+            run.currentAssistant.text = text;
+            updateItem(run.currentAssistant);
+          }
+        }
         if (!run.currentAssistant.text) removeItem(run.currentAssistant);
         run.currentAssistant = null;
       }

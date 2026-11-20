@@ -1,5 +1,17 @@
 # One run engine (consolidation plan)
 
+## Status
+
+Stages 1 and 2 are done: the server engine (`src/tasks.ts`) is gone, and the web UI uses the CLI
+run engine (`src/runs.ts`) through `src/web-runs.ts`. Runs are folders under `HIVE_RUNS_DIR`, so the
+CLI and the server share them and runs survive restarts.
+
+Built: the stall watchdog, export on failure, startup cleanup, the queue, follow-ups, review
+cycles, new projects, run retention (`HIVE_RUN_RETENTION_DAYS`, 14 days), and OpenRouter provider
+routing (`HIVE_OPENROUTER_ROUTING`).
+
+Not built: stage 3, splitting `ui/src/main.ts` into modules.
+
 ## Why
 
 agent-hive has two engines that each "do a run":

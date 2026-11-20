@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { loadTokens, requireAuth } from "./auth.js";
 import { checkSandbox, runtimeInfo } from "./sandbox.js";
 import { capacity, default as webRunRoutes } from "./web-runs.js";
+import { pruneRuns, recoverRuns } from "./runs.js";
 import githubRoutes from "./routes/github.js";
 import providerRoutes from "./routes/providers.js";
 import systemRoutes from "./routes/system.js";
@@ -62,6 +63,21 @@ await app.register(async (api) => {
 for (const problem of checkSandbox()) app.log.error(problem);
 app.log.info(`sandbox isolation: ${runtimeInfo.isolation} (${runtimeInfo.runtime})`);
 if (runtimeInfo.warning) app.log.warn(runtimeInfo.warning);
+
+// A run whose owner died (a crashed hive, a reboot) never finished: stop its leftover VM, mark it
+// failed, then drop finished runs past HIVE_RUN_RETENTION_DAYS (and keep doing so every 6 hours).
+const recovered = recoverRuns();
+app.log.info(`startup cleanup: recovered ${recovered.length} interrupted run(s)`);
+const pruned = pruneRuns();
+app.log.info(`startup cleanup: pruned ${pruned.length} old run(s)`);
+setInterval(() => {
+  try {
+    const names = pruneRuns();
+    if (names.length > 0) app.log.info(`pruned ${names.length} old run(s): ${names.join(", ")}`);
+  } catch (err) {
+    app.log.error(err);
+  }
+}, 6 * 60 * 60_000).unref();
 
 try {
   await app.listen({ port: config.port, host: config.host });

@@ -16,12 +16,30 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
 const cacheHome = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
 
-function int(name: string, fallback: number): number {
+function int(name: string, fallback: number, min = 1): number {
   const raw = process.env[name];
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive integer, got "${raw}"`);
+  if (!Number.isFinite(n) || n < min) throw new Error(`${name} must be ${min === 0 ? "a non-negative" : "a positive"} integer, got "${raw}"`);
   return n;
+}
+
+/** HIVE_OPENROUTER_ROUTING: a JSON object of OpenRouter provider routing, or the default. */
+const DEFAULT_OPENROUTER_ROUTING = { quantizations: ["fp16", "bf16", "fp8"] };
+
+function openrouterRouting(): object {
+  const raw = process.env.HIVE_OPENROUTER_ROUTING;
+  if (!raw) return DEFAULT_OPENROUTER_ROUTING;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`HIVE_OPENROUTER_ROUTING must be valid JSON: ${(err as Error).message}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`HIVE_OPENROUTER_ROUTING must be a JSON object, got ${JSON.stringify(parsed)}`);
+  }
+  return parsed as object;
 }
 
 /** LLM providers: which env var holds the key on the host, which name pi expects in the sandbox. */
@@ -88,6 +106,12 @@ export const config = {
     process.env.HIVE_SYSTEM_PROMPT ||
     "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so. Commit each finished piece of work as soon as it is done, before running long checks, installing tools or starting the next piece: the run has a time limit, and only committed work is kept. If a check needs a tool you can't get working within a few minutes, skip it, say so, and finish.",
   runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
+  /** Finished runs older than this many days are deleted; 0 keeps them forever. */
+  runRetentionDays: int("HIVE_RUN_RETENTION_DAYS", 14, 0),
+  /** OpenRouter provider routing, parsed from HIVE_OPENROUTER_ROUTING (invalid JSON throws when used). */
+  get openrouterRouting(): object {
+    return openrouterRouting();
+  },
   sandbox: {
     runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun
     memory: process.env.HIVE_SANDBOX_MEMORY || "2048m",

@@ -83,6 +83,7 @@ hive push --pr --base main
 | Command | What it does |
 |---------|--------------|
 | `hive run "<prompt>"` | Clone the repo into a new run, run the agent in a VM, show its progress live, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--review <n>` (up to 5 review cycles after the agent finishes), `--review-model <model>`, `--json`, `-f <prompt-file>`, `--repo <owner/name\|url>`, `--ref <branch>`. Ctrl+C stops the run. |
+| `hive new <name> "<prompt>"` | Start a new project from an empty repository. Options as for `hive run` (`-m`, `-p`, `-t`, `--review`, `--review-model`, `-f`), plus `--public` for a public GitHub repo (the default is private). When the agent has committed, `hive push <run>` creates the GitHub repository and pushes the commits to `main`. |
 | `hive continue [run] "<prompt>"` | Continue a finished run in the same pi session and on the same work copy, showing its progress live. `[run]` defaults to the newest run. Pushing is left to `hive push`. |
 | `hive log [run]` | Replay a run's event log. It follows the log live while the run is going. `--json` prints raw events. |
 | `hive diff [run]` | Show the run's changes. `--stat` gives a summary. |
@@ -124,6 +125,8 @@ server's `.env`.
 | `HIVE_BRANCH_PREFIX` | `hive/` | Prefix for the branch `hive push` creates |
 | `HIVE_PUSH_REMOTE` | `origin` | Remote `hive push` uses for local runs |
 | `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where runs are kept |
+| `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this many days are deleted; `0` keeps them forever |
+| `HIVE_OPENROUTER_ROUTING` | `{"quantizations":["fp16","bf16","fp8"]}` | OpenRouter provider routing, as JSON (see [Provider and model](#provider-and-model)) |
 | `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `2048m` / `1` | VM size (2 GB and 1 CPU; the VM's writable space lives in RAM, up to half of this) |
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | The run is stopped after this many minutes |
 | `HIVE_STALL_MIN` | `15` | Stop the run when nothing in `work/` changed and no agent event arrived for this many minutes; `0` turns it off |
@@ -136,6 +139,16 @@ server's `.env`.
 
 When a run times out, stalls, fails or is stopped, hive still exports the commits the agent made,
 so `hive diff` and `hive apply` keep the work. Only uncommitted changes are lost.
+
+Each agent step's system prompt ends with its deadline: the run's time limit and the UTC time it
+will be stopped, so the agent commits as it goes. Once a step's VM exits, its saved event log
+(`io/events.jsonl`) drops the streaming-only `message_update` and `tool_execution_update` events;
+live progress is unchanged, and `hive log` and the web UI's replay stay small.
+
+A run still marked running or queued when hive starts again (after a crash or a reboot) was
+interrupted: hive stops the leftover VM if there still is one and marks the run failed with
+`interrupted (hive stopped)`. Finished runs older than `HIVE_RUN_RETENTION_DAYS` (14) days are
+deleted from the runs dir at startup and every 6 hours; `hive clean` deletes any run earlier.
 
 ### Provider and model
 
@@ -156,12 +169,22 @@ has a key: DeepSeek, Z.AI, OpenRouter, Anthropic, OpenAI. The model is `-m` if g
 unless `DEFAULT_PROVIDER=openrouter`. `hive doctor` prints what will be used. The web UI shows the
 resolved defaults (Settings, API keys) and lists only providers that have a key.
 
+For OpenRouter, each run writes pi's `models.json` for the chosen model (context window, price,
+input modalities, reasoning) and `settings.json` into the run's `agent/` folder, which every step
+copies into the run's `io/` folder for each step (`/io/pi-agent`, a fresh copy every step). It also ranks the model's provider endpoints and asks OpenRouter
+for the best one first: the model maker's own endpoint, then higher uptime, then lower price,
+keeping only endpoints that are up, support tools and have cache pricing. `HIVE_OPENROUTER_ROUTING`
+sets the routing as a JSON object (default `{"quantizations":["fp16","bf16","fp8"]}`); an `order` or
+`only` in it is used as written. If no endpoint supports the allowed quantizations, hive allows any
+for that run and prints a note. `hive run` and `hive new` print the chosen provider order.
+
 ### Run directories
 
 ```
 ~/.cache/agent-hive/runs/<repo>-<YYYYMMDD-HHMMSS>/
   work/      the agent's copy (mounted at /work)
-  io/        prompt.md, system.md, events.jsonl, stderr.log (mounted at /io)
+  io/        prompt.md, system.md, system-base.md, events.jsonl, stderr.log (mounted at /io)
+  agent/     OpenRouter runs: pi's models.json and settings.json (copied to io/pi-agent for each step)
   session/   pi's session (mounted at /session)
   out/       exported patches
   origin/    clean clone used for pushing (remote runs, and local runs once pushed)
@@ -177,8 +200,9 @@ Each run boots its own microVM with `vm/hive-vm`, a small launcher that loads li
   one run to the next.
 - **Its own network namespace via pasta:** the internet and DNS work, so the agent can reach the
   LLM API and package registries, but the host's loopback, gateway and LAN addresses are blocked.
-- **Mounts:** only the run's `work/`, `io/` and `session/`, plus the shared npm cache. The selected
-  provider's key is passed in the VM's environment, never on a command line.
+- **Mounts:** only the run's `work/`, `io/` and `session/`, plus the shared npm cache (and, for an
+  OpenRouter run, a fresh copy of its `agent/` at `/io/pi-agent`). The selected provider's key is passed in
+  the VM's environment, never on a command line.
 
 After changing the image (`npm run build:image`), re-run `npm run build:rootfs`. To move to a newer
 pi release, bump `PI_VERSION` in `image/Containerfile` and rebuild both.
