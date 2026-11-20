@@ -90,15 +90,21 @@ export const config = {
   runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
   sandbox: {
     runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun
-    memory: process.env.HIVE_SANDBOX_MEMORY || "1536m",
-    cpus: process.env.HIVE_SANDBOX_CPUS || "1",
+    memory: process.env.HIVE_SANDBOX_MEMORY || "2048m",
+    cpus: process.env.HIVE_SANDBOX_CPUS || "2",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
+    // Stop a run when no file in its work/ folder changed and no agent event arrived for this many
+    // minutes (like pi-vm). 0 turns it off.
+    stallMin: int("HIVE_STALL_MIN", 15),
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
     rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
     libkrun: process.env.HIVE_LIBKRUN || "libkrun.so.1",
     // Shared npm cache for the agent's downloads; exempt from the per-task sandbox isolation.
     // HIVE_NPM_CACHE="" disables it.
     npmCache: process.env.HIVE_NPM_CACHE ?? join(cacheHome, "agent-hive/npm"),
+    // Shared ~/.cache for the agent (Playwright browsers, pip, corepack...), kept between runs.
+    // HIVE_VM_CACHE="" disables it.
+    vmCache: process.env.HIVE_VM_CACHE ?? join(cacheHome, "agent-hive/vm-cache"),
   },
   git: {
     authorName: process.env.GIT_AUTHOR_NAME || "agent-hive",
