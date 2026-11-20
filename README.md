@@ -216,7 +216,8 @@ into `ui/dist`, and the running server serves the new files without a restart.
 
 Every repo run is set up to change code: the agent commits in the VM and hive pushes its commits to
 a `hive/<id>` branch (never `main`), even for a review. For a review without changes, say "don't
-edit or commit" in the task; its findings are the last message.
+edit or commit" in the task; its findings are the last message, and when nothing changed the
+result has a **Post review as an issue** button that puts them into a GitHub issue.
 
 **New project** starts from an empty repo: give it a name and, when the run finishes with
 commits, the host creates that repository under the `gh` account (private by default) and pushes
@@ -243,6 +244,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `changes` (commits and files), `prUrl`, `newRepo` / `createdRepo`, usage, `error` |
 | GET | `/messages/:id` | Conversation so far |
 | POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
+| POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue. Returns `{url}` |
 | POST | `/abort/:id` | Stop the running sandbox |
 | DELETE | `/session/:id` | Delete the session and its files |
 | GET | `/files/:id?path=`, `/file/:id?path=` | Browse the agent's working copy |

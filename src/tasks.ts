@@ -19,6 +19,8 @@ import { runSandbox, runtimeInfo, type SandboxHandle, type SandboxOptions } from
 import {
   applyAndPush,
   changeSummary,
+  openIssue,
+  issueBody,
   openPullRequest,
   prBody,
   githubSlug,
@@ -79,6 +81,8 @@ export class Task extends EventEmitter {
   changes?: ChangeSummary;
   /** the pull request opened from resultBranch, if any */
   prUrl?: string;
+  /** the issue a no-change review was posted to, if any */
+  issueUrl?: string;
   /** token and cost totals over every agent run of this task */
   usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   messages: ChatMessage[] = [];
@@ -139,6 +143,7 @@ export class Task extends EventEmitter {
       commitsPushed: this.commitsPushed,
       changes: this.changes,
       prUrl: this.prUrl,
+      issueUrl: this.issueUrl,
       repoSlug: this.repoUrl ? githubSlug(this.repoUrl) : undefined,
       usage: this.usage,
       provider: this.provider,
@@ -263,6 +268,23 @@ export class Task extends EventEmitter {
  * Open a pull request from a finished run's branch, with the agent's last message and the
  * change list as its description. Opening it again returns the same PR.
  */
+export async function openTaskIssue(task: Task): Promise<string> {
+  if (task.issueUrl) return task.issueUrl;
+  if (task.busy) throw new Error("The run is still going");
+  if (task.newRepoName || task.commitsPushed > 0) throw new Error("This run changed files; open a pull request instead");
+  const slug = task.repoUrl ? githubSlug(task.repoUrl) : undefined;
+  if (!slug) throw new Error("Issues need a github.com repository");
+  if (!task.lastAssistantText.trim()) throw new Error("The agent left no write-up to post");
+  const firstLine = (task.opts.prompt.split("\n").find((l) => l.trim()) ?? "").trim();
+  const title = `hive review: ${firstLine.length > 70 ? firstLine.slice(0, 69) + "…" : firstLine || "findings"}`;
+  task.issueUrl = await openIssue({
+    slug,
+    title,
+    body: issueBody(task.lastAssistantText, { model: task.model, branch: task.branch, baseSha: task.baseSha }),
+  });
+  return task.issueUrl;
+}
+
 export async function openTaskPr(task: Task): Promise<string> {
   if (task.prUrl) return task.prUrl;
   if (task.busy) throw new Error("The run is still going");

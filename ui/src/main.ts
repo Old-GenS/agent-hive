@@ -118,6 +118,8 @@ type RunItem =
       changes?: Changes;
       /** set when this run's branch can become a pull request */
       pr?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
+      /** set when a review that changed nothing can be posted as an issue */
+      issue?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
     };
 
 /** What a run's push changed, from hive_done (agent-controlled text: render as text only). */
@@ -181,6 +183,47 @@ async function openPr(item: Extract<RunItem, { kind: "banner" }>): Promise<void>
     item.pr = { state: "open", url: data.url };
   } catch (err) {
     item.pr = { state: "error", error: err instanceof Error ? err.message : String(err) };
+  }
+  updateItem(item);
+}
+
+const ISSUE_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+$/;
+
+function issueElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
+  const issue = item.issue!;
+  const box = el("div", { class: "pr-actions" });
+  if (issue.state === "open" && issue.url && ISSUE_URL.test(issue.url)) {
+    box.append(
+      el("a", { class: "btn btn-primary", id: "issueLink", href: issue.url, target: "_blank", rel: "noopener noreferrer" }, "View issue"),
+    );
+    return box;
+  }
+  const button = el(
+    "button",
+    { class: "btn btn-primary", id: "postIssueBtn", type: "button" },
+    issue.state === "opening" ? "Posting review…" : "Post review as an issue",
+  );
+  button.disabled = issue.state === "opening";
+  button.onclick = () => void postIssue(item);
+  box.append(button, el("span", { class: "pr-hint" }, "Puts the agent's write-up into a new GitHub issue on this repo."));
+  if (issue.state === "error" && issue.error) box.append(el("p", { class: "alert alert-danger" }, issue.error));
+  return box;
+}
+
+async function postIssue(item: Extract<RunItem, { kind: "banner" }>): Promise<void> {
+  if (!run || !item.issue || item.issue.state === "opening") return;
+  const sessionId = run.sessionId;
+  item.issue = { state: "opening" };
+  updateItem(item);
+  try {
+    const res = await api(`/issue/${encodeURIComponent(sessionId)}`, { method: "POST" });
+    const data = (await res.json().catch(() => ({}))) as { url?: unknown; error?: unknown };
+    if (!res.ok || typeof data.url !== "string") {
+      throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    }
+    item.issue = { state: "open", url: data.url };
+  } catch (err) {
+    item.issue = { state: "error", error: err instanceof Error ? err.message : String(err) };
   }
   updateItem(item);
 }
@@ -856,6 +899,7 @@ function fillItem(li: HTMLElement, item: RunItem): void {
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
       if (item.changes) banner.append(changesElement(item.changes));
       if (item.pr) banner.append(prElement(item));
+      if (item.issue) banner.append(issueElement(item));
       li.replaceChildren(banner);
       break;
     }
@@ -884,7 +928,9 @@ function buildRunView(): HTMLElement {
   newBtn.onclick = () => newRun();
   const toolbar = el("div", { class: "run-toolbar" }, pill, el("span", { class: "spacer" }), stopBtn, newBtn);
 
-  const repoText = state.newRepo ? `new project ${state.newRepo}` : state.repo ?? "no repo";
+  // github.com URLs read better as owner/name.
+  const shortRepo = state.repo?.replace(/^(?:https:\/\/github\.com\/|git@github\.com:)/, "").replace(/\.git$/, "");
+  const repoText = state.newRepo ? `new project ${state.newRepo}` : shortRepo || "no repo";
   const modelText = state.model || "default model";
   const bee = createBeeIndicator();
   const head = el(
@@ -1093,6 +1139,14 @@ function finishRun(event: any): void {
     const cost = Number(event.usage?.cost);
     if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
     const canPr = !createdRepo && !!event.resultBranch && typeof event.repoSlug === "string" && !!event.repoSlug;
+    const wroteSomething = run.items.some((i) => i.kind === "assistant" && i.text.trim() !== "");
+    const canIssue =
+      !run.newRepo &&
+      !event.resultBranch &&
+      Number(event.commitsPushed ?? 0) === 0 &&
+      typeof event.repoSlug === "string" &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(event.repoSlug) &&
+      wroteSomething;
     item = {
       kind: "banner",
       tone: "ok",
@@ -1101,6 +1155,7 @@ function finishRun(event: any): void {
       link,
       changes: parseChanges(event.changes),
       pr: canPr ? { state: "ready" } : undefined,
+      issue: canIssue ? { state: "ready" } : undefined,
     };
   } else if (status === "aborted") {
     item = { kind: "banner", tone: "warn", title: "Stopped", detail: event.error ? String(event.error) : "" };

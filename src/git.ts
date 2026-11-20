@@ -323,6 +323,36 @@ export function prBody(summary: string, changes: ChangeSummary | undefined, mode
   return parts.join("\n");
 }
 
+/** Open a GitHub issue with gh; returns its URL. */
+export async function openIssue(o: { slug: string; title: string; body: string }): Promise<string> {
+  const args = ["issue", "create", "--repo", o.slug, "--title", o.title, "--body", o.body];
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(ghBin(), args, { env: GH_ENV(), timeout: 120_000, maxBuffer: 1024 * 1024 }));
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    throw new Error(`Couldn't open the issue: ${String(e.stderr || e.message || "").trim().slice(-500)}`);
+  }
+  const url = stdout.trim().split("\n").pop()?.trim() ?? "";
+  if (!/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+$/.test(url)) {
+    throw new Error(`gh issue create gave an unexpected answer: ${stdout.trim().slice(-300)}`);
+  }
+  return url;
+}
+
+/** An issue body for a review that changed nothing: the agent's write-up and where it looked. */
+export function issueBody(summary: string, o: { model: string; branch?: string; baseSha?: string }): string {
+  const text = summary.trim();
+  const where = [o.branch ? `branch \`${o.branch}\`` : "the default branch", o.baseSha ? `at \`${o.baseSha.slice(0, 12)}\`` : ""]
+    .filter(Boolean)
+    .join(" ");
+  return [
+    text.length > MAX_PR_SUMMARY ? text.slice(0, MAX_PR_SUMMARY) + "\n\n…(cut)" : text,
+    "",
+    `_Posted by agent-hive from a run on \`${o.model}\` against ${where}. The run changed no files._`,
+  ].join("\n");
+}
+
 /** Open a pull request from `branch` with gh; returns its URL. */
 export async function openPullRequest(o: { slug: string; branch: string; title: string; body: string }): Promise<string> {
   const args = ["pr", "create", "--repo", o.slug, "--head", o.branch, "--title", o.title, "--body", o.body];

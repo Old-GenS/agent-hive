@@ -26,7 +26,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/runs.ts` | CLI run dirs and `meta.json`, VM launch via `runSandbox`, export, diff, apply, push (never forced) and `gh pr create` |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
-| `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/pr`, `/abort`, `/session`, `/files`, `/events` |
+| `src/routes/sessions.ts` | `/prompt`, `/snippet`, `/status`, `/messages`, `/pr`, `/issue`, `/abort`, `/session`, `/files`, `/events` |
 | `src/routes/github.ts` | `gh`-backed repo list, branches, search, fork for the UI |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
 | `src/routes/system.ts` | `/api/system`: sandbox setup and checks for Settings › This computer |
@@ -64,7 +64,7 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 8. **Files the VM writes are read without following symlinks.** The host reads `io/events.jsonl`
    and `io/stderr.log` with `O_NOFOLLOW`, so the agent can't point the host at its own files.
 9. **Nothing reaches GitHub on the agent's say-so.** Branch pushes and new repos happen in the host
-   after the run; pull requests only when the user asks (`POST /pr/:id`). `gh` and `git` run with
+   after the run; pull requests and issues only when the user asks (`POST /pr/:id`, `/issue/:id`). `gh` and `git` run with
    argument arrays, never a shell.
 
 ## GitHub access (server)
@@ -132,7 +132,6 @@ result with commits, files, a diff link and Open pull request) and Settings (API
 This computer). Checked by `scripts/ui-smoke.mjs`.
 
 **Not built yet:**
-- web UI: posting a no-change review as a GitHub issue
 - web UI: key management and the first-run onboarding from `docs/GUI.md` (needs `hive keys`)
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)

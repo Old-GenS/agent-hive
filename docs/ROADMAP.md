@@ -91,8 +91,6 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   computer) are built. Still to do: first run (welcome, the `hive doctor` checks with a rootfs
   download, adding a model key) and key management, following the clickable mockup. Design and
   progress in `docs/GUI.md`.
-- **Post a review as an issue:** when a run changes nothing, a button that puts the agent's
-  write-up into a GitHub issue.
 - **Server restarts without losing runs:** refuse to restart, or let running tasks finish, and keep
   finished runs across restarts.
 - **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor

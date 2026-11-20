@@ -250,6 +250,44 @@ try {
   await page.click('button:has-text("New run")');
   await page.waitForSelector("#provider");
 
+  // ── a faked review run that changes nothing: Post review as an issue ──
+  await page.route("**/prompt", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sessionId: "demo-review", status: "queued", repo: "https://github.com/demo/repo.git", provider: "deepseek", model: "deepseek-flash" }),
+    }),
+  );
+  await page.route("**/events/demo-review/ticket", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ticket: "demo" }) }),
+  );
+  await page.route("**/issue/demo-review", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ url: "https://github.com/demo/repo/issues/12" }) }),
+  );
+  await page.routeWebSocket(/\/events\/demo-review/, (ws) => {
+    ws.send(JSON.stringify({ type: "hive_status", status: "running" }));
+    ws.send(JSON.stringify({ type: "message_start", message: { role: "assistant" } }));
+    ws.send(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Findings: all good." } }));
+    ws.send(JSON.stringify({ type: "message_end", message: { role: "assistant" } }));
+    ws.send(JSON.stringify({ type: "hive_done", status: "idle", commitsPushed: 0, repoSlug: "demo/repo", usage: { cost: 0.001 } }));
+  });
+  await page.reload();
+  await page.waitForSelector("#provider");
+  await page.fill("#task", "code review and next steps");
+  await page.click("#startBtn");
+  await page.waitForSelector("#postIssueBtn");
+  assert((await page.$$("#openPrBtn")).length === 0, "a run with no changes offers no pull request");
+  await page.click("#postIssueBtn");
+  await page.waitForSelector("#issueLink");
+  const issueHref = await page.$eval("#issueLink", (a) => a.getAttribute("href"));
+  assert(issueHref === "https://github.com/demo/repo/issues/12", `View issue links to the issue (got ${issueHref})`);
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-review-issue.png") });
+  await page.unroute("**/prompt");
+  await page.unroute("**/events/demo-review/ticket");
+  await page.unroute("**/issue/demo-review");
+  await page.click("text=New run");
+  await page.waitForSelector("#provider");
+
   // ── desktop: settings ──
   await page.click("#nav-settings");
   await page.waitForSelector("#settingsTable tbody tr");
