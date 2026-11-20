@@ -123,13 +123,18 @@ server's `.env`.
 | `HIVE_BRANCH_PREFIX` | `hive/` | Prefix for the branch `hive push` creates |
 | `HIVE_PUSH_REMOTE` | `origin` | Remote `hive push` uses for local runs |
 | `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where runs are kept |
-| `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `1536m` / `1` | VM size (the VM's writable space lives in RAM, up to half of this) |
+| `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `2048m` / `1` | VM size (2 GB and 1 CPU; the VM's writable space lives in RAM, up to half of this) |
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | The run is stopped after this many minutes |
+| `HIVE_STALL_MIN` | `15` | Stop the run when nothing in `work/` changed and no agent event arrived for this many minutes; `0` turns it off |
 | `HIVE_NPM_CACHE` | `~/.cache/agent-hive/npm` | npm download cache shared between runs; empty disables it |
+| `HIVE_VM_CACHE` | `~/.cache/agent-hive/vm-cache` | `~/.cache` in the VM (Playwright browsers, pip, corepack) shared between runs; empty disables it |
 | `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
 | `HIVE_NO_UPDATE_CHECK` | — | Set to `1` to stop the once-a-day "new version available" notice |
 | `HIVE_RELEASE_REPO` | `ogsapps/agent-hive` | GitHub repo releases are looked up in |
 | `GH_TOKEN` / `GITHUB_TOKEN` | — | Used for release lookups when set |
+
+When a run times out, stalls, fails or is stopped, hive still exports the commits the agent made,
+so `hive diff` and `hive apply` keep the work. Only uncommitted changes are lost.
 
 ### Provider and model
 

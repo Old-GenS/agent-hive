@@ -27,10 +27,36 @@ import {
 } from "./git.js";
 import { followJsonl } from "./follow.js";
 import { addUsage, emptyUsage, type Usage } from "./render.js";
+import { startStallWatch } from "./stall.js";
 
 const execFileAsync = promisify(execFile);
 
 export type RunStatus = "running" | "done" | "failed" | "aborted";
+
+/**
+ * The run's outcome from how the sandbox ended and what pi's last assistant message said. The
+ * order matters: an abort beats a stall, which beats the time limit, which beats the exit code.
+ */
+export function finalStatus(r: {
+  aborted: boolean;
+  timedOut: boolean;
+  stalled: boolean;
+  code: number | null;
+  stopReason?: string;
+  modelError?: string;
+  stderr: string;
+  timeoutMin: number;
+  stallMin: number;
+}): { status: RunStatus; error?: string } {
+  if (r.aborted) return { status: "aborted" };
+  if (r.stalled) return { status: "failed", error: `stalled: nothing changed for ${r.stallMin} minutes` };
+  if (r.timedOut) return { status: "failed", error: `timed out after ${r.timeoutMin} minutes` };
+  if (r.code !== 0) return { status: "failed", error: `agent exited ${r.code}: ` + r.stderr.slice(-2000) };
+  if (r.stopReason === "error" || r.stopReason === "aborted") {
+    return { status: "failed", error: "model error: " + (r.modelError || r.stopReason) };
+  }
+  return { status: "done" };
+}
 
 export interface RunMeta {
   repo: string;
@@ -383,6 +409,11 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     mkdirSync(config.sandbox.npmCache, { recursive: true });
     mounts.push({ host: config.sandbox.npmCache, container: "/root/.npm", shared: true });
   }
+  // The shared ~/.cache (Playwright browsers, pip, corepack...) survives runs; export skips it.
+  if (config.sandbox.vmCache) {
+    mkdirSync(config.sandbox.vmCache, { recursive: true });
+    mounts.push({ host: config.sandbox.vmCache, container: "/root/.cache", shared: true });
+  }
 
   const command = [
     "hive-agent",
@@ -405,9 +436,15 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   });
 
   let summary: string | undefined;
+  let lastActivity = Date.now();
+  let stopReason: string | undefined;
+  let modelError: string | undefined;
   const follower = followJsonl(join(dir, "io", "events.jsonl"), (e) => {
+    lastActivity = Date.now();
     addUsage(meta.usage, e);
     if (e?.type === "message_end" && e.message?.role === "assistant") {
+      stopReason = e.message.stopReason;
+      modelError = e.message.errorMessage;
       const text = (Array.isArray(e.message.content) ? e.message.content : [])
         .filter((b: any) => b?.type === "text" && typeof b.text === "string")
         .map((b: any) => b.text)
@@ -415,6 +452,17 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
       if (text) summary = text;
     }
     o.onEvent(e);
+  });
+  // Stop a run that went quiet: nothing in work/ changed and no event arrived for stallMin minutes.
+  let stalled = false;
+  const stallWatch = startStallWatch({
+    dir: join(dir, "work"),
+    stallMin: config.sandbox.stallMin,
+    lastActivity: () => lastActivity,
+    onStall: () => {
+      stalled = true;
+      void handle.stop();
+    },
   });
   const onAbort = () => {
     void handle.stop();
@@ -424,28 +472,33 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
 
   const result = await handle.done;
   follower.stop();
+  stallWatch.stop();
   o.signal.removeEventListener("abort", onAbort);
 
-  let status: RunStatus = "done";
-  let error: string | undefined;
-  if (o.signal.aborted) {
-    status = "aborted";
-  } else if (result.timedOut) {
-    status = "failed";
-    error = `timed out after ${config.sandbox.timeoutMin} minutes`;
-  } else if (result.code !== 0) {
-    status = "failed";
-    let stderrText = "";
-    try {
-      stderrText = readFileSync(join(dir, "io", "stderr.log"), "utf8");
-    } catch {
-      // no stderr.log: fall back to what the launcher kept
-    }
-    if (!stderrText) stderrText = result.stderr;
-    error = `agent exited ${result.code}: ` + stderrText.slice(-2000);
+  let stderrText = "";
+  try {
+    stderrText = readFileSync(join(dir, "io", "stderr.log"), "utf8");
+  } catch {
+    // no stderr.log: fall back to what the launcher kept
   }
+  if (!stderrText) stderrText = result.stderr;
+  const outcome = finalStatus({
+    aborted: o.signal.aborted,
+    timedOut: result.timedOut,
+    stalled,
+    code: result.code,
+    stopReason,
+    modelError,
+    stderr: stderrText,
+    timeoutMin: config.sandbox.timeoutMin,
+    stallMin: config.sandbox.stallMin,
+  });
+  let status = outcome.status;
+  let error = outcome.error;
 
-  if (result.code === 0 && !o.signal.aborted) {
+  // Export whatever the agent committed, whatever the outcome: a run that timed out, stalled,
+  // failed or was stopped still keeps the work it committed.
+  if (existsSync(join(dir, "work"))) {
     const exp = runSandbox({
       name: "hive-" + basename(dir) + "-export",
       mounts: [
@@ -459,11 +512,15 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     });
     const r = await exp.done;
     if (r.code !== 0) {
-      status = "failed";
-      error = `export failed (exit ${r.code})`;
+      const note = `export failed (exit ${r.code})`;
+      if (status === "done") {
+        status = "failed";
+        error = note;
+      } else {
+        error = error === undefined ? note : `${error}; ${note}`;
+      }
     } else {
       meta.commits = patchFiles(dir).length;
-      status = "done";
     }
   }
 
