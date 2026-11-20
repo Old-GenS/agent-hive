@@ -2,6 +2,13 @@ import dotenv from "dotenv";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { keySource, readKeysFile } from "./keys.js";
+
+export { keysFilePath } from "./keys.js";
+
+// The variables the process really started with, captured before dotenv adds the server's .env.
+// They win over saved keys and over .env values.
+export const shellEnv: Readonly<Record<string, string | undefined>> = { ...process.env };
 
 dotenv.config(process.env.HIVE_DOTENV_PATH ? { path: process.env.HIVE_DOTENV_PATH } : undefined);
 
@@ -39,17 +46,26 @@ export const PROVIDERS: Record<
   openai: { hostEnv: ["OPENAI_API_KEY"], sandboxEnv: "OPENAI_API_KEY", label: "OpenAI" },
 };
 
+/** A setting by name, in the same order as keys: shell environment, keys file, then .env. */
+export function setting(name: string): string | undefined {
+  const fromShell = shellEnv[name];
+  if (fromShell) return fromShell;
+  const saved = readKeysFile()[name];
+  if (saved) return saved;
+  return process.env[name] || undefined;
+}
+
 export function providerKey(provider: string): string | undefined {
   const p = PROVIDERS[provider];
   if (!p) return undefined;
-  for (const name of p.hostEnv) if (process.env[name]) return process.env[name];
-  return undefined;
+  return keySource(p.hostEnv, shellEnv, process.env, readKeysFile())?.value;
 }
 
 /** explicit > DEFAULT_PROVIDER > first provider with a key configured. */
 export function resolveProvider(explicit?: string): string | undefined {
   if (explicit) return explicit;
-  if (process.env.DEFAULT_PROVIDER) return process.env.DEFAULT_PROVIDER;
+  const configured = setting("DEFAULT_PROVIDER");
+  if (configured) return configured;
   return Object.keys(PROVIDERS).find((p) => providerKey(p));
 }
 
@@ -100,7 +116,7 @@ export const config = {
 
 /** The model a provider will use: DEFAULT_MODEL beats the provider's own default. */
 export function effectiveModel(provider: string): string | undefined {
-  return config.defaultModel || PROVIDERS[provider]?.defaultModel || undefined;
+  return setting("DEFAULT_MODEL") || PROVIDERS[provider]?.defaultModel || undefined;
 }
 
 export interface ProviderInfo {
@@ -122,14 +138,14 @@ export function providerInfo(): ProviderInfo {
   let providerSource: ProviderInfo["default"]["providerSource"] = null;
   if (provider !== null) {
     providerSource =
-      process.env.DEFAULT_PROVIDER && process.env.DEFAULT_PROVIDER === provider
+      setting("DEFAULT_PROVIDER") && setting("DEFAULT_PROVIDER") === provider
         ? "DEFAULT_PROVIDER"
         : "first provider with a key";
   }
 
   const model = provider !== null ? (effectiveModel(provider) ?? null) : null;
   let modelSource: ProviderInfo["default"]["modelSource"] = null;
-  if (model !== null) modelSource = config.defaultModel ? "DEFAULT_MODEL" : "provider default";
+  if (model !== null) modelSource = setting("DEFAULT_MODEL") ? "DEFAULT_MODEL" : "provider default";
 
   return {
     default: {

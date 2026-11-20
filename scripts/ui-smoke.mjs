@@ -28,6 +28,8 @@ const server = spawn(process.execPath, ["dist/index.js"], {
     DEEPSEEK_API_KEY: "sk-smoke",
     OPENROUTER_API_KEY: "sk-smoke",
     HIVE_DOTENV_PATH: "/nonexistent",
+    // Keys are written here, never to the real ~/.config/agent-hive/env.
+    HIVE_KEYS_FILE: join(workspace, "keys-env"),
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -290,14 +292,56 @@ try {
 
   // ── desktop: settings ──
   await page.click("#nav-settings");
-  await page.waitForSelector("#settingsTable tbody tr");
-  const bodyRows = await page.$$eval("#settingsTable tbody tr", (nodes) => nodes.length);
+  await page.waitForSelector("#keysTable tbody tr");
+  const bodyRows = await page.$$eval("#keysTable tbody tr", (nodes) => nodes.length);
   assert(bodyRows === 5, `settings table has 5 body rows (got ${bodyRows})`);
   const defaultPills = await page.$$eval(".pill", (nodes) =>
     nodes.filter((node) => (node.textContent ?? "").trim() === "Default").length,
   );
   assert(defaultPills === 1, `settings table has one Default pill (got ${defaultPills})`);
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-settings.png") });
+
+  const envRow = await page.$eval("#keysTable tbody", (tbody) => {
+    const row = Array.from(tbody.querySelectorAll("tr")).find((node) =>
+      (node.textContent ?? "").includes("DeepSeek"),
+    );
+    const remove = row?.querySelector('button[data-action="remove"]');
+    return { text: row?.textContent ?? "", disabled: remove instanceof HTMLButtonElement ? remove.disabled : null };
+  });
+  assert(
+    envRow.text.includes("From the environment (DEEPSEEK_API_KEY)"),
+    `the DeepSeek row says the key comes from the environment (got ${JSON.stringify(envRow.text)})`,
+  );
+  assert(envRow.disabled === true, "Remove is disabled for a key that comes from the environment");
+
+  // The add form posts the key once; mock the endpoint so no real provider is called.
+  let keyPost = null;
+  await page.route("**/api/keys", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    keyPost = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "zai",
+        status: "works",
+        detail: "The provider accepted the key",
+        masked: "\u2026a1",
+      }),
+    });
+  });
+  await page.click("#addKeyBtn");
+  await page.check('input[name="keyProvider"][value="zai"]');
+  await page.fill("#newKey", "test-key-123456");
+  await page.click("#saveKeyBtn");
+  await page.waitForSelector("#addKeyForm", { state: "detached" });
+  assert(keyPost !== null, "the add-key request body was captured");
+  deepStrictEqual(keyPost, { provider: "zai", key: "test-key-123456" });
+  await page.unroute("**/api/keys");
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-keys.png") });
 
   // ── desktop: settings > this computer ──
   await page.click("#settings-computer");

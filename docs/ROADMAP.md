@@ -75,7 +75,8 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   - libkrun on Apple's Hypervisor.framework;
   - a launcher build for Apple silicon (arm64), plus an arm64 rootfs;
   - network isolation without pasta (pasta is Linux-only);
-  - code signing with the hypervisor entitlement (needs an Apple Developer account).
+  - code signing with the hypervisor entitlement: an ad-hoc signature (free) is enough to run it on
+    your own Mac; a notarized download for other people needs an Apple Developer account (US$99/year).
 - **Packages:** `.rpm` and `.deb` for system updates; a signed `.pkg` or Homebrew on macOS.
 - **Stall detection:** stop a run when the agent stops making progress, not only at
   `HIVE_SANDBOX_TIMEOUT_MIN`. Signal: no file in `work/` changed for N minutes (default 15,

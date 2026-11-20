@@ -1236,62 +1236,404 @@ function newRun(): void {
   if (runsEl) runsEl.replaceChildren(buildForm());
 }
 
-// ── settings ──
+// ── settings: API keys ──
 
-function buildKeysTable(): HTMLElement {
-  const table = el("table", { id: "settingsTable" });
-  table.append(
-    el(
-      "thead",
-      {},
-      el(
-        "tr",
-        {},
-        el("th", { scope: "col" }, "Provider"),
-        el("th", { scope: "col" }, "Default model"),
-        el("th", { scope: "col" }, "Key"),
-        el("th", { scope: "col" }, "Default"),
-      ),
-    ),
+type KeyTestStatus = "works" | "refused" | "testing" | "unchecked";
+
+interface KeysProvider {
+  id: string;
+  label: string;
+  hasKey: boolean;
+  source: "environment" | "saved" | "env-file" | null;
+  masked: string | null;
+  defaultModel: string | null;
+  isDefault: boolean;
+  envName: string;
+}
+
+interface KeysResponse {
+  file: string;
+  defaultProvider: string | null;
+  providers: KeysProvider[];
+}
+
+interface KeyRowStatus {
+  status: KeyTestStatus;
+  detail: string;
+}
+
+/** Test results for this page; the server keeps no test state of its own. */
+const keyStatuses = new Map<string, KeyRowStatus>();
+
+const KEY_STATUS_PILL: Record<Exclude<KeyTestStatus, "testing">, { label: string; cls: string }> = {
+  works: { label: "Works", cls: "pill-ok" },
+  refused: { label: "Refused", cls: "pill-danger" },
+  unchecked: { label: "Unchecked", cls: "pill-warn" },
+};
+
+function keyStatusElement(provider: KeysProvider): HTMLElement {
+  const status = keyStatuses.get(provider.id);
+  if (!status) return el("span", { class: "pill pill-muted" }, "Not tested");
+  if (status.status === "testing") return el("span", { class: "pill pill-muted" }, "Testing\u2026");
+  const pill = KEY_STATUS_PILL[status.status];
+  return el("span", { class: `pill ${pill.cls}`, title: status.detail }, pill.label);
+}
+
+function buildKeysPage(): HTMLElement {
+  const content = el("section", { class: "settings-content", "aria-labelledby": "settings-title" });
+  const addBtn = el("button", { id: "addKeyBtn", class: "btn btn-primary", type: "button" }, "Add key");
+  const head = el("div", { class: "settings-head" }, el("h1", { id: "settings-title" }, "API keys"), addBtn);
+  const lead = el(
+    "p",
+    { class: "settings-lead" },
+    "A run only gets the key of the provider it uses, passed into its VM for that run.",
   );
-  const tbody = el("tbody");
-  const defaultProvider = providers?.default.provider ?? null;
-  for (const entry of providers?.providers ?? []) {
-    const keyPill = entry.hasKey
-      ? el("span", { class: "pill pill-ok" }, "Key set")
-      : el("span", { class: "pill pill-muted" }, "No key");
-    const modelCell = entry.model
-      ? el("span", {}, entry.model)
-      : el("span", { class: "cell-muted" }, "none (set one per run)");
-    let defaultCell: HTMLElement;
-    if (entry.id === defaultProvider) {
-      defaultCell = el(
-        "div",
-        {},
-        el("span", { class: "pill pill-accent" }, "Default"),
-        el("div", { class: "cell-note" }, providers?.default.providerSource ?? ""),
-      );
-    } else {
-      defaultCell = el("span", { class: "cell-muted" }, "");
+  const errorSlot = el("div", { role: "alert" });
+  const formSlot = el("div");
+  const tableSlot = el("div");
+  const storageSlot = el("div");
+  content.append(head, lead, errorSlot, formSlot, tableSlot, storageSlot);
+
+  let data: KeysResponse | null = null;
+  let failed = false;
+  let showForm = false;
+  let chosen: string | null = null;
+  let pendingRemove: string | null = null;
+
+  const showError = (message: string) => errorSlot.replaceChildren(el("p", { class: "alert alert-danger" }, message));
+  const clearError = () => errorSlot.replaceChildren();
+
+  async function fetchData(): Promise<void> {
+    failed = false;
+    try {
+      const res = await api("/api/keys");
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      data = (await res.json()) as KeysResponse;
+    } catch {
+      data = null;
+      failed = true;
     }
-    tbody.append(
+  }
+
+  const refresh = async (): Promise<void> => {
+    // The New run form's provider list and defaults come from /api/providers too.
+    await Promise.all([fetchData(), loadProviders()]);
+    renderAll();
+  };
+
+  function renderStorage(): void {
+    const file = data?.file ?? "~/.config/agent-hive/env";
+    storageSlot.replaceChildren(
       el(
-        "tr",
-        {},
-        el("td", { class: "provider-name" }, entry.label),
-        el("td", {}, modelCell),
-        el("td", {}, keyPill),
-        el("td", {}, defaultCell),
+        "div",
+        { class: "card keys-storage" },
+        el("h2", {}, "Where keys are kept"),
+        el(
+          "p",
+          {},
+          "Saved keys live in ",
+          el("code", {}, file),
+          ", readable only by you. An exported variable such as ",
+          el("code", {}, "OPENROUTER_API_KEY"),
+          " wins over a saved key.",
+        ),
+        el(
+          "pre",
+          { class: "code-block" },
+          "hive keys list\nhive keys add deepseek\nhive keys test\nhive keys default openrouter\nhive keys remove openai",
+        ),
       ),
     );
   }
-  if (!providers || providers.providers.length === 0) {
-    tbody.append(
-      el("tr", {}, el("td", { colspan: "4", class: "cell-muted" }, providersFailed ? "Couldn't load providers" : "No providers")),
+
+  async function runTest(provider: KeysProvider): Promise<void> {
+    clearError();
+    keyStatuses.set(provider.id, { status: "testing", detail: "" });
+    renderTable();
+    try {
+      const res = await api(`/api/keys/${encodeURIComponent(provider.id)}/test`, { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+      const status =
+        body.status === "works" || body.status === "refused" || body.status === "unchecked" ? body.status : "unchecked";
+      keyStatuses.set(provider.id, { status, detail: typeof body.detail === "string" ? body.detail : "" });
+    } catch (err) {
+      keyStatuses.set(provider.id, { status: "unchecked", detail: err instanceof Error ? err.message : String(err) });
+    }
+    renderTable();
+  }
+
+  async function makeDefault(provider: KeysProvider): Promise<void> {
+    clearError();
+    try {
+      const res = await api("/api/keys/default", { method: "PUT", body: JSON.stringify({ provider: provider.id }) });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+      await refresh();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function removeKey(provider: KeysProvider): Promise<void> {
+    clearError();
+    try {
+      const res = await api(`/api/keys/${encodeURIComponent(provider.id)}`, { method: "DELETE" });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+      pendingRemove = null;
+      keyStatuses.delete(provider.id);
+      await refresh();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function saveKey(providerId: string, value: string, saveBtn: HTMLButtonElement): Promise<void> {
+    clearError();
+    saveBtn.disabled = true;
+    try {
+      const res = await api("/api/keys", { method: "POST", body: JSON.stringify({ provider: providerId, key: value }) });
+      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+      const status =
+        body.status === "works" || body.status === "refused" || body.status === "unchecked" ? body.status : "unchecked";
+      keyStatuses.set(providerId, { status, detail: typeof body.detail === "string" ? body.detail : "" });
+      showForm = false;
+      chosen = null;
+      await refresh();
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err));
+      saveBtn.disabled = false;
+    }
+  }
+
+  function renderForm(): void {
+    formSlot.replaceChildren();
+    if (!showForm || !data) return;
+    const candidates = data.providers.filter((p) => !p.hasKey);
+    if (candidates.length === 0) {
+      showForm = false;
+      return;
+    }
+    if (!chosen || !candidates.some((p) => p.id === chosen)) chosen = candidates[0].id;
+    let selected = candidates.find((p) => p.id === chosen)!;
+
+    const chips = el("div", { class: "key-chips", role: "radiogroup", "aria-label": "Provider" });
+    const labelFor = el("label", { for: "newKey" }, `${selected.label} API key`);
+    const keyInput = el("input", {
+      id: "newKey",
+      type: "password",
+      autocomplete: "off",
+      "aria-label": `${selected.label} API key`,
+    });
+    const saveBtn = el("button", { id: "saveKeyBtn", class: "btn btn-primary", type: "submit" }, "Test and save");
+    saveBtn.disabled = true;
+    const cancelBtn = el("button", { id: "cancelKeyBtn", class: "btn", type: "button" }, "Cancel");
+
+    for (const p of candidates) {
+      const input = el("input", { type: "radio", name: "keyProvider", value: p.id, "aria-label": p.label });
+      input.checked = p.id === selected.id;
+      const chip = el("label", { class: `key-chip${p.id === selected.id ? " is-selected" : ""}` }, input, p.label);
+      input.addEventListener("change", () => {
+        if (!input.checked) return;
+        selected = p;
+        chosen = p.id;
+        for (const node of Array.from(chips.querySelectorAll(".key-chip"))) {
+          node.classList.toggle("is-selected", node === chip);
+        }
+        labelFor.textContent = `${p.label} API key`;
+        keyInput.setAttribute("aria-label", `${p.label} API key`);
+      });
+      chips.append(chip);
+    }
+
+    keyInput.addEventListener("input", () => {
+      saveBtn.disabled = keyInput.value.length < 8;
+    });
+
+    const file = data.file;
+    const form = el(
+      "form",
+      { id: "addKeyForm", class: "card key-add-form", novalidate: "" },
+      el("h2", {}, "Add a key"),
+      chips,
+      el("div", { class: "field" }, labelFor, keyInput),
+      el(
+        "p",
+        { class: "key-form-hint" },
+        "Saved to ",
+        el("code", {}, file),
+        ", readable only by you. hive makes one free request to check the key first.",
+      ),
+      el("div", { class: "key-form-actions" }, cancelBtn, saveBtn),
+    );
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (saveBtn.disabled) return;
+      void saveKey(selected.id, keyInput.value, saveBtn);
+    });
+    cancelBtn.onclick = () => {
+      showForm = false;
+      chosen = null;
+      clearError();
+      renderForm();
+    };
+    formSlot.append(form);
+    keyInput.focus();
+  }
+
+  function providerRow(p: KeysProvider): HTMLElement {
+    const keyCell = el("td");
+    if (p.hasKey && p.masked) {
+      keyCell.append(el("span", { class: "key-masked mono" }, p.masked));
+      if (p.source === "environment") {
+        keyCell.append(el("div", { class: "cell-note" }, `From the environment (${p.envName})`));
+      }
+    } else {
+      keyCell.append(el("span", { class: "cell-muted" }, "No key"));
+    }
+    keyCell.append(
+      el(
+        "div",
+        { class: "cell-note" },
+        p.defaultModel ? `Default model: ${p.defaultModel}` : "No default model (set one per run)",
+      ),
+    );
+
+    const statusCell = el("td");
+    if (p.hasKey) statusCell.append(keyStatusElement(p));
+
+    let defaultCell: HTMLElement;
+    if (p.isDefault) {
+      defaultCell = el("td", {}, el("span", { class: "pill pill-accent" }, "Default"));
+    } else if (p.hasKey) {
+      const button = el(
+        "button",
+        { class: "text-btn", type: "button", "data-provider": p.id, "data-action": "default" },
+        "Make default",
+      );
+      button.onclick = () => void makeDefault(p);
+      defaultCell = el("td", {}, button);
+    } else {
+      defaultCell = el("td");
+    }
+
+    const actionsCell = el("td");
+    if (p.hasKey) {
+      const testBtn = el(
+        "button",
+        { class: "btn btn-small", type: "button", "data-provider": p.id, "data-action": "test" },
+        "Test",
+      );
+      testBtn.onclick = () => void runTest(p);
+      const removeBtn = el(
+        "button",
+        { class: "btn btn-small btn-danger", type: "button", "data-provider": p.id, "data-action": "remove" },
+        "Remove",
+      );
+      if (p.source === "environment") {
+        removeBtn.disabled = true;
+        removeBtn.title = "Set in the server's environment; change it there";
+      }
+      removeBtn.onclick = () => {
+        pendingRemove = p.id;
+        renderTable();
+      };
+      actionsCell.append(el("div", { class: "table-actions" }, testBtn, removeBtn));
+    }
+
+    return el(
+      "tr",
+      {},
+      el("td", { class: "provider-name" }, p.label),
+      keyCell,
+      statusCell,
+      defaultCell,
+      actionsCell,
     );
   }
-  table.append(tbody);
-  return el("div", { class: "table-wrap" }, table);
+
+  function confirmRow(p: KeysProvider): HTMLElement {
+    const keep = el("button", { class: "btn btn-small", type: "button" }, "Keep it");
+    keep.onclick = () => {
+      pendingRemove = null;
+      renderTable();
+    };
+    const remove = el(
+      "button",
+      { class: "btn btn-small btn-danger", type: "button", "data-action": "confirm-remove" },
+      "Remove key",
+    );
+    remove.onclick = () => void removeKey(p);
+    return el(
+      "tr",
+      { class: "key-confirm-row" },
+      el(
+        "td",
+        { colspan: "5" },
+        el(
+          "div",
+          { class: "key-confirm" },
+          el(
+            "p",
+            {},
+            `Remove the ${p.label} key? Runs that use ${p.label} will stop working until you add one again.`,
+          ),
+          el("div", { class: "key-form-actions" }, keep, remove),
+        ),
+      ),
+    );
+  }
+
+  function renderTable(): void {
+    tableSlot.replaceChildren();
+    if (!data) {
+      tableSlot.append(el("p", { class: "cell-muted" }, failed ? "Couldn't load API keys." : "Loading keys\u2026"));
+      return;
+    }
+    const table = el("table", { id: "keysTable" });
+    table.append(
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          el("th", { scope: "col" }, "Provider"),
+          el("th", { scope: "col" }, "Key and default model"),
+          el("th", { scope: "col" }, "Status"),
+          el("th", { scope: "col" }, "Default"),
+          el("th", { scope: "col" }, "Actions"),
+        ),
+      ),
+    );
+    const tbody = el("tbody");
+    for (const p of data.providers) {
+      tbody.append(providerRow(p));
+      if (pendingRemove === p.id) tbody.append(confirmRow(p));
+    }
+    table.append(tbody);
+    tableSlot.append(el("div", { class: "table-wrap" }, table));
+  }
+
+  function renderAll(): void {
+    addBtn.hidden = data !== null && data.providers.every((p) => p.hasKey);
+    renderForm();
+    renderTable();
+    renderStorage();
+  }
+
+  addBtn.onclick = () => {
+    showForm = true;
+    pendingRemove = null;
+    clearError();
+    renderForm();
+  };
+
+  renderAll();
+  void refresh();
+  return content;
 }
 
 function buildSettings(page: "keys" | "computer"): HTMLElement {
@@ -1306,36 +1648,7 @@ function buildSettings(page: "keys" | "computer"): HTMLElement {
   };
   const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn, computerBtn);
   if (page === "computer") return el("div", { class: "settings-layout" }, nav, buildComputerPage());
-
-  const content = el(
-    "section",
-    { class: "settings-content", "aria-labelledby": "settings-title" },
-    el("h1", { id: "settings-title" }, "API keys"),
-    el("p", { class: "settings-lead" }, "A run only gets the key of the provider it uses, passed into its VM for that run."),
-    buildKeysTable(),
-    el(
-      "div",
-      { class: "card-muted" },
-      el("h2", {}, "Changing keys"),
-      el(
-        "p",
-        {},
-        "Keys are read from environment variables such as ",
-        el("code", {}, "OPENROUTER_API_KEY"),
-        ", or from ",
-        el("code", {}, "~/.config/agent-hive/env"),
-        " for the CLI and ",
-        el("code", {}, ".env"),
-        " for the server. Set ",
-        el("code", {}, "DEFAULT_PROVIDER"),
-        " and ",
-        el("code", {}, "DEFAULT_MODEL"),
-        " there to change the defaults. Adding, testing and switching keys from this page is coming.",
-      ),
-    ),
-  );
-
-  return el("div", { class: "settings-layout" }, nav, content);
+  return el("div", { class: "settings-layout" }, nav, buildKeysPage());
 }
 
 interface SystemInfo {

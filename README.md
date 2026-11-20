@@ -89,6 +89,7 @@ hive push --pr --base main
 | `hive push [run]` | Put the run's commits on a new branch and push it with your own git credentials. `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for the PR's base. Never forced. |
 | `hive list` | List runs, newest first. |
 | `hive clean <run>` | Delete a run. `--all` deletes every finished run. |
+| `hive keys [list]` | List each provider's key masked, where it comes from (`saved`, `environment` or `.env`) and its default model. `add <provider>` reads the key from stdin or prompts with echo off and tests it first (`--no-test` skips the test); `test [provider]` checks one key or every saved one; `remove <provider>` deletes a saved key; `default <provider>` makes a provider the default. |
 | `hive setup` | Download the VM filesystem (rootfs) the installed release needs. |
 | `hive doctor` | Show what's available: `/dev/kvm`, libkrun, pasta, the launcher and the rootfs. |
 | `hive update [--check \| --rollback]` | Verify and install the latest release (`--check` only reports), or go back to the previous version (`--rollback`). |
@@ -105,7 +106,10 @@ helper or `gh` login. None of these ever enter the VM. Commits use your git `use
 
 ### Settings
 
-All optional. Put them in `~/.config/agent-hive/env` or export them.
+All optional. Put them in `~/.config/agent-hive/env` or export them. `hive keys` and the web UI
+save provider keys and `DEFAULT_PROVIDER` in that file, readable only by you (mode 600). The
+precedence is: an exported environment variable beats the keys file, and the keys file beats the
+server's `.env`.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -224,8 +228,12 @@ commits, the host creates that repository under the `gh` account (private by def
 the agent's work to its `main` branch. No commits, no repository.
 
 **Settings**
-- **API keys:** each provider's key status, its default model, and which provider is the default
-  and why. Read-only for now.
+- **API keys:** each provider's key masked, where it comes from (`saved`, `environment` or the
+  server's `.env`), the default model and the default provider. **Add key** tests the key before
+  saving it; each saved key can be **Test**ed, made the **Default** or **Remove**d (with an inline
+  confirmation). Keys are written to the private keys file, which the CLI also reads; only
+  providers with a key can be used for a run. The same thing is on the command line as
+  `hive keys`.
 - **This computer:** how runs are isolated (microVM via libkrun, podman with krun or gVisor, or a
   plain container) with a short explanation, the checks behind it, the GitHub connection (the
   `gh` login and how runs clone and push), and the limits (VM size, time limit, runs at once).
@@ -254,6 +262,11 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | GET | `/api/system` | Sandbox setup (microVM via libkrun, podman with krun or gVisor, or plain containers), its checks, the `gh` login, VM size, capacity and git transport |
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
 | GET | `/api/models?provider=` | Models to offer for a provider (OpenRouter's live list, a fixed list for the others) |
+| GET | `/api/keys` | Each provider's key status (masked, and whether it comes from the environment, the keys file or `.env`), default model, the keys file path and the default provider. Never a full key |
+| POST | `/api/keys` | Add and test a key (`provider`, `key`); a refused key is not saved, a key set in the server's environment is refused |
+| POST | `/api/keys/:provider/test` | Test a provider's current key |
+| DELETE | `/api/keys/:provider` | Remove a saved key (and the default provider if it pointed at it) |
+| PUT | `/api/keys/default` | Make a provider the default (`provider`) |
 | GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
 | GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first (via `gh`) |
 | POST | `/api/github/fork` | Fork into the `gh` account; returns `{repo}` |
@@ -273,6 +286,7 @@ In addition to the provider and sandbox settings above:
 | `HIVE_IMAGE` | `localhost/agent-hive-sandbox:latest` | Sandbox image |
 | `WORKSPACE` | `/tmp/hive-workspace` | Task directories |
 | `HIVE_GIT_PROTOCOL` | `https` | How the server clones and pushes `owner/name` repos: `https` uses the host's git credentials (e.g. `gh auth login`), `ssh` uses the host's SSH keys (per-repo deploy keys, handy across several VPSes) |
+| `HIVE_KEYS_FILE` | `~/.config/agent-hive/env` | The private file (mode 600) where the CLI and the server keep provider keys and `DEFAULT_PROVIDER` |
 
 ## Development
 

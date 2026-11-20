@@ -12,6 +12,7 @@ import sessionRoutes from "./routes/sessions.js";
 import githubRoutes from "./routes/github.js";
 import providerRoutes from "./routes/providers.js";
 import systemRoutes from "./routes/system.js";
+import keyRoutes from "./routes/keys.js";
 
 let tokenCount = 0;
 try {
@@ -64,6 +65,7 @@ await app.register(async (api) => {
   await api.register(githubRoutes);
   await api.register(providerRoutes);
   await api.register(systemRoutes);
+  await api.register(keyRoutes);
 });
 
 for (const problem of checkSandbox()) app.log.error(problem);

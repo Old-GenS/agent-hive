@@ -20,6 +20,11 @@ hive apply [run] [--branch <name>]
 hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
 hive list
 hive clean <run> | --all
+hive keys [list]
+hive keys add <provider> [--no-test]
+hive keys test [provider]
+hive keys remove <provider>
+hive keys default <provider>
 hive setup
 hive doctor
 hive update [--check | --rollback]
@@ -264,6 +269,200 @@ async function cmdClean(args: string[]): Promise<number> {
   cleanRun(dir);
   process.stdout.write(`hive: cleaned ${basename(dir)}\n`);
   return 0;
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8").trim();
+}
+
+/** Prompt for a secret with echo off; used when `hive keys add` runs on a terminal. */
+function promptHidden(question: string): Promise<string> {
+  process.stdout.write(question);
+  const stdin = process.stdin;
+  const wasRaw = stdin.isRaw;
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  return new Promise<string>((resolve, reject) => {
+    let value = "";
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(wasRaw ?? false);
+      stdin.pause();
+    };
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n") {
+          process.stdout.write("\n");
+          cleanup();
+          resolve(value);
+          return;
+        }
+        if (ch === "\u0003") {
+          process.stdout.write("\n");
+          cleanup();
+          reject(new Error("aborted"));
+          return;
+        }
+        if (ch === "\u007f" || ch === "\b") {
+          value = value.slice(0, -1);
+          continue;
+        }
+        if (ch >= " ") value += ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+async function cmdKeysList(): Promise<number> {
+  const { PROVIDERS, effectiveModel, providerKey, resolveProvider, shellEnv } = await import("./config.js");
+  const { keySource, maskKey, readKeysFile } = await import("./keys.js");
+  const fileValues = readKeysFile();
+  const resolved = resolveProvider();
+  const defaultProvider =
+    resolved !== undefined && PROVIDERS[resolved] && providerKey(resolved) ? resolved : undefined;
+  const sourceText: Record<string, string> = { environment: "environment", saved: "saved", "env-file": ".env" };
+  const rows = Object.keys(PROVIDERS).map((id) => {
+    const provider = PROVIDERS[id];
+    const found = keySource(provider.hostEnv, shellEnv, process.env, fileValues);
+    return {
+      label: provider.label,
+      key: found ? maskKey(found.value) : "no key",
+      source: found ? sourceText[found.source] : "-",
+      model: effectiveModel(id) ?? "none",
+      isDefault: id === defaultProvider ? " (default)" : "",
+    };
+  });
+  const labelWidth = Math.max(...rows.map((r) => r.label.length));
+  const keyWidth = Math.max(...rows.map((r) => r.key.length));
+  const sourceWidth = Math.max(...rows.map((r) => r.source.length));
+  for (const row of rows) {
+    process.stdout.write(
+      `${row.label.padEnd(labelWidth)}  ${row.key.padEnd(keyWidth)}  ${row.source.padEnd(sourceWidth)}  ${row.model}${row.isDefault}\n`,
+    );
+  }
+  return 0;
+}
+
+async function cmdKeysAdd(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: { "no-test": { type: "boolean" } },
+  });
+  const provider = positionals[0];
+  if (!provider) throw new Error("keys add needs a provider");
+  const { PROVIDERS } = await import("./config.js");
+  const { keysFilePath, setKeysFileValue, testKey } = await import("./keys.js");
+  const entry = PROVIDERS[provider];
+  if (!entry) throw new Error(`unknown provider "${provider}"; supported: ${Object.keys(PROVIDERS).join(", ")}`);
+  const key = process.stdin.isTTY ? await promptHidden(`Paste the ${entry.label} API key: `) : await readStdin();
+  if (!key) throw new Error("no key given");
+  if (!values["no-test"]) {
+    const result = await testKey(provider, key);
+    if (result.status === "refused") {
+      console.error(`hive: ${result.detail}; nothing was saved`);
+      return 1;
+    }
+    if (result.status === "unchecked") console.error(`hive: warning: ${result.detail}; saving it anyway`);
+    else process.stdout.write(`${result.detail}.\n`);
+  }
+  setKeysFileValue(entry.hostEnv[0], key);
+  process.stdout.write(`Saved the ${entry.label} key to ${keysFilePath()}\n`);
+  return 0;
+}
+
+async function cmdKeysTest(args: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args, allowPositionals: true });
+  const { PROVIDERS, shellEnv } = await import("./config.js");
+  const { keySource, readKeysFile, testKey } = await import("./keys.js");
+  const fileValues = readKeysFile();
+  const testOne = async (provider: string): Promise<boolean> => {
+    const entry = PROVIDERS[provider];
+    const found = keySource(entry.hostEnv, shellEnv, process.env, fileValues);
+    if (!found) {
+      console.error(`hive: no key for ${entry.label}`);
+      return false;
+    }
+    const result = await testKey(provider, found.value);
+    process.stdout.write(`${entry.label}: ${result.status} - ${result.detail}\n`);
+    return result.status === "refused";
+  };
+  const provider = positionals[0];
+  if (provider !== undefined) {
+    if (!PROVIDERS[provider]) throw new Error(`unknown provider "${provider}"; supported: ${Object.keys(PROVIDERS).join(", ")}`);
+    return (await testOne(provider)) ? 1 : 0;
+  }
+  let refused = false;
+  for (const id of Object.keys(PROVIDERS)) {
+    const found = keySource(PROVIDERS[id].hostEnv, shellEnv, process.env, fileValues);
+    if (!found) continue;
+    if (await testOne(id)) refused = true;
+  }
+  return refused ? 1 : 0;
+}
+
+async function cmdKeysRemove(args: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args, allowPositionals: true });
+  const provider = positionals[0];
+  if (!provider) throw new Error("keys remove needs a provider");
+  const { PROVIDERS, shellEnv } = await import("./config.js");
+  const { keySource, keysFilePath, readKeysFile, setKeysFileValue } = await import("./keys.js");
+  const entry = PROVIDERS[provider];
+  if (!entry) throw new Error(`unknown provider "${provider}"; supported: ${Object.keys(PROVIDERS).join(", ")}`);
+  const fileValues = readKeysFile();
+  const found = keySource(entry.hostEnv, shellEnv, process.env, fileValues);
+  if (found?.source === "environment") {
+    console.error(`hive: ${found.name} is set in the environment; unset it there instead`);
+    return 1;
+  }
+  if (!entry.hostEnv.some((name) => fileValues[name])) {
+    console.error(`hive: no saved key for ${entry.label}`);
+    return 1;
+  }
+  for (const name of entry.hostEnv) setKeysFileValue(name, null);
+  if (fileValues.DEFAULT_PROVIDER === provider) setKeysFileValue("DEFAULT_PROVIDER", null);
+  process.stdout.write(`Removed the ${entry.label} key from ${keysFilePath()}\n`);
+  return 0;
+}
+
+async function cmdKeysDefault(args: string[]): Promise<number> {
+  const { positionals } = parseArgs({ args, allowPositionals: true });
+  const provider = positionals[0];
+  if (!provider) throw new Error("keys default needs a provider");
+  const { PROVIDERS, providerKey } = await import("./config.js");
+  const { keysFilePath, setKeysFileValue } = await import("./keys.js");
+  const entry = PROVIDERS[provider];
+  if (!entry) throw new Error(`unknown provider "${provider}"; supported: ${Object.keys(PROVIDERS).join(", ")}`);
+  if (!providerKey(provider)) {
+    console.error(`hive: ${entry.label} has no key; add one first`);
+    return 1;
+  }
+  setKeysFileValue("DEFAULT_PROVIDER", provider);
+  process.stdout.write(`${entry.label} is now the default provider (${keysFilePath()})\n`);
+  return 0;
+}
+
+async function cmdKeys(args: string[]): Promise<number> {
+  const [sub, ...rest] = args;
+  switch (sub) {
+    case undefined:
+    case "list":
+      return cmdKeysList();
+    case "add":
+      return cmdKeysAdd(rest);
+    case "test":
+      return cmdKeysTest(rest);
+    case "remove":
+      return cmdKeysRemove(rest);
+    case "default":
+      return cmdKeysDefault(rest);
+    default:
+      throw new Error(`unknown keys command "${sub}"; try hive keys list`);
+  }
 }
 
 function kvmState(): "ok" | "missing" | "no access" {
@@ -516,6 +715,9 @@ async function main(): Promise<void> {
       return;
     case "clean":
       process.exitCode = await cmdClean(rest);
+      return;
+    case "keys":
+      process.exitCode = await cmdKeys(rest);
       return;
     case "setup":
       process.exitCode = await cmdSetup(rest);

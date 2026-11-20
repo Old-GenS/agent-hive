@@ -18,6 +18,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 |------|------|
 | `src/index.ts` | Fastify setup: public routes (landing, `/ui/`, `/health`) and the authenticated API scope |
 | `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
+| `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
 | `src/tasks.ts` | Task lifecycle: queue → clone (or a new empty repo) → agent run → review cycles → export → push (or create the GitHub repo); change summary; pull requests on request; idle cleanup |
 | `src/sandbox.ts` | `podman run` / `pasta` + `hive-vm` wrapper, runtime detection (libkrun / krun / runsc / plain container), JSONL parsing; under libkrun the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
@@ -30,6 +31,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/routes/github.ts` | `gh`-backed repo list, branches, search, fork for the UI |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
 | `src/routes/system.ts` | `/api/system`: sandbox setup and checks for Settings › This computer |
+| `src/routes/keys.ts` | `/api/keys`: list (masked), add (tested first), test, remove and make-default provider keys for Settings › API keys |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
@@ -66,6 +68,10 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 9. **Nothing reaches GitHub on the agent's say-so.** Branch pushes and new repos happen in the host
    after the run; pull requests and issues only when the user asks (`POST /pr/:id`, `/issue/:id`). `gh` and `git` run with
    argument arrays, never a shell.
+10. **Provider keys are written only to the keys file** (`~/.config/agent-hive/env`, mode 600, atomic
+    rename). They are never logged or returned whole (the UI and API only see a masked form), and a
+    value is validated (`^[\x21-\x7E]{1,400}$`, no quotes, `#`, `\` or backticks) before it is
+    written so it cannot inject another `NAME=value` line.
 
 ## GitHub access (server)
 
@@ -115,7 +121,8 @@ Commits made in the sandbox use `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from `.en
 ## Status
 
 **Done, CLI:** `hive run` on a local repo or `--repo`, with live progress. Also `log`, `diff`,
-`apply`, `push` (branch, never forced), `push --pr` (GitHub PR via `gh`), `list` and `clean`.
+`apply`, `push` (branch, never forced), `push --pr` (GitHub PR via `gh`), `list`, `clean` and
+`keys` (list, add, test, remove, default).
 Settings come from env vars or `~/.config/agent-hive/env`, and nothing is tied to an account.
 Tested on Linux with KVM: real runs in libkrun VMs, a push to a branch, and a PR opened on
 GitHub.
@@ -128,11 +135,12 @@ per-task token/cost totals.
 
 **Done, web UI:** the new design (light and dark): Runs (new-run form with repo and branch lists,
 per-provider model lists, New project; the bee indicator, a timeline with step check-offs, the
-result with commits, files, a diff link and Open pull request) and Settings (API keys, read-only;
-This computer). Checked by `scripts/ui-smoke.mjs`.
+result with commits, files, a diff link and Open pull request) and Settings (API keys: Add key,
+Test, Make default and Remove, with keys kept in the private file; This computer). Checked by
+`scripts/ui-smoke.mjs`.
 
 **Not built yet:**
-- web UI: key management and the first-run onboarding from `docs/GUI.md` (needs `hive keys`)
+- web UI: the first-run onboarding from `docs/GUI.md`
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
 - `hive serve` (the server on top of the CLI core)
