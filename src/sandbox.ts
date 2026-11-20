@@ -130,7 +130,7 @@ export function buildLibkrunCommand(
     "--dns-forward", "169.254.1.53", "--dns-host", p.hostDns,
     "--", "/usr/bin/env", p.vmBin,
     "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
-    "--watch-pid", String(process.pid), "--timeout", String(p.timeoutSec),
+    "--timeout", String(p.timeoutSec),
   ];
   for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
   for (const name of Object.keys(opts.env)) args.push("--env", name);

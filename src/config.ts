@@ -86,11 +86,11 @@ export const config = {
   defaultThinking: process.env.DEFAULT_THINKING || "low",
   systemPrompt:
     process.env.HIVE_SYSTEM_PROMPT ||
-    "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so.",
+    "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so. Commit each finished piece of work as soon as it is done, before running long checks, installing tools or starting the next piece: the run has a time limit, and only committed work is kept. If a check needs a tool you can't get working within a few minutes, skip it, say so, and finish.",
   runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
   sandbox: {
     runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun
-    memory: process.env.HIVE_SANDBOX_MEMORY || "1g",
+    memory: process.env.HIVE_SANDBOX_MEMORY || "1536m",
     cpus: process.env.HIVE_SANDBOX_CPUS || "1",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),

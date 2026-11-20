@@ -123,7 +123,7 @@ server's `.env`.
 | `HIVE_BRANCH_PREFIX` | `hive/` | Prefix for the branch `hive push` creates |
 | `HIVE_PUSH_REMOTE` | `origin` | Remote `hive push` uses for local runs |
 | `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where runs are kept |
-| `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `1g` / `1` | VM size |
+| `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `1536m` / `1` | VM size (the VM's writable space lives in RAM, up to half of this) |
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | The run is stopped after this many minutes |
 | `HIVE_NPM_CACHE` | `~/.cache/agent-hive/npm` | npm download cache shared between runs; empty disables it |
 | `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
