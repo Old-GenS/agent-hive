@@ -8,7 +8,6 @@ import { config } from "../config.js";
 import { githubLogin } from "../git.js";
 import { currentVersion } from "../release.js";
 import { systemInfo } from "../sandbox.js";
-import { capacity } from "../tasks.js";
 import { usageNow } from "../usage.js";
 
 /** Whether the server's gh login works, and as whom. */
@@ -29,7 +28,7 @@ export default async function systemRoutes(app: FastifyInstance) {
       cpus: config.sandbox.cpus,
       timeoutMin: config.sandbox.timeoutMin,
     },
-    capacity: capacity(),
+    maxConcurrent: config.maxConcurrent,
     gitProtocol: config.git.protocol,
     npmCache: Boolean(config.sandbox.npmCache),
     version: currentVersion() ?? "dev (from source)",
@@ -38,6 +37,5 @@ export default async function systemRoutes(app: FastifyInstance) {
   // The "Right now" tiles on the same page; polled every few seconds while it is open.
   app.get("/api/system/usage", async () => ({
     ...(await usageNow()),
-    runs: capacity(),
   }));
 }

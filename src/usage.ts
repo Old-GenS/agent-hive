@@ -105,7 +105,7 @@ function thermalZoneTemperature(sysRoot: string): { celsius: number; sensor: str
 /** A snapshot of this computer right now. */
 export async function usageNow(o: { sysRoot?: string; diskPath?: string } = {}): Promise<Usage> {
   const sysRoot = o.sysRoot ?? "/";
-  const diskPath = o.diskPath ?? config.workspace;
+  const diskPath = o.diskPath ?? config.runsDir;
   return {
     cpu: { percent: await cpuPercent(), cores: cpus().length, load1: loadavg()[0] },
     memory: memoryInfo(sysRoot),

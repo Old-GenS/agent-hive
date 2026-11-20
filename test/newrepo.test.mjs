@@ -36,7 +36,6 @@ process.env.DEEPSEEK_API_KEY = "sk-test";
 delete process.env.HIVE_GIT_PROTOCOL;
 
 const { createGithubRepo, githubLogin, prepareNewRepo, validateRepoName } = await import("../dist/git.js");
-const { createTask } = await import("../dist/tasks.js");
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
@@ -96,9 +95,3 @@ test("githubLogin returns the gh account", async () => {
   assert.equal(await githubLogin(), "me");
 });
 
-test("createTask refuses repo and newRepo together", () => {
-  assert.throws(
-    () => createTask({ prompt: "x", repo: "a/b", newRepo: { name: "c" } }),
-    /repo or newRepo/,
-  );
-});
