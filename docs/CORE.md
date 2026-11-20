@@ -54,6 +54,16 @@ or `gh` directly.
 
 - **Queue:** the core runs at most `MAX_CONCURRENT_SESSIONS` agent steps at once; the rest wait.
 
+- **Watchdogs:** a VM never outlives its owner or its time limit, and a stuck run doesn't burn
+  tokens:
+  - the launcher (`vm/hive-vm`) gets the owner's process id and the time limit; it stops the VM if
+    the owner disappears or time runs out, even when the CLI or server crashed (done before stage 1);
+  - **stall watchdog:** the core stops a run when no file in `work/` changed and no event arrived for
+    `HIVE_STALL_MIN` minutes (default 15; 0 turns it off), and records "stalled: nothing changed for
+    N minutes";
+  - **startup cleanup:** when the core starts, any `hive-vm` process belonging to a run whose
+    recorded owner is gone is stopped, and that run is marked `failed` ("interrupted").
+
 - **Events:** the core turns agent events into hive's own small set and appends them to the run's
   `events.jsonl`: `status`, `message` (text, streaming deltas while live), `tool` (name, detail),
   `tool_failed`, `usage`, `done` (result, changes, links, error). The UI, the CLI's renderer and any
