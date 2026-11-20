@@ -82,6 +82,7 @@ typedef struct {
   unsigned log_level;
   unsigned watch_pid; /* 0 = not given: don't watch an owner process */
   unsigned timeout;   /* 0 = not given: no time limit */
+  char *stderr_file;  /* NULL = keep the launcher's stderr on the inherited fd 2 */
   bool dry_run;
 } Options;
 
@@ -128,6 +129,23 @@ static void fail_runtime(const char *fmt, ...) {
 static const char *take_value(int *i, int argc, char **argv, const char *opt) {
   if (*i + 1 >= argc) fail_usage("option %s requires a value", opt);
   return argv[++(*i)];
+}
+
+/*
+ * Send the launcher's own stderr (and libkrun's log lines) to the file hive gives us, so a failed
+ * boot's message reaches the run's error instead of the pasta process's stderr, which hive never
+ * sees. Opened before fork(), so both processes inherit it; O_NOFOLLOW because the path is in the
+ * run folder, which a previous agent may have filled with symlinks.
+ */
+static void redirect_stderr(const char *path) {
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) fail_runtime("cannot open --stderr-file \"%s\": %s", path, strerror(errno));
+  if (dup2(fd, STDERR_FILENO) < 0) {
+    int err = errno;
+    close(fd);
+    fail_runtime("cannot redirect stderr to \"%s\": %s", path, strerror(err));
+  }
+  close(fd);
 }
 
 static bool valid_env_name(const char *name) {
@@ -268,6 +286,12 @@ static void print_dry_run(const Options *o, char **command) {
   fputs(",\"timeout\":", stdout);
   if (o->timeout) {
     printf("%u", o->timeout);
+  } else {
+    fputs("null", stdout);
+  }
+  fputs(",\"stderr_file\":", stdout);
+  if (o->stderr_file) {
+    json_string(o->stderr_file);
   } else {
     fputs("null", stdout);
   }
@@ -580,6 +604,11 @@ int main(int argc, char **argv) {
       o.watch_pid = parse_uint("--watch-pid", take_value(&i, argc, argv, arg), 1, 4194304);
     } else if (strcmp(arg, "--timeout") == 0) {
       o.timeout = parse_uint("--timeout", take_value(&i, argc, argv, arg), 1, 86400);
+    } else if (strcmp(arg, "--stderr-file") == 0) {
+      const char *val = take_value(&i, argc, argv, arg);
+      if (val[0] != '/') fail_usage("--stderr-file must be an absolute path (got \"%s\")", val);
+      free(o.stderr_file);
+      o.stderr_file = xstrdup(val);
     } else {
       fail_usage("unknown argument: \"%s\"", arg);
     }
@@ -596,6 +625,7 @@ int main(int argc, char **argv) {
   }
 
   /* Normal run: every step below is fatal on failure. */
+  if (o.stderr_file) redirect_stderr(o.stderr_file);
   if (!kvm_usable()) fail_runtime("/dev/kvm is not usable");
 
   char *ctl = make_ctl_dir();

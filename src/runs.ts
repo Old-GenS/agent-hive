@@ -2,9 +2,11 @@
  * CLI runs. A run owns a directory:
  *
  *   <runsDir>/<repo>-<timestamp>/work      the agent's copy, mounted at /work
- *   <runsDir>/<repo>-<timestamp>/io        prompt.md, system.md, events.jsonl, stderr.log (/io)
- *   <runsDir>/<repo>-<timestamp>/session   pi's session dir (/session)
+ *   <runsDir>/<repo>-<timestamp>/io        prompt.md, system.md, session/ (pi), events.jsonl,
+ *                                          stderr.log, mounted at /io
  *   <runsDir>/<repo>-<timestamp>/out       patches exported by the sandbox (/out)
+ *
+ * The launcher's own stderr goes to io.launcher.log next to the io folder (never inside it).
  *
  * The VM writes its events to io/events.jsonl, never to stdout; the host follows that file.
  * The host never runs git inside work/ after prepareLocal returns.
@@ -142,10 +144,23 @@ function makeRunDir(repo: string): string {
   for (let n = 2; existsSync(join(config.runsDir, name)); n++) name = `${base}-${n}`;
   const dir = join(config.runsDir, name);
   mkdirSync(join(dir, "work"), { recursive: true });
-  mkdirSync(join(dir, "io"), { recursive: true });
-  mkdirSync(join(dir, "session"), { recursive: true });
+  mkdirSync(join(dir, "io", "session"), { recursive: true });
   mkdirSync(join(dir, "out"), { recursive: true });
   return dir;
+}
+
+/**
+ * The folders an agent step's VM shares: the run's work/ copy and, when configured, the shared VM
+ * cache (~/.cache). The /io share is added by runSandbox; a VM is limited to MAX_SHARES folders
+ * (libkrun's interrupt slots), which is why pi's session now lives inside /io.
+ */
+export function stepMounts(dir: string): SandboxOptions["mounts"] {
+  const mounts: SandboxOptions["mounts"] = [{ host: join(dir, "work"), container: "/work" }];
+  if (config.sandbox.vmCache) {
+    mkdirSync(config.sandbox.vmCache, { recursive: true });
+    mounts.push({ host: config.sandbox.vmCache, container: "/root/.cache", shared: true });
+  }
+  return mounts;
 }
 
 /** Newest first. Dirs without a readable meta.json are skipped. */
@@ -730,10 +745,14 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
 
   writeFileSync(join(dir, "io", "prompt.md"), o.prompt);
 
-  const mounts: SandboxOptions["mounts"] = [
-    { host: join(dir, "work"), container: "/work" },
-    { host: join(dir, "session"), container: "/session" },
-  ];
+  // pi's session lives on the io share now (a VM share costs an interrupt slot). Runs made before
+  // this change keep their history in <run>/session: move it over once. If both exist, io wins.
+  const oldSession = join(dir, "session");
+  const sessionDir = join(dir, "io", "session");
+  if (existsSync(oldSession) && !existsSync(sessionDir)) renameSync(oldSession, sessionDir);
+  mkdirSync(sessionDir, { recursive: true });
+
+  const mounts = stepMounts(dir);
   // An OpenRouter run's models.json and settings.json live in <run>/agent. pi writes lock and
   // state files into its config folder, so each step gets a fresh writable copy in its io folder
   // (/io/pi-agent): whatever pi changes there is thrown away before the next step. It rides on the
@@ -746,19 +765,8 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
     rmSync(agentVm, { recursive: true, force: true });
     cpSync(agentDir, agentVm, { recursive: true });
   }
-  // The npm cache is shared with the server's sandboxes (and survives them); export runs skip it.
-  if (config.sandbox.npmCache) {
-    mkdirSync(config.sandbox.npmCache, { recursive: true });
-    mounts.push({ host: config.sandbox.npmCache, container: "/root/.npm", shared: true });
-  }
-  // The shared ~/.cache (Playwright browsers, pip, corepack...) survives runs; export skips it.
-  if (config.sandbox.vmCache) {
-    mkdirSync(config.sandbox.vmCache, { recursive: true });
-    mounts.push({ host: config.sandbox.vmCache, container: "/root/.cache", shared: true });
-  }
-
   const sessionArgs =
-    o.session === "none" ? ["--no-session"] : o.session === "continue" ? ["--session-dir", "/session", "--continue"] : ["--session-dir", "/session"];
+    o.session === "none" ? ["--no-session"] : o.session === "continue" ? ["--session-dir", "/io/session", "--continue"] : ["--session-dir", "/io/session"];
   const command = [
     "hive-agent",
     "-p",
@@ -774,6 +782,8 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   const key = providerKey(meta.provider)!;
   const env: Record<string, string> = { [PROVIDERS[meta.provider].sandboxEnv]: key, ...gitIdentity() };
   if (useAgentDir) env.PI_CODING_AGENT_DIR = "/io/pi-agent";
+  // npm downloads live in the shared ~/.cache, next to the VM cache mount.
+  if (config.sandbox.vmCache) env.NPM_CONFIG_CACHE = "/root/.cache/npm";
   const handle = runSandbox({
     name: "hive-" + basename(dir),
     mounts,

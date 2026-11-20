@@ -123,10 +123,7 @@ export const config = {
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
     rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
     libkrun: process.env.HIVE_LIBKRUN || "libkrun.so.1",
-    // Shared npm cache for the agent's downloads; exempt from the per-task sandbox isolation.
-    // HIVE_NPM_CACHE="" disables it.
-    npmCache: process.env.HIVE_NPM_CACHE ?? join(cacheHome, "agent-hive/npm"),
-    // Shared ~/.cache for the agent (Playwright browsers, pip, corepack...), kept between runs.
+    // Shared ~/.cache for the agent (Playwright browsers, npm, pip, corepack...), kept between runs.
     // HIVE_VM_CACHE="" disables it.
     vmCache: process.env.HIVE_VM_CACHE ?? join(cacheHome, "agent-hive/vm-cache"),
   },

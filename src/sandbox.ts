@@ -120,10 +120,26 @@ export interface SandboxHandle {
 
 const MAX_KEPT_OUTPUT = 64 * 1024;
 
+/**
+ * The most folders one VM can share: libkrun runs out of interrupt slots (`IrqsExhausted`) above
+ * this, and the VM then never boots. `runSandbox` adds the /io share itself, so callers may pass
+ * at most MAX_SHARES - 1 mounts.
+ */
+export const MAX_SHARES = 5;
+
 /** pasta + hive-vm argv; env values travel via the child's env, never here. */
 export function buildLibkrunCommand(
   opts: SandboxOptions,
-  p: { vmBin: string; rootfs: string; cpus: number; memoryMiB: number; hostDns: string; timeoutSec: number },
+  p: {
+    vmBin: string;
+    rootfs: string;
+    cpus: number;
+    memoryMiB: number;
+    hostDns: string;
+    timeoutSec: number;
+    /** where the launcher sends its own stderr, including libkrun's log lines */
+    stderrFile: string;
+  },
 ): { file: string; args: string[] } {
   const args = [
     "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
@@ -131,6 +147,7 @@ export function buildLibkrunCommand(
     "--", "/usr/bin/env", p.vmBin,
     "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
     "--timeout", String(p.timeoutSec),
+    "--stderr-file", p.stderrFile,
   ];
   for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
   for (const name of Object.keys(opts.env)) args.push("--env", name);
@@ -147,6 +164,9 @@ function spawnLibkrun(opts: SandboxOptions) {
     memoryMiB: parseMemoryMiB(sandbox.memory),
     hostDns: hostNameserver(resolvConf()),
     timeoutSec: sandbox.timeoutMin * 60,
+    // A sibling of the io folder, never inside it: the VM can write io/, so it must not be able to
+    // replace the log hive reads with a symlink.
+    stderrFile: `${opts.ioDir}.launcher.log`,
   });
   // The launcher reads HIVE_LIBKRUN from its own env.
   return spawn(cmd.file, cmd.args, {
@@ -181,6 +201,9 @@ export function resetIoDir(ioDir: string): void {
 export function runSandbox(opts: SandboxOptions): SandboxHandle {
   const { sandbox } = config;
   const ioDir = opts.ioDir;
+  if (opts.mounts.length + 1 > MAX_SHARES) {
+    throw new Error(`too many shared folders for one VM: ${opts.mounts.length + 1} (libkrun supports ${MAX_SHARES})`);
+  }
   resetIoDir(ioDir);
   const launch: SandboxOptions = {
     ...opts,
@@ -228,7 +251,14 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
       clearTimeout(timer);
       // stop() does a last poll, so events written just before exit still arrive.
       follower?.stop();
-      stderrTail = keep(stderrTail, readTail(join(ioDir, "stderr.log"), MAX_KEPT_OUTPUT));
+      // The launcher's own errors come first: when the VM never booted, they are the only clue.
+      // Its log lives outside io/, so this is host-trusted text, then the VM's stderr.log.
+      const parts = [
+        readTail(`${ioDir}.launcher.log`, MAX_KEPT_OUTPUT),
+        readTail(join(ioDir, "stderr.log"), MAX_KEPT_OUTPUT),
+        stderrTail,
+      ].filter((part) => part.length > 0);
+      stderrTail = parts.join("\n").slice(-MAX_KEPT_OUTPUT);
       const timedOut = hitTimeout || code === 124 || (code !== 0 && Date.now() - started >= sandbox.timeoutMin * 60_000);
       resolve({ code: code ?? 1, stdout: stdoutTail, stderr: stderrTail, timedOut });
     });

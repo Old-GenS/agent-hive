@@ -121,3 +121,19 @@ test("dns is null when --dns is absent", () => {
   const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--", "true"]);
   assert.equal(out.dns, null);
 });
+
+test("--stderr-file is reported in the dry-run JSON", () => {
+  const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--stderr-file", "/tmp/x.log", "--", "true"]);
+  assert.equal(out.stderr_file, "/tmp/x.log");
+});
+
+test("stderr_file is null in the dry-run JSON when --stderr-file is absent", () => {
+  const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--", "true"]);
+  assert.equal(out.stderr_file, null);
+});
+
+test("--stderr-file must be an absolute path", () => {
+  const result = dryRun(["--dry-run", "--rootfs", dirA, "--stderr-file", "x.log", "--", "true"]);
+  assert.equal(result.status, 2, `stderr: ${result.stderr}`);
+  assert.ok(result.stderr.startsWith("hive-vm: "), `stderr should start with the program name: ${result.stderr}`);
+});

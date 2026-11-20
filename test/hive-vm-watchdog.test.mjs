@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,11 +123,18 @@ test("hive-vm watchdog", { skip: skipped }, async (t) => {
   const compiled = spawnSync("cc", ["-shared", "-fPIC", "-o", fakeSo, fakeSrc], { encoding: "utf8" });
   assert.equal(compiled.status, 0, `cc failed: ${compiled.stderr}`);
 
+  // A second fake whose krun_start_enter fails at once, the way libkrun does when it cannot boot.
+  const failSrc = join(base, "fake-fail.c");
+  const failSo = join(base, "libfakekrun-fail.so");
+  writeFileSync(failSrc, FAKE_KRUN.replace("sleep(60); return 0;", "return -22;"));
+  const compiledFail = spawnSync("cc", ["-shared", "-fPIC", "-o", failSo, failSrc], { encoding: "utf8" });
+  assert.equal(compiledFail.status, 0, `cc failed: ${compiledFail.stderr}`);
+
   const launchers = [];
   const helpers = [];
 
-  const launch = (args) => {
-    const handle = startLauncher(["--rootfs", rootfs, ...args, "--", "true"], { HIVE_LIBKRUN: fakeSo });
+  const launch = (args, lib = fakeSo) => {
+    const handle = startLauncher(["--rootfs", rootfs, ...args, "--", "true"], { HIVE_LIBKRUN: lib });
     launchers.push(handle);
     return handle;
   };
@@ -153,6 +160,14 @@ test("hive-vm watchdog", { skip: skipped }, async (t) => {
       const result = await waitForExit(handle.exited, 10_000, "the launcher to notice the owner is gone");
       assert.equal(result.code, 125, `expected exit 125, got ${result.code}; stderr: ${handle.stderr}`);
       assert.match(handle.stderr, /owner process/);
+    });
+
+    await t.test("--stderr-file captures a failed boot's message", async () => {
+      const log = join(base, "boot.log");
+      const handle = launch(["--stderr-file", log], failSo);
+      const result = await waitForExit(handle.exited, 10_000, "the launcher to report the boot failure");
+      assert.notEqual(result.code, 0, `expected a non-zero exit, got ${result.code}`);
+      assert.match(readFileSync(log, "utf8"), /krun_start_enter failed/);
     });
 
     await t.test("SIGTERM is still forwarded to the VM", async () => {

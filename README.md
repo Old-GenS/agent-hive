@@ -130,8 +130,7 @@ server's `.env`.
 | `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `2048m` / `1` | VM size (2 GB and 1 CPU; the VM's writable space lives in RAM, up to half of this) |
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | The run is stopped after this many minutes |
 | `HIVE_STALL_MIN` | `15` | Stop the run when nothing in `work/` changed and no agent event arrived for this many minutes; `0` turns it off |
-| `HIVE_NPM_CACHE` | `~/.cache/agent-hive/npm` | npm download cache shared between runs; empty disables it |
-| `HIVE_VM_CACHE` | `~/.cache/agent-hive/vm-cache` | `~/.cache` in the VM (Playwright browsers, pip, corepack) shared between runs; empty disables it |
+| `HIVE_VM_CACHE` | `~/.cache/agent-hive/vm-cache` | `~/.cache` in the VM (Playwright browsers, npm, pip, corepack), shared between runs; empty disables it |
 | `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
 | `HIVE_NO_UPDATE_CHECK` | — | Set to `1` to stop the once-a-day "new version available" notice |
 | `HIVE_RELEASE_REPO` | `ogsapps/agent-hive` | GitHub repo releases are looked up in |
@@ -183,13 +182,17 @@ for that run and prints a note. `hive run` and `hive new` print the chosen provi
 ```
 ~/.cache/agent-hive/runs/<repo>-<YYYYMMDD-HHMMSS>/
   work/      the agent's copy (mounted at /work)
-  io/        prompt.md, system.md, system-base.md, events.jsonl, stderr.log (mounted at /io)
+  io/        prompt.md, system.md, system-base.md, session/ (pi's session), events.jsonl,
+             stderr.log (mounted at /io)
   agent/     OpenRouter runs: pi's models.json and settings.json (copied to io/pi-agent for each step)
-  session/   pi's session (mounted at /session)
   out/       exported patches
   origin/    clean clone used for pushing (remote runs, and local runs once pushed)
   meta.json  repo, base, model, status, commits, cost, the agent's summary, push/PR info
 ```
+
+The launcher's own stderr (including libkrun's log lines) goes to `io.launcher.log` next to the
+`io/` folder, so a failed boot's message reaches the run's error; it is outside `io/` on purpose,
+since the VM can write `io/`.
 
 ## Isolation
 
@@ -200,9 +203,12 @@ Each run boots its own microVM with `vm/hive-vm`, a small launcher that loads li
   one run to the next.
 - **Its own network namespace via pasta:** the internet and DNS work, so the agent can reach the
   LLM API and package registries, but the host's loopback, gateway and LAN addresses are blocked.
-- **Mounts:** only the run's `work/`, `io/` and `session/`, plus the shared npm cache (and, for an
-  OpenRouter run, a fresh copy of its `agent/` at `/io/pi-agent`). The selected provider's key is passed in
-  the VM's environment, never on a command line.
+- **Mounts:** only the run's `work/` and `io/`, plus the shared VM cache (`HIVE_VM_CACHE`; npm's
+  cache lives inside it at `/root/.cache/npm`) and, for an OpenRouter run, a fresh copy of its
+  `agent/` at `/io/pi-agent`. The selected provider's key is passed in the VM's environment, never
+  on a command line.
+- **At most 5 shared folders per VM:** libkrun runs out of interrupt slots above that, and the VM
+  then never boots. hive refuses a VM with more than 5 shares with a clear error instead.
 
 After changing the image (`npm run build:image`), re-run `npm run build:rootfs`. To move to a newer
 pi release, bump `PI_VERSION` in `image/Containerfile` and rebuild both.

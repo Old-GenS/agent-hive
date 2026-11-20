@@ -32,7 +32,9 @@ export default async function systemRoutes(app: FastifyInstance) {
     },
     capacity: capacity(),
     gitProtocol: config.git.protocol,
-    npmCache: Boolean(config.sandbox.npmCache),
+    // `vmCache` is the current name; `npmCache` is kept because the UI reads it.
+    vmCache: Boolean(config.sandbox.vmCache),
+    npmCache: Boolean(config.sandbox.vmCache),
     version: currentVersion() ?? "dev (from source)",
   }));
 

@@ -46,9 +46,11 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 
 ## Security model — keep these invariants
 
-1. **The sandbox gets nothing secret except one LLM key.** Mounts are only the task's `work/`,
-   `session/` and `io/` (plus `out/` for export). Keys are passed with `-e NAME` from the child env, never
-   on the command line. Don't add host mounts or env vars casually. The libkrun backend maps no guest ports to the
+1. **The sandbox gets nothing secret except one LLM key.** A VM shares only its own run's `work/`
+   and `io/` (plus `out/` for export) and the shared VM cache, never the run folder itself (it
+   holds `origin/`, which the host pushes from). Keys are passed with `-e NAME` from the child env, never
+   on the command line. Don't add host mounts or env vars casually. A VM can have at most 5 shared
+   folders (libkrun's interrupt slots); `runSandbox` refuses more. The libkrun backend maps no guest ports to the
    host and runs in a pasta namespace that cannot reach the host's loopback, gateway or own
    addresses; its root is a read-only export of the image with an in-RAM overlay.
 2. **The host never runs git in `work/`.** The agent controls `work/.git` (hooks, config,
@@ -59,14 +61,17 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 4. **Anything from GitHub or the agent is untrusted in the UI** — render with `esc()` only.
 5. Repo URLs are restricted to github.com (`normalizeRepo`); `HIVE_ALLOW_ANY_REPO_URL=1` is for
    local testing only.
-6. **The npm cache is the one thing shared between tasks.** `HIVE_NPM_CACHE` (default
-   `~/.cache/agent-hive/npm`) is mounted read-write at `/root/.npm` in every agent sandbox, so it
-   must never hold credentials or task data; it only caches packages.
+6. **The VM cache is the one thing shared between tasks.** `HIVE_VM_CACHE` (default
+   `~/.cache/agent-hive/vm-cache`) is mounted read-write at `/root/.cache` in every agent sandbox,
+   so it must never hold credentials or task data. npm's cache lives inside it
+   (`NPM_CONFIG_CACHE=/root/.cache/npm`).
 7. **The CLI's host git runs only in the user's repo** (rev-parse, status, clone source, apply/am
    of exported patches), never in a run's `work/`. Text crosses into and out of the VM only as
    files in `io/` and patches in `out/`.
 8. **Files the VM writes are read without following symlinks.** The host reads `io/events.jsonl`
-   and `io/stderr.log` with `O_NOFOLLOW`, so the agent can't point the host at its own files.
+   and `io/stderr.log` with `O_NOFOLLOW`, so the agent can't point the host at its own files. The
+   launcher log (`<run>/io.launcher.log`) sits outside the VM-writable `io/` folder for the same
+   reason.
 9. **Nothing reaches GitHub on the agent's say-so.** Branch pushes and new repos happen in the host
    after the run; pull requests and issues only when the user asks (`POST /pr/:id`, `/issue/:id`). `gh` and `git` run with
    argument arrays, never a shell.
@@ -136,7 +141,7 @@ GitHub.
 **Done, server:** sandboxed runs in libkrun microVMs with live events, HTTPS (default) or SSH git,
 branch push, new projects (`gh repo create`), a change summary per run, pull requests on click,
 review cycles with an optional second model, follow-ups in the same session, WebSocket streaming
-with replay, a shared npm cache and per-task token/cost totals. Settings › This computer also shows
+with replay, a shared VM cache and per-task token/cost totals. Settings › This computer also shows
 live CPU, memory, disk, temperature and runs in progress (`GET /api/system/usage`).
 
 **Done, web UI:** the new design (light and dark): Runs (new-run form with repo and branch lists,

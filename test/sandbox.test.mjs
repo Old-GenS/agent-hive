@@ -1,7 +1,10 @@
 /** Server-side sandbox command building for the libkrun backend (built by `npm run build`). */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildLibkrunCommand, hostNameserver, parseMemoryMiB } from "../dist/sandbox.js";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { MAX_SHARES, buildLibkrunCommand, hostNameserver, parseMemoryMiB, runSandbox } from "../dist/sandbox.js";
 
 test("parseMemoryMiB", () => {
   assert.equal(parseMemoryMiB("512m"), 512);
@@ -28,7 +31,15 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
       env: { OPENROUTER_API_KEY: "sk-or-secret" },
       command: ["hive-agent", "--model", "m"],
     },
-    { vmBin: "/opt/hive-vm", rootfs: "/r", cpus: 1, memoryMiB: 1024, hostDns: "127.0.0.53", timeoutSec: 3600 },
+    {
+      vmBin: "/opt/hive-vm",
+      rootfs: "/r",
+      cpus: 1,
+      memoryMiB: 1024,
+      hostDns: "127.0.0.53",
+      timeoutSec: 3600,
+      stderrFile: "/runs/io.launcher.log",
+    },
   );
   assert.equal(cmd.file, "pasta");
   assert.deepEqual(cmd.args, [
@@ -40,6 +51,7 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
     "--cpus", "1",
     "--memory", "1024",
     "--timeout", "3600",
+    "--stderr-file", "/runs/io.launcher.log",
     "--share", "/h/work:/work",
     "--share", "/h/s:/session:ro",
     "--env", "OPENROUTER_API_KEY",
@@ -72,4 +84,16 @@ test("resetIoDir keeps prompt files, empties the logs and never writes through a
   assert.equal(readFileSync(join(io, "stderr.log"), "utf8"), "");
   assert.equal(lstatSync(join(io, "events.jsonl")).isSymbolicLink(), false);
   assert.equal(readFileSync(hostFile, "utf8"), "keep me");
+});
+
+test("runSandbox refuses more shared folders than libkrun supports", () => {
+  assert.equal(MAX_SHARES, 5);
+  const ioDir = join(mkdtempSync(join(tmpdir(), "hive-shares-")), "io");
+  const mounts = Array.from({ length: MAX_SHARES }, (_, i) => ({ host: `/h/${i}`, container: `/m${i}` }));
+  // MAX_SHARES mounts plus the /io share runSandbox adds is one too many: fail before anything starts.
+  assert.throws(
+    () => runSandbox({ name: "hive-test", mounts, env: {}, command: ["true"], ioDir }),
+    /too many shared folders for one VM: 6 \(libkrun supports 5\)/,
+  );
+  assert.equal(existsSync(ioDir), false, "the throw must happen before the io folder or a VM is created");
 });

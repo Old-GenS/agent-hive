@@ -42,7 +42,7 @@ or `gh` directly.
     events.jsonl      hive's own events for the whole run, appended (persisted for replay)
     work/             the agent's copy (/work)
     io/               prompt-<n>.md, system.md, agent-<n>.jsonl, stderr-<n>.log (/io)
-    session/          pi's session (/session), so follow-ups continue it
+    io/session/       pi's session (/io/session), so follow-ups continue it
     out/              exported patches
     origin/           clean clone used for pushing
   ```
@@ -58,7 +58,7 @@ or `gh` directly.
 
 - **Steps:** prepare (clone your checkout, clone a URL, or a new empty repo) → agent step (one
   prompt; every backend writes to `io/` files, no stdout parsing) → review cycles → export patches
-  → publish. Follow-ups add another agent step on the same `work/` and `session/`.
+  → publish. Follow-ups add another agent step on the same `work/` and `io/session/`.
 
 - **Publish policy, chosen by the caller:** the server pushes to a `hive/<run>` branch right away
   (today's behaviour); the CLI leaves it to `hive push`. Opening a PR, posting an issue and creating

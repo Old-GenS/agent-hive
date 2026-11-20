@@ -2,6 +2,7 @@
 // validation (no VM is booted by any case here).
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,11 +12,12 @@ const root = mkdtempSync(join(tmpdir(), "hive-run-steps-"));
 process.env.HIVE_RUNS_DIR = root;
 process.env.HIVE_DOTENV_PATH = join(root, "missing.env");
 process.env.HIVE_KEYS_FILE = join(root, "missing-keys");
+process.env.HIVE_VM_CACHE = join(root, "vm-cache");
 process.env.DEEPSEEK_API_KEY = "sk-test";
 delete process.env.DEFAULT_PROVIDER;
 delete process.env.DEFAULT_MODEL;
 
-const { REVIEW_PROMPT, isLgtm, slimEvents, startRun, timeNote } = await import("../dist/runs.js");
+const { REVIEW_PROMPT, isLgtm, slimEvents, startRun, stepMounts, timeNote } = await import("../dist/runs.js");
 
 const signal = () => new AbortController().signal;
 const noop = () => {};
@@ -61,6 +63,31 @@ test("slimEvents drops streaming-only events and keeps everything else", () => {
   assert.ok(slim.includes("not json"));
   // A trailing newline is preserved; only the event lines are dropped.
   assert.equal(slimEvents('{"type":"message_update"}\n'), "\n");
+});
+
+test("stepMounts shares the work copy and the VM cache, and nothing else", () => {
+  const mounts = stepMounts(join(root, "run"));
+  assert.ok(mounts.length <= 2, `expected at most 2 mounts, got ${mounts.length}`);
+  assert.deepEqual(
+    mounts.map((m) => m.container),
+    ["/work", "/root/.cache"],
+  );
+  assert.ok(!mounts.some((m) => m.container === "/session" || m.container === "/root/.npm"));
+  assert.equal(mounts[0].host, join(root, "run", "work"));
+  assert.equal(mounts[1].host, join(root, "vm-cache"));
+  assert.equal(mounts[1].shared, true);
+});
+
+test("stepMounts leaves the VM cache out when it is disabled", () => {
+  // config.ts reads HIVE_VM_CACHE at import time, so the disabled case needs its own process.
+  const url = new URL("../dist/runs.js", import.meta.url).href;
+  const probe = `const { stepMounts } = await import(${JSON.stringify(url)});
+process.stdout.write(JSON.stringify(stepMounts("/tmp/hive-step-mounts-probe")));`;
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", probe], {
+    encoding: "utf8",
+    env: { ...process.env, HIVE_VM_CACHE: "" },
+  });
+  assert.deepEqual(JSON.parse(out), [{ host: "/tmp/hive-step-mounts-probe/work", container: "/work" }]);
 });
 
 test("startRun needs exactly one source", async () => {
