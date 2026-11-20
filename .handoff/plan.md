@@ -1,148 +1,92 @@
 ## Goal
 
-Before merging the CLI and server engines (`docs/CORE.md`), remove the server parts nothing uses,
-and fix two UI details:
+A VM must never outlive the process that started it, or its time limit, even if the CLI or server
+crashes. Today the time limit lives only in the Node process; if that process is killed, its VMs
+keep running. Teach the launcher `vm/hive-vm` two new options and pass them from Node:
 
-1. **Remove:** the podman sandbox backends (krun, gVisor/runsc, crun/runc), the `/snippet`,
-   `/files`, `/file` and `/messages` routes, `/api/github/search`, `/api/github/fork`, and the old
-   landing page (`/` and `/docs` now redirect to `/ui/`). libkrun is the only backend.
-2. **Run timer:** the bee's elapsed timer restarts at 0:00 when you switch pages or reopen a run. It
-   must show the real time since the current step started, and a finished run's real duration.
-3. **Settings › This computer:** a live "Right now" section with CPU use, memory, free disk space
-   for runs, CPU temperature (when the machine reports one) and runs in progress, refreshed every
-   5 seconds while the page is open.
+- `--watch-pid <pid>`: stop the VM when that process no longer exists.
+- `--timeout <seconds>`: stop the VM when that much time has passed.
 
 ## Files to touch
 
+- `vm/hive-vm.c`
 - `src/sandbox.ts`
-- `src/config.ts`
-- `src/index.ts`
-- `src/routes/sessions.ts`
-- `src/routes/github.ts`
-- `src/routes/system.ts`
-- `src/tasks.ts`
-- `src/usage.ts` (new)
-- `public/landing.html` (delete; delete `public/` if it is then empty)
-- `ui/src/main.ts`
-- `ui/src/bee.ts`
-- `ui/src/app.css`
-- `ui/vite.config.ts`
-- `scripts/ui-smoke.mjs`
-- `test/*.test.mjs` (only to remove or adjust tests for removed code)
-- `test/usage.test.mjs` (new)
-- `README.md`, `AGENTS.md`, `.env.example`
-- `.handoff/report.md`, `.handoff/ui-*.png`
+- `test/hive-vm.test.mjs`
+- `test/sandbox.test.mjs`
+- `test/hive-vm-watchdog.test.mjs` (new)
+- `AGENTS.md`
+- `.handoff/report.md`
 
 ## Steps
 
-1. Run `npm ci`, then `cd ui && npm ci && cd ..`, then `bash vm/build.sh`.
+1. Run `npm ci`, then `bash vm/build.sh`.
 
-2. **Remove the podman backends** (`src/sandbox.ts`, `src/config.ts`):
-   - Delete `spawnPodman`, the podman branches of `runSandbox`'s `stop`, the podman part of
-     `checkSandbox` and `systemInfo`, `CONTAINER_WARNING`, and krun/runsc/crun/runc detection.
-   - `detectRuntime()` returns `{ runtime: "libkrun", isolation: "microvm" }` when
-     `libkrunAvailable()`, else `{ runtime: "libkrun", isolation: "unavailable", warning: "<what is missing, from checkSandbox()>" }`
-     (add `"unavailable"` to the `Isolation` type; remove `"gvisor"` and `"container"`).
-   - `HIVE_RUNTIME`: accept only `auto` or `libkrun` (anything else: the existing kind of error,
-     listing `auto, libkrun`). Remove `config.sandbox.image` and `HIVE_IMAGE` from runtime code (the
-     image name stays only in `package.json`'s `build:image` script and `vm/build-rootfs.sh`).
-   - `runSandbox` always uses the libkrun path. `ioDir` becomes required in `SandboxOptions` (every
-     caller already passes it or must: give the export sandbox its own `io` dir as today); remove
-     the stdout JSONL parsing so events only come from `io/events.jsonl`. Keep `onEvent`.
-   - `src/cli.ts` already forces libkrun; only adjust it if it referenced removed names.
-   - Keep `vm/`, `image/` and the `build:image` / `build:rootfs` scripts: podman is still used once to
-     build the VM filesystem.
+2. `vm/hive-vm.c`:
+   - Parse `--watch-pid <n>` (integer 1..4194304) and `--timeout <n>` (integer seconds 1..86400),
+     both optional, with the existing `parse_uint`-style validation and error messages. Include them
+     in the `--dry-run` JSON output as `"watch_pid"` and `"timeout"` (`null` when not given), next to
+     the existing fields. Update the usage text.
+   - In the parent branch after `fork()` (where it currently blocks in `waitpid(child, &status, 0)`),
+     replace the blocking wait with a loop that runs every 500 ms:
+     - `waitpid(child, &status, WNOHANG)`; if the child exited, keep the current exit handling.
+     - If `--watch-pid` was given and `kill(watch_pid, 0) == -1 && errno == ESRCH`, or `getppid()`
+       became 1 while the original parent was not 1, print
+       `hive-vm: owner process <pid> is gone; stopping the VM` to stderr and stop the child.
+     - If `--timeout` was given and the elapsed time (from `clock_gettime(CLOCK_MONOTONIC)` taken just
+       before `fork()`) is at least the timeout, print `hive-vm: timed out after <n> s; stopping the VM`
+       and stop the child.
+     - "Stop the child": `kill(child, SIGTERM)`, wait up to 5 s (polling `waitpid` with `WNOHANG`
+       every 100 ms), then `kill(child, SIGKILL)` and `waitpid` it. Then `remove_ctl(ctl)` and exit
+       with code **124** for a timeout and **125** for a vanished owner.
+     - Keep forwarding SIGTERM/SIGINT/SIGHUP to the child as today; use `nanosleep` and handle
+       `EINTR` so a forwarded signal doesn't break the loop.
+   - Keep `-std=c11 -O2 -Wall -Wextra -Werror` clean.
 
-3. **Remove unused routes:**
-   - `src/routes/sessions.ts`: delete `POST /snippet`, `GET /files/:sessionId`, `GET /file/:sessionId`,
-     `GET /messages/:sessionId` and the helpers only they use (`insideWork`, etc.). Keep
-     `DELETE /session/:sessionId`.
-   - `src/routes/github.ts`: delete `GET /api/github/search` and `POST /api/github/fork`.
-   - `src/tasks.ts`: remove the `ephemeral` option and its uses (only `/snippet` used it).
-   - `src/index.ts`: delete the `public/` static registration and the landing routes; add
-     `app.get("/", (_req, reply) => reply.redirect("/ui/"))` and the same for `/docs`. Delete
-     `public/landing.html`.
-   - `ui/vite.config.ts`: drop proxy entries for removed paths (`/messages`, `/system-prompt`, …);
-     add `/runs` and `/session`.
+3. `src/sandbox.ts`:
+   - `buildLibkrunCommand` adds `"--watch-pid", String(process.pid)` and
+     `"--timeout", String(timeoutSec)` to the `hive-vm` arguments (before `--`), where `timeoutSec`
+     comes from a new field in its second parameter, `timeoutSec: number`, set by `spawnLibkrun` to
+     `config.sandbox.timeoutMin * 60`.
+   - Keep the Node-side timer as a second line of defence. In `runSandbox`'s close handler, also
+     treat exit code 124 as `timedOut: true`. Exit code 125 needs no special handling.
+   - Update the existing `buildLibkrunCommand` test in `test/sandbox.test.mjs` for the new arguments
+     and add assertions that they are present.
 
-4. **Run timer** (`src/tasks.ts`, `ui/src/bee.ts`, `ui/src/main.ts`):
-   - `Task` gets `stepStartedAt?: number` (set to `Date.now()` when `runPrompt` starts a prompt,
-     before queueing) and `finishedAt?: number` (set when the prompt ends: idle, failed or aborted;
-     cleared when a new prompt starts). `toJSON()` includes both. Add `stepStartedAt` and
-     `finishedAt` to the `hive_done` events too.
-   - `createBeeIndicator()` / `set()`: `set(state, label, times?: { startedAt?: number; endedAt?: number })`.
-     When `startedAt` is given, the timer counts from it (not from the first `set` call); when
-     `endedAt` is given, the timer shows `endedAt - startedAt` and stops. Without times, keep today's
-     behaviour.
-   - The UI passes `stepStartedAt` (and `finishedAt` when done) from `/status` when it opens a run,
-     from `/runs` entries, and from `hive_done`; a run started from the form uses the time `/prompt`
-     returned. Switching pages or reloading must show the same elapsed time as before the switch.
-   - The run list's elapsed time for busy runs uses `stepStartedAt` too.
+4. `test/hive-vm.test.mjs`: add `--dry-run` cases: `--watch-pid 1234 --timeout 60` appear in the JSON
+   as numbers; `--watch-pid 0`, `--watch-pid abc` and `--timeout 0` fail with a usage error starting
+   `hive-vm: `.
 
-5. **Live usage** (`src/usage.ts` new, `src/routes/system.ts`):
-   - `export async function usageNow(o?: { sysRoot?: string; diskPath?: string }): Promise<Usage>` with
-     ```ts
-     interface Usage {
-       cpu: { percent: number; cores: number; load1: number };
-       memory: { usedBytes: number; totalBytes: number };
-       disk: { path: string; freeBytes: number; totalBytes: number };
-       temperature: { celsius: number; sensor: string } | null;
-     }
-     ```
-     - CPU percent: two `os.cpus()` samples 250 ms apart; busy share of all cores, 0–100, one
-       decimal. `load1` from `os.loadavg()[0]`.
-     - Memory: total from `os.totalmem()`; used = total − `MemAvailable` from `<sysRoot>/proc/meminfo`
-       (fall back to `os.freemem()`).
-     - Disk: `fs.statfsSync(diskPath)` for `diskPath` = the folder runs live in
-       (`config.workspace`, creating it if missing); free = `bavail * bsize`, total = `blocks * bsize`.
-     - Temperature: first of `<sysRoot>/sys/class/hwmon/hwmon*/` whose `name` is `coretemp`,
-       `k10temp`, `zenpower` or `cpu_thermal`, reading `temp1_input` (millidegrees); else the
-       `<sysRoot>/sys/class/thermal/thermal_zone*` whose `type` is `x86_pkg_temp`; else `null`.
-       `sensor` is that name/type. `sysRoot` defaults to `/` (tests pass a fake tree).
-   - `GET /api/system/usage` (authenticated, in `src/routes/system.ts`) returns `usageNow()` plus
-     `runs: capacity()`.
+5. `test/hive-vm-watchdog.test.mjs` (new): skip the whole file (`test.skip` / `{ skip: "no C compiler" }`)
+   when `cc` is not on PATH. Otherwise compile a **fake libkrun** in a temp dir: a C file defining every
+   symbol `hive-vm` loads (`krun_set_log_level`, `krun_create_ctx` returning 1, `krun_free_ctx`,
+   `krun_set_vm_config`, `krun_add_virtiofs3`, `krun_set_workdir`, `krun_set_exec`,
+   `krun_set_rlimits`, `krun_set_port_map`, each returning 0, and `krun_start_enter` that sleeps
+   for 60 s then returns 0), built with `cc -shared -fPIC -o libfakekrun.so fake.c`. Run the launcher
+   with `HIVE_LIBKRUN=<that .so>` and the minimum valid arguments (a temp rootfs dir, `--` and a
+   command), so the "VM" is the sleeping fake:
+   - with `--timeout 1`: it exits with code 124 within 10 s and stderr contains `timed out after 1 s`;
+   - with `--watch-pid <pid of a short-lived child process you start and then kill>`: after killing
+     that process, the launcher exits with code 125 within 10 s and stderr contains
+     `owner process`;
+   - with neither, and the launcher sent SIGTERM after 1 s: it exits (the existing forwarding still
+     works) within 10 s.
+   Make sure no launcher or fake process is left running when the test ends (kill in `finally`).
+   If `hive-vm` needs `/dev/kvm` before loading libkrun in this path, check how `--check` vs a normal
+   run behaves and, if a normal run refuses without KVM, skip the file when `/dev/kvm` is missing
+   too (say so in the report).
 
-6. **This computer UI** (`ui/src/main.ts`, `ui/src/app.css`): a "Right now" section between the
-   isolation card and GitHub: five tiles in a responsive grid (two columns on phones), each with a
-   label, a big value and a thin bar where it makes sense:
-   - **CPU**: `37%` and `4 cores · load 1.2`, bar = percent;
-   - **Memory**: `2.4 of 7.6 GB`, bar = used share;
-   - **Disk free**: `220 GB free of 236 GB` (for the runs folder), bar = used share;
-   - **CPU temperature**: `58 °C` (`coretemp`), or "Not reported" when null; no bar;
-   - **Runs**: `1 running · 0 queued` of `3`.
-   Bars use `--accent`, turning `--warn` at 75% and `--danger` at 90% (temperature value turns warn
-   at 80 °C and danger at 90 °C). Fetch `/api/system/usage` when the page opens and every 5 seconds
-   while it is open and visible; stop when leaving the page. Text only via `el()`/`textContent`.
-   Give the section `id="usageSection"`.
-
-7. `scripts/ui-smoke.mjs`: keep every existing check (remove only checks for removed features, if
-   any). On This computer, wait for `#usageSection` and assert it has five tiles and the CPU tile's
-   value matches `/^\d+(\.\d)?%$/`. In the faked run-list check, give list-b a
-   `stepStartedAt: Date.now() - 300000` and `finishedAt: Date.now() - 240000` and assert the bee
-   time for the reopened run reads `1:00`.
-
-8. **Tests:** remove tests that only cover removed code (podman command building, snippet,
-   files); keep everything else passing. `test/usage.test.mjs` (new): build a fake tree in a temp dir
-   with `proc/meminfo` (`MemAvailable: 2097152 kB`) and `sys/class/hwmon/hwmon3/name` = `coretemp`,
-   `temp1_input` = `58000`; `usageNow({ sysRoot, diskPath: tmp })` returns `temperature`
-   `{ celsius: 58, sensor: "coretemp" }`, `memory.usedBytes === os.totalmem() - 2097152 * 1024`,
-   `cpu.cores === os.cpus().length`, `0 <= cpu.percent <= 100`, and `disk.totalBytes > 0`; a tree
-   with only `sys/class/thermal/thermal_zone0/type` = `x86_pkg_temp` and `temp` = `61000` gives
-   61 °C; an empty tree gives `temperature: null`.
-
-9. **Docs:** README and AGENTS.md: remove the podman backends, the removed routes and the landing
-   page; `HIVE_RUNTIME` is `auto` or `libkrun`; machines need KVM (the roadmap's gVisor step will
-   cover the rest); note that the separate hive-mcp package no longer works (a built-in `hive mcp`
-   is planned); add `/api/system/usage` and the "Right now" section. `.env.example`: drop the
-   podman/runtime comments that no longer apply.
+6. `AGENTS.md`: in the security section, add that the launcher stops the VM when its owner process
+   is gone or the time limit passes (`--watch-pid`, `--timeout`), so a crashed CLI or server never
+   leaves a VM running.
 
 ## Acceptance
 
-- `npm test` exits 0 and includes `test/usage.test.mjs` passing.
-- `npm run build:ui` exits 0.
-- `npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs` prints `ui-smoke: ok`.
-- `grep -rnE "spawnPodman|runsc|/snippet|github/fork|landing.html" src ui/src` prints nothing.
-- `test -e public/landing.html` exits 1.
+- `bash vm/build.sh` exits 0.
+- `npm test` exits 0 (the watchdog test runs, or is skipped only for a missing compiler or
+  `/dev/kvm` as described in step 5).
+- `vm/hive-vm --dry-run --rootfs / --watch-pid 1 --timeout 30 -- true` prints JSON containing
+  `"watch_pid":1` and `"timeout":30` (adjust spacing to the launcher's actual JSON style; the
+  values must be present as numbers).
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -156,17 +100,16 @@ None — do it sequentially.
   throwaway VM and is discarded), but every such file must appear in the report under "outside
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
-- The only checks to run are the **Acceptance** commands. Never start the real server outside the
-  smoke script, never let a script reach the real `/prompt`. If something outside Acceptance fails,
-  note it in the report and finish.
-- No behaviour change for anything that is kept (runs, PRs, issues, new projects, keys, run list,
-  review cycles). Every route stays authenticated except `/health` and the redirects.
-- No new dependencies, no emoji.
+- The only checks to run are the **Acceptance** commands. Never boot a real VM with the real
+  libkrun or start an agent. If something outside Acceptance fails, note it in the report and finish.
+- Don't change the launcher's other behaviour (argument validation, shares, env, control directory,
+  empty port map). No new dependencies.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- The engine merge itself (`docs/CORE.md` stages 1–3), the tray app, run retention.
+- The stall watchdog and startup cleanup (stage 1 of `docs/CORE.md`), the CLI's and server's own
+  timers beyond step 3.
 
 ## If blocked
 

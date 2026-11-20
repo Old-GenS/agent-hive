@@ -24,6 +24,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_SHARES 8
@@ -79,6 +80,8 @@ typedef struct {
   char *workdir;
   char *dns;
   unsigned log_level;
+  unsigned watch_pid; /* 0 = not given: don't watch an owner process */
+  unsigned timeout;   /* 0 = not given: no time limit */
   bool dry_run;
 } Options;
 
@@ -255,7 +258,20 @@ static void share_tag(unsigned index, char *buf, size_t bufsz) {
 static void print_dry_run(const Options *o, char **command) {
   fputs("{\"rootfs\":", stdout);
   json_string(o->rootfs);
-  printf(",\"cpus\":%u,\"memory\":%u,\"shares\":[", o->cpus, o->memory);
+  printf(",\"cpus\":%u,\"memory\":%u", o->cpus, o->memory);
+  fputs(",\"watch_pid\":", stdout);
+  if (o->watch_pid) {
+    printf("%u", o->watch_pid);
+  } else {
+    fputs("null", stdout);
+  }
+  fputs(",\"timeout\":", stdout);
+  if (o->timeout) {
+    printf("%u", o->timeout);
+  } else {
+    fputs("null", stdout);
+  }
+  fputs(",\"shares\":[", stdout);
   for (unsigned i = 0; i < o->nshares; i++) {
     char tag[16];
     share_tag(i, tag, sizeof tag);
@@ -413,6 +429,38 @@ static void forward_signal(int signo) {
   if (child > 0) kill(child, signo);
 }
 
+static void sleep_ms(long ms) {
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (ms % 1000) * 1000000L;
+  while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+    /* A forwarded signal interrupted the sleep; finish the remaining time. */
+  }
+}
+
+static long elapsed_ms(const struct timespec *since) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+  return (now.tv_sec - since->tv_sec) * 1000L + (now.tv_nsec - since->tv_nsec) / 1000000L;
+}
+
+/* SIGTERM the child, poll for it for up to 5 s, then SIGKILL it and reap it. */
+static void stop_child(pid_t child) {
+  (void)kill(child, SIGTERM);
+  for (int i = 0; i < 50; i++) {
+    int status = 0;
+    pid_t waited = waitpid(child, &status, WNOHANG);
+    if (waited == child || (waited < 0 && errno == ECHILD)) return;
+    sleep_ms(100);
+  }
+  (void)kill(child, SIGKILL);
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+}
+
 /* ---- libkrun loading and invocation --------------------------------------- */
 
 static void *load_libkrun(void) {
@@ -528,6 +576,10 @@ int main(int argc, char **argv) {
       o.dns = xstrdup(val);
     } else if (strcmp(arg, "--log-level") == 0) {
       o.log_level = parse_uint("--log-level", take_value(&i, argc, argv, arg), 0, 5);
+    } else if (strcmp(arg, "--watch-pid") == 0) {
+      o.watch_pid = parse_uint("--watch-pid", take_value(&i, argc, argv, arg), 1, 4194304);
+    } else if (strcmp(arg, "--timeout") == 0) {
+      o.timeout = parse_uint("--timeout", take_value(&i, argc, argv, arg), 1, 86400);
     } else {
       fail_usage("unknown argument: \"%s\"", arg);
     }
@@ -559,6 +611,14 @@ int main(int argc, char **argv) {
     fail_runtime("cannot write %s/env: %s", ctl, strerror(err));
   }
 
+  struct timespec started;
+  if (clock_gettime(CLOCK_MONOTONIC, &started) != 0) {
+    int err = errno;
+    remove_ctl(ctl);
+    fail_runtime("clock_gettime(CLOCK_MONOTONIC) failed: %s", strerror(err));
+  }
+  pid_t owner = getppid();
+
   pid_t child = fork();
   if (child < 0) {
     int err = errno;
@@ -566,7 +626,8 @@ int main(int argc, char **argv) {
     fail_runtime("fork failed: %s", strerror(err));
   }
   if (child > 0) {
-    /* Parent: forward termination signals, then tear down the control directory. */
+    /* Parent: forward termination signals, watch the owner and the time limit, then tear down the
+     * control directory. */
     signal_child = (sig_atomic_t)child;
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -576,14 +637,33 @@ int main(int argc, char **argv) {
     (void)sigaction(SIGINT, &sa, NULL);
     (void)sigaction(SIGHUP, &sa, NULL);
     int status = 0;
-    pid_t waited;
-    do {
-      waited = waitpid(child, &status, 0);
-    } while (waited < 0 && errno == EINTR);
-    if (waited < 0) {
-      int err = errno;
-      remove_ctl(ctl);
-      fail_runtime("waitpid(%d) failed: %s", (int)child, strerror(err));
+    for (;;) {
+      pid_t waited = waitpid(child, &status, WNOHANG);
+      if (waited == child) break;
+      if (waited < 0 && errno != EINTR) {
+        int err = errno;
+        remove_ctl(ctl);
+        fail_runtime("waitpid(%d) failed: %s", (int)child, strerror(err));
+      }
+      if (o.watch_pid && kill((pid_t)o.watch_pid, 0) == -1 && errno == ESRCH) {
+        fprintf(stderr, "hive-vm: owner process %u is gone; stopping the VM\n", o.watch_pid);
+        stop_child(child);
+        remove_ctl(ctl);
+        exit(125);
+      }
+      if (owner != 1 && getppid() == 1) {
+        fprintf(stderr, "hive-vm: owner process %d is gone; stopping the VM\n", (int)owner);
+        stop_child(child);
+        remove_ctl(ctl);
+        exit(125);
+      }
+      if (o.timeout && elapsed_ms(&started) >= (long)o.timeout * 1000L) {
+        fprintf(stderr, "hive-vm: timed out after %u s; stopping the VM\n", o.timeout);
+        stop_child(child);
+        remove_ctl(ctl);
+        exit(124);
+      }
+      sleep_ms(500);
     }
     remove_ctl(ctl);
     if (WIFEXITED(status)) exit(WEXITSTATUS(status));

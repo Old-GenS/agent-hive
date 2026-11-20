@@ -28,7 +28,7 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
       env: { OPENROUTER_API_KEY: "sk-or-secret" },
       command: ["hive-agent", "--model", "m"],
     },
-    { vmBin: "/opt/hive-vm", rootfs: "/r", cpus: 1, memoryMiB: 1024, hostDns: "127.0.0.53" },
+    { vmBin: "/opt/hive-vm", rootfs: "/r", cpus: 1, memoryMiB: 1024, hostDns: "127.0.0.53", timeoutSec: 3600 },
   );
   assert.equal(cmd.file, "pasta");
   assert.deepEqual(cmd.args, [
@@ -39,6 +39,8 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
     "--rootfs", "/r",
     "--cpus", "1",
     "--memory", "1024",
+    "--watch-pid", String(process.pid),
+    "--timeout", "3600",
     "--share", "/h/work:/work",
     "--share", "/h/s:/session:ro",
     "--env", "OPENROUTER_API_KEY",
@@ -46,6 +48,10 @@ test("buildLibkrunCommand wraps hive-vm in pasta and never leaks env values", ()
     "--workdir", "/work",
     "--", "hive-agent", "--model", "m",
   ]);
+  assert.ok(cmd.args.includes("--watch-pid"), "the launcher must watch this process");
+  assert.ok(cmd.args.includes("--timeout"), "the launcher must enforce the time limit");
+  assert.equal(cmd.args[cmd.args.indexOf("--watch-pid") + 1], String(process.pid));
+  assert.equal(cmd.args[cmd.args.indexOf("--timeout") + 1], "3600");
   assert.ok(!cmd.args.join(" ").includes("sk-or-secret"));
 });
 

@@ -123,13 +123,14 @@ const MAX_KEPT_OUTPUT = 64 * 1024;
 /** pasta + hive-vm argv; env values travel via the child's env, never here. */
 export function buildLibkrunCommand(
   opts: SandboxOptions,
-  p: { vmBin: string; rootfs: string; cpus: number; memoryMiB: number; hostDns: string },
+  p: { vmBin: string; rootfs: string; cpus: number; memoryMiB: number; hostDns: string; timeoutSec: number },
 ): { file: string; args: string[] } {
   const args = [
     "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
     "--dns-forward", "169.254.1.53", "--dns-host", p.hostDns,
     "--", "/usr/bin/env", p.vmBin,
     "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
+    "--watch-pid", String(process.pid), "--timeout", String(p.timeoutSec),
   ];
   for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
   for (const name of Object.keys(opts.env)) args.push("--env", name);
@@ -145,6 +146,7 @@ function spawnLibkrun(opts: SandboxOptions) {
     cpus: Number.parseInt(sandbox.cpus, 10),
     memoryMiB: parseMemoryMiB(sandbox.memory),
     hostDns: hostNameserver(resolvConf()),
+    timeoutSec: sandbox.timeoutMin * 60,
   });
   // The launcher reads HIVE_LIBKRUN from its own env.
   return spawn(cmd.file, cmd.args, {
@@ -227,7 +229,7 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
       // stop() does a last poll, so events written just before exit still arrive.
       follower?.stop();
       stderrTail = keep(stderrTail, readTail(join(ioDir, "stderr.log"), MAX_KEPT_OUTPUT));
-      const timedOut = hitTimeout || (code !== 0 && Date.now() - started >= sandbox.timeoutMin * 60_000);
+      const timedOut = hitTimeout || code === 124 || (code !== 0 && Date.now() - started >= sandbox.timeoutMin * 60_000);
       resolve({ code: code ?? 1, stdout: stdoutTail, stderr: stderrTail, timedOut });
     });
   });

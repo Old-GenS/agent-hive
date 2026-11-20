@@ -92,6 +92,31 @@ test("exit 2 on invalid arguments", () => {
   }
 });
 
+test("--watch-pid and --timeout appear in the dry-run JSON as numbers", () => {
+  const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--watch-pid", "1234", "--timeout", "60", "--", "true"]);
+  assert.equal(out.watch_pid, 1234);
+  assert.equal(out.timeout, 60);
+});
+
+test("--watch-pid and --timeout are null in the dry-run JSON when absent", () => {
+  const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--", "true"]);
+  assert.equal(out.watch_pid, null);
+  assert.equal(out.timeout, null);
+});
+
+test("exit 2 on invalid --watch-pid and --timeout values", () => {
+  const cases = [
+    ["--dry-run", "--rootfs", dirA, "--watch-pid", "0", "--", "true"],
+    ["--dry-run", "--rootfs", dirA, "--watch-pid", "abc", "--", "true"],
+    ["--dry-run", "--rootfs", dirA, "--timeout", "0", "--", "true"],
+  ];
+  for (const args of cases) {
+    const result = dryRun(args);
+    assert.equal(result.status, 2, `expected exit 2 for ${JSON.stringify(args)}; stderr: ${result.stderr}`);
+    assert.ok(result.stderr.startsWith("hive-vm: "), `stderr should start with the program name: ${result.stderr}`);
+  }
+});
+
 test("dns is null when --dns is absent", () => {
   const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--", "true"]);
   assert.equal(out.dns, null);

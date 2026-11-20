@@ -74,6 +74,10 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
     rename). They are never logged or returned whole (the UI and API only see a masked form), and a
     value is validated (`^[\x21-\x7E]{1,400}$`, no quotes, `#`, `\` or backticks) before it is
     written so it cannot inject another `NAME=value` line.
+11. **A VM never outlives its owner or its time limit.** The launcher (`vm/hive-vm`) is given the
+    starting process's pid (`--watch-pid`) and the time limit (`--timeout`); it stops the VM when
+    that process is gone or the time limit passes, so a crashed CLI or server never leaves a VM
+    running.
 
 ## GitHub access (server)
 
