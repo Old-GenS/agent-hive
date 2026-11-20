@@ -2114,12 +2114,12 @@ function renderUsage(section: HTMLElement, data: UsageResponse): void {
       warnAt: 75,
       dangerAt: 90,
     }),
-    usageTile("Memory", `${formatGB(data.memory.usedBytes)} of ${formatGB(data.memory.totalBytes)} GB`, "in use", {
+    usageTile("Memory", `${formatGB(data.memory.usedBytes)} GB`, `in use of ${formatGB(data.memory.totalBytes)} GB`, {
       percent: usedMemoryPercent,
       warnAt: 75,
       dangerAt: 90,
     }),
-    usageTile("Disk free", `${formatGB(data.disk.freeBytes)} GB free of ${formatGB(data.disk.totalBytes)} GB`, "for runs", {
+    usageTile("Disk free", `${formatGB(data.disk.freeBytes)} GB`, `free of ${formatGB(data.disk.totalBytes)} GB`, {
       percent: usedDiskPercent,
       warnAt: 75,
       dangerAt: 90,
@@ -2129,8 +2129,8 @@ function renderUsage(section: HTMLElement, data: UsageResponse): void {
       : usageTile("CPU temperature", "Not reported", ""),
     usageTile(
       "Runs",
-      `${data.runs.running} running \u00b7 ${data.runs.queued} queued`,
-      `of ${data.runs.max}`,
+      `${data.runs.running} of ${data.runs.max}`,
+      `running \u00b7 ${data.runs.queued} queued`,
     ),
   ];
   // A temperature has no bar; the value itself turns warn/danger when the CPU runs hot.
@@ -2149,7 +2149,7 @@ function renderUsage(section: HTMLElement, data: UsageResponse): void {
 function usageSection(): HTMLElement {
   return el(
     "section",
-    { class: "card usage-section", id: "usageSection" },
+    { class: "usage-section", id: "usageSection" },
     el("h2", { class: "section-title" }, "Right now"),
     el("div", { class: "usage-grid" }, el("p", { class: "cell-muted" }, "Loading\u2026")),
   );
@@ -2280,7 +2280,7 @@ function computerSections(info: SystemInfo): HTMLElement[] {
     ),
   );
 
-  return [summary, usageSection(), el("h2", { class: "section-title" }, "GitHub"), ghCard, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
+  return [summary, el("h2", { class: "section-title" }, "GitHub"), ghCard, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), usageSection(), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
 }
 
 // ── theme ──

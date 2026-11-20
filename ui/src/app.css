@@ -610,8 +610,9 @@ textarea:disabled {
 
 .run-title {
   font-family: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 600;
+  white-space: nowrap;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
@@ -1633,20 +1634,21 @@ a.btn {
 .usage-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
 .usage-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .usage-tile {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1654,13 +1656,14 @@ a.btn {
 
 .usage-label {
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .usage-value {
   font-family: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 600;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1674,12 +1677,15 @@ a.btn {
 
 .usage-detail {
   color: var(--text-3);
-  font-size: 13px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .usage-bar {
-  margin-top: 6px;
-  height: 4px;
+  margin-top: 4px;
+  height: 3px;
   border-radius: 2px;
   background: var(--border);
   overflow: hidden;
@@ -1699,9 +1705,15 @@ a.btn {
   background: var(--danger);
 }
 
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .usage-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .usage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
