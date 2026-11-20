@@ -76,9 +76,9 @@ const BEE_STATE: Record<Status, { state: BeeState; label: string }> = {
   running: { state: "working", label: "Agent working in the microVM" },
   reviewing: { state: "working", label: "Reviewing the changes" },
   pushing: { state: "working", label: "Pushing changes" },
-  idle: { state: "done", label: "Done" },
-  failed: { state: "failed", label: "Failed" },
-  aborted: { state: "stopped", label: "Stopped" },
+  idle: { state: "done", label: "Back at the hive" },
+  failed: { state: "failed", label: "The bee came back empty-handed" },
+  aborted: { state: "stopped", label: "Called back to the hive" },
 };
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -488,7 +488,7 @@ function buildForm(): HTMLElement {
     "div",
     { class: "form-head" },
     el("h1", { id: "new-run-title" }, "New run"),
-    el("p", {}, "The agent works on a copy of the repo inside a throwaway VM."),
+    el("p", {}, "Give the bees a task. They work on a copy of your repo inside a throwaway microVM."),
   );
 
   const task = el("textarea", { id: "task", rows: "5", placeholder: "Describe what the agent should do" });
@@ -909,7 +909,7 @@ function buildRunView(): HTMLElement {
   }
   let empty: HTMLElement | null = null;
   if (state.items.length === 0) {
-    empty = el("li", { class: "item-status empty-timeline" }, "Waiting for the agent to start.");
+    empty = el("li", { class: "item-status empty-timeline" }, "The bee is warming up…");
     timeline.append(empty);
   }
   const timelineCard = el("section", { class: "card timeline-card", "aria-label": "Run timeline" }, timeline);
@@ -1001,7 +1001,7 @@ function handleEvent(event: any): void {
       const status = String(event.status ?? "");
       if (status in STATUS_LABEL) setRunStatus(status as Status);
       let text = "";
-      if (status === "queued") text = `Queued (${event.running ?? "?"}/${event.max ?? "?"} sandboxes busy)`;
+      if (status === "queued") text = `Queued (${event.running ?? "?"}/${event.max ?? "?"} worker bees busy)`;
       else if (status === "cloning") text = event.newProject ? "Setting up the new project" : "Cloning the repo";
       else if (status === "running") text = "Agent working in the VM";
       else if (status === "reviewing") text = `Review cycle ${event.cycle ?? "?"} of ${event.of ?? "?"}`;
@@ -1409,7 +1409,7 @@ function computerSections(info: SystemInfo): HTMLElement[] {
   const facts: [string, string][] = [
     ["VM size", `${info.vm.memory} memory, ${info.vm.cpus} CPU${info.vm.cpus === "1" ? "" : "s"}`],
     ["Time limit per run", `${info.vm.timeoutMin} minutes`],
-    ["Runs at once", `${info.capacity.running} running of ${info.capacity.max}, ${info.capacity.queued} queued`],
+    ["Runs at once (worker bees)", `${info.capacity.running} busy of ${info.capacity.max}, ${info.capacity.queued} queued`],
     ["Shared npm cache", info.npmCache ? "On" : "Off"],
     ["hive version", info.version],
   ];
