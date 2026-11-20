@@ -18,7 +18,7 @@ process.env.HIVE_KEYS_FILE = join(root, "missing-keys");
 process.env.MAX_CONCURRENT_SESSIONS = "2";
 
 const { emptyUsage } = await import("../dist/render.js");
-const { default: webRunRoutes, liveCount, runToJSON, uiStatus } = await import("../dist/web-runs.js");
+const { createSlots, default: webRunRoutes, liveCount, runToJSON, uiStatus } = await import("../dist/web-runs.js");
 
 const meta = {
   repo: "https://github.com/me/demo.git",
@@ -84,18 +84,24 @@ test("GET /status is 404 for a missing or malformed id", async () => {
   }
 });
 
-test("POST /prompt rejects follow-ups, new projects, review cycles and a missing repo", async () => {
-  const cases = [
-    [{ prompt: "x", sessionId: ID }, /follow-ups/i],
-    [{ prompt: "x", newRepo: { name: "demo" } }, /new projects/i],
-    [{ prompt: "x", reviewCycles: 1 }, /review cycles/i],
-    [{ prompt: "x" }, /pick a repository/i],
-  ];
-  for (const [payload, pattern] of cases) {
-    const res = await app.inject({ method: "POST", url: "/prompt", payload });
-    assert.equal(res.statusCode, 400, JSON.stringify(payload));
-    assert.match(res.json().error, pattern);
-  }
+test("POST /prompt rejects repo and newRepo together and a missing repository", async () => {
+  const both = await app.inject({
+    method: "POST",
+    url: "/prompt",
+    payload: { prompt: "x", repo: "me/demo", newRepo: { name: "demo" } },
+  });
+  assert.equal(both.statusCode, 400);
+  assert.equal(both.json().error, "Send repo or newRepo, not both");
+
+  const neither = await app.inject({ method: "POST", url: "/prompt", payload: { prompt: "x" } });
+  assert.equal(neither.statusCode, 400);
+  assert.match(neither.json().error, /pick a repository/i);
+});
+
+test("POST /prompt follow-up for an unknown run is 404", async () => {
+  const res = await app.inject({ method: "POST", url: "/prompt", payload: { prompt: "x", sessionId: "nope" } });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.json(), { error: "Session not found" });
 });
 
 test("POST /abort is 409 for a run this process isn't running", async () => {
@@ -111,9 +117,54 @@ test("uiStatus maps meta.json to the UI's statuses", () => {
   assert.equal(uiStatus({ ...at, status: "aborted" }, false), "aborted");
   // A run still marked running whose process is gone never finished.
   assert.equal(uiStatus({ ...at, status: "running" }, false), "failed");
-  // Live runs are running whatever meta.json says.
+  // Live runs are running whatever meta.json says…
   assert.equal(uiStatus({ ...at, status: "done" }, true), "running");
   assert.equal(uiStatus({ ...at, status: "failed" }, true), "running");
+  // …except one still waiting for a free slot.
+  assert.equal(uiStatus({ ...at, status: "queued" }, true), "queued");
+  // A queued run whose process is gone never finished.
+  assert.equal(uiStatus({ ...at, status: "queued" }, false), "failed");
+});
+
+test("createSlots runs max at once and queues the rest FIFO", async () => {
+  const slots = createSlots(1);
+  const ac = new AbortController();
+  await slots.acquire(ac.signal);
+  assert.equal(slots.running(), 1);
+  assert.equal(slots.queued(), 0);
+
+  const order = [];
+  const first = slots.acquire(ac.signal).then(() => order.push("first"));
+  const second = slots.acquire(ac.signal).then(() => order.push("second"));
+  assert.equal(slots.queued(), 2);
+
+  slots.release();
+  await first;
+  assert.deepEqual(order, ["first"]);
+  assert.equal(slots.running(), 1);
+
+  slots.release();
+  await second;
+  assert.deepEqual(order, ["first", "second"]);
+
+  slots.release();
+  assert.equal(slots.running(), 0);
+});
+
+test("createSlots removes an aborted waiter from the queue", async () => {
+  const slots = createSlots(1);
+  const busy = new AbortController();
+  await slots.acquire(busy.signal);
+
+  const queued = new AbortController();
+  const waiting = slots.acquire(queued.signal);
+  assert.equal(slots.queued(), 1);
+  queued.abort();
+  await assert.rejects(waiting, /aborted/);
+  assert.equal(slots.queued(), 0);
+
+  slots.release();
+  assert.equal(slots.running(), 0);
 });
 
 test("runToJSON returns the old Task.toJSON fields", () => {
@@ -145,4 +196,13 @@ test("runToJSON returns the old Task.toJSON fields", () => {
   assert.equal(pushed.resultBranch, "hive/x");
   assert.equal(pushed.commitsPushed, 3);
   assert.equal(pushed.repoSlug, "me/demo");
+
+  const newProject = runToJSON(
+    ID,
+    { ...meta, source: "new", repo: "", newRepo: { name: "demo", private: true }, createdRepo: "me/demo" },
+    false,
+  );
+  assert.equal(newProject.newRepo, "demo");
+  assert.equal(newProject.createdRepo, "me/demo");
+  assert.equal(newProject.repoSlug, "me/demo");
 });

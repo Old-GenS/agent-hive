@@ -17,13 +17,17 @@ import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from 
 import { runSandbox, type SandboxOptions } from "./sandbox.js";
 import {
   applyAndPush,
+  createGithubRepo,
   git,
   githubSlug,
   gitIdentity,
   isDirty,
+  normalizeRepo,
   prepareLocal,
+  prepareNewRepo,
   prepareRepo,
   validateBranch,
+  validateRepoName,
 } from "./git.js";
 import { followJsonl } from "./follow.js";
 import { addUsage, emptyUsage, type Usage } from "./render.js";
@@ -31,7 +35,7 @@ import { startStallWatch } from "./stall.js";
 
 const execFileAsync = promisify(execFile);
 
-export type RunStatus = "running" | "done" | "failed" | "aborted";
+export type RunStatus = "queued" | "running" | "done" | "failed" | "aborted";
 
 /**
  * The run's outcome from how the sandbox ended and what pi's last assistant message said. The
@@ -60,8 +64,11 @@ export function finalStatus(r: {
 
 export interface RunMeta {
   repo: string;
-  /** "local" when the run cloned the user's checkout; "remote" when it cloned a URL. */
-  source: "local" | "remote";
+  /**
+   * "local" when the run cloned the user's checkout; "remote" when it cloned a URL; "new" when it
+   * started from an empty repository and creates the GitHub repo when it has commits.
+   */
+  source: "local" | "remote" | "new";
   base: string;
   provider: string;
   model: string;
@@ -72,6 +79,14 @@ export interface RunMeta {
   pid: number;
   commits: number;
   usage: Usage;
+  /** a new-project run's repository */
+  newRepo?: { name: string; private: boolean };
+  /** the GitHub repo a new-project run created, as owner/name */
+  createdRepo?: string;
+  reviewCycles?: number;
+  reviewModel?: string;
+  /** agent steps run so far; earlier event logs are kept as io/events-<n>.jsonl */
+  steps?: number;
   /** text of the agent's latest assistant message, written when the run ends */
   summary?: string;
   /** where `hive push` put the run's commits */
@@ -100,9 +115,9 @@ export function writeMeta(dir: string, meta: RunMeta): void {
   renameSync(tmp, metaPath(dir));
 }
 
-/** Status "running" and the process that started the VM is still alive. */
+/** Status "queued" or "running" and the process that started the VM is still alive. */
 export function isLive(meta: RunMeta): boolean {
-  if (meta.status !== "running") return false;
+  if (meta.status !== "running" && meta.status !== "queued") return false;
   try {
     process.kill(meta.pid, 0);
     return true;
@@ -257,13 +272,54 @@ export function prArgs(o: {
 /**
  * Put a finished run's commits on a branch in the repo's push remote with the user's own git
  * credentials (never forced). Remote runs push back to the URL they were cloned from.
+ *
+ * `update` re-pushes the branch a run already pushed (a follow-up rewrites that branch, which
+ * belongs to the run). New-project runs create the GitHub repo first, then push to `main`.
  */
 export async function pushRun(
   dir: string,
-  o: { branch?: string; remote?: string; requireGithub?: boolean } = {},
+  o: { branch?: string; remote?: string; requireGithub?: boolean; update?: boolean } = {},
 ): Promise<{ branch: string; url: string; commits: number }> {
   const meta = readMeta(dir);
   if (meta.status !== "done") throw new Error(`run is ${meta.status}; nothing to push`);
+
+  // A follow-up run owns the branch an earlier prompt pushed; force-update it.
+  if (o.update && meta.pushed) {
+    const pushed = meta.pushed;
+    let commits: number;
+    try {
+      commits = await applyAndPush(dir, meta.base, pushed.branch, true);
+    } catch (err) {
+      throw new Error(`${(err as Error).message} (check your git credentials for ${pushed.url})`);
+    }
+    meta.pushed = { ...pushed, at: Date.now() };
+    writeMeta(dir, meta);
+    return { branch: pushed.branch, url: pushed.url, commits };
+  }
+
+  if (meta.source === "new") {
+    // No commits, no repository.
+    if (!(meta.commits > 0)) return { branch: "main", url: "", commits: 0 };
+    let url: string;
+    if (!meta.createdRepo) {
+      const slug = await createGithubRepo(meta.newRepo!.name, meta.newRepo!.private);
+      url = normalizeRepo(slug).url;
+      await git(["remote", "add", "origin", url], join(dir, "origin"));
+      meta.createdRepo = slug;
+    } else {
+      url = normalizeRepo(meta.createdRepo).url;
+    }
+    let commits: number;
+    try {
+      commits = await applyAndPush(dir, meta.base, "main", true);
+    } catch (err) {
+      throw new Error(`${(err as Error).message} (check your git credentials for ${url})`);
+    }
+    meta.pushed = { branch: "main", url, at: Date.now() };
+    writeMeta(dir, meta);
+    return { branch: "main", url, commits };
+  }
+
   if (!(meta.commits > 0)) throw new Error("nothing to push");
   const branch = validateBranch(o.branch ?? config.git.branchPrefix + basename(dir));
 
@@ -349,18 +405,28 @@ export async function openPr(dir: string, o: { base?: string } = {}): Promise<st
 }
 
 export interface StartRunOptions {
-  /** Local repo to clone; mutually exclusive with `remote`. */
+  /** Local repo to clone; exactly one of repo, remote or newRepo. */
   repo?: string;
-  /** Remote repo to clone; mutually exclusive with `repo`. */
+  /** Remote repo to clone; exactly one of repo, remote or newRepo. */
   remote?: { url: string; name: string; ref?: string };
+  /** Start from an empty repo and create the GitHub repo when the run has commits. */
+  newRepo?: { name: string; private?: boolean };
   prompt: string;
   provider?: string;
   model?: string;
   thinking?: string;
+  /** replaces config.systemPrompt for this run */
+  systemPrompt?: string;
+  reviewCycles?: number;
+  reviewModel?: string;
   onEvent: (e: any) => void;
   signal: AbortSignal;
-  /** Called once the run dir and meta.json exist and the run's status is "running". */
+  /** Called once the run dir and meta.json exist and the run's status is "queued". */
   onStart?: (dir: string, meta: RunMeta) => void;
+  /** Called just before each step the run enters (cloning, running, reviewing, …). */
+  onStatus?: (status: string, extra?: Record<string, unknown>) => void;
+  /** Waits for a free run slot; rejects (or abort is signalled) when the run is aborted while queued. */
+  waitTurn?: (signal: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -368,7 +434,13 @@ export interface StartRunOptions {
  * starts; afterwards the outcome is recorded in meta.json and returned.
  */
 export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta: RunMeta }> {
-  if ((o.repo !== undefined) === (o.remote !== undefined)) throw new Error("startRun needs repo or remote");
+  const sources = [o.repo !== undefined, o.remote !== undefined, o.newRepo !== undefined].filter(Boolean).length;
+  if (sources !== 1) throw new Error("startRun needs exactly one of repo, remote or newRepo");
+  let newRepo: { name: string; private: boolean } | undefined;
+  if (o.newRepo !== undefined) {
+    newRepo = { name: validateRepoName(o.newRepo.name), private: o.newRepo.private !== false };
+  }
+
   const provider = resolveProvider(o.provider);
   if (!provider || !PROVIDERS[provider]) {
     throw new Error(`Unknown or missing provider. Supported: ${Object.keys(PROVIDERS).join(", ")}`);
@@ -379,30 +451,146 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   if (!model) throw new Error(`model is required for provider "${provider}" (or set DEFAULT_MODEL)`);
   const thinking = o.thinking || config.defaultThinking;
   if (!THINKING.includes(thinking)) throw new Error(`thinkingLevel must be one of ${THINKING.join(", ")}`);
+  const cycles = o.reviewCycles ?? 0;
+  if (!Number.isInteger(cycles) || cycles < 0 || cycles > 5) throw new Error("reviewCycles must be 0-5");
 
-  const dir = makeRunDir(o.remote ? o.remote.name : (o.repo as string));
-  const base = o.remote
-    ? await prepareRepo(dir, o.remote.url, o.remote.ref)
-    : await prepareLocal(o.repo as string, join(dir, "work"));
-  writeFileSync(join(dir, "io", "prompt.md"), o.prompt);
-  writeFileSync(join(dir, "io", "system.md"), config.systemPrompt);
-
+  const dir = makeRunDir(newRepo ? newRepo.name : (o.remote ? o.remote.name : (o.repo as string)));
   const meta: RunMeta = {
-    repo: o.remote ? o.remote.url : (o.repo as string),
-    source: o.remote ? "remote" : "local",
-    base,
+    repo: o.remote ? o.remote.url : newRepo ? "" : (o.repo as string),
+    source: newRepo ? "new" : o.remote ? "remote" : "local",
+    base: "",
     provider,
     model,
     thinking,
     prompt: o.prompt.slice(0, 200),
-    status: "running",
+    status: "queued",
     pid: process.pid,
     commits: 0,
     usage: emptyUsage(),
     createdAt: Date.now(),
   };
+  if (newRepo) meta.newRepo = newRepo;
+  if (cycles > 0) meta.reviewCycles = cycles;
+  if (o.reviewModel !== undefined) meta.reviewModel = o.reviewModel;
   writeMeta(dir, meta);
   o.onStart?.(dir, meta);
+
+  try {
+    await o.waitTurn?.(o.signal);
+  } catch (err) {
+    if (!o.signal.aborted) throw err;
+  }
+  if (o.signal.aborted) {
+    meta.status = "aborted";
+    meta.finishedAt = Date.now();
+    writeMeta(dir, meta);
+    return { dir, meta };
+  }
+
+  try {
+    o.onStatus?.("cloning", newRepo ? { newProject: true } : {});
+    meta.base = newRepo
+      ? await prepareNewRepo(dir)
+      : o.remote
+        ? await prepareRepo(dir, o.remote.url, o.remote.ref)
+        : await prepareLocal(o.repo as string, join(dir, "work"));
+  } catch (err) {
+    markFailed(dir, meta, err);
+    throw err;
+  }
+  meta.status = "running";
+  writeMeta(dir, meta);
+
+  writeFileSync(join(dir, "io", "system.md"), o.systemPrompt || config.systemPrompt);
+
+  const prefix = newRepo
+    ? `/work is an empty git repository for a new project. Create the project there and commit your work with clear messages. You cannot push; when you finish, hive creates the GitHub repository ${newRepo.name} and pushes your commits to it.\n\n`
+    : "";
+  return runSteps(dir, meta, prefix + o.prompt, {
+    continueSession: false,
+    signal: o.signal,
+    onEvent: o.onEvent,
+    onStatus: o.onStatus,
+  });
+}
+
+export interface ContinueRunOptions {
+  prompt: string;
+  signal: AbortSignal;
+  onEvent: (e: any) => void;
+  onStatus?: (status: string, extra?: Record<string, unknown>) => void;
+  waitTurn?: (signal: AbortSignal) => Promise<void>;
+}
+
+/**
+ * Continue a finished run in the same pi session and on the same work copy. Pushing is left to
+ * `hive push` (or the web UI's finish step), as for a first prompt.
+ */
+export async function continueRun(dir: string, o: ContinueRunOptions): Promise<{ dir: string; meta: RunMeta }> {
+  const meta = readMeta(dir);
+  if (isLive(meta)) throw new Error("run is still going");
+  if (!existsSync(join(dir, "work"))) throw new Error("run has no work folder");
+
+  meta.status = "queued";
+  meta.pid = process.pid;
+  delete meta.error;
+  delete meta.finishedAt;
+  writeMeta(dir, meta);
+
+  try {
+    await o.waitTurn?.(o.signal);
+  } catch (err) {
+    if (!o.signal.aborted) throw err;
+  }
+  if (o.signal.aborted) {
+    meta.status = "aborted";
+    meta.finishedAt = Date.now();
+    writeMeta(dir, meta);
+    return { dir, meta };
+  }
+
+  meta.status = "running";
+  writeMeta(dir, meta);
+  return runSteps(dir, meta, o.prompt, {
+    continueSession: true,
+    signal: o.signal,
+    onEvent: o.onEvent,
+    onStatus: o.onStatus,
+  });
+}
+
+/** One agent step's outcome. */
+interface AgentStepResult {
+  status: RunStatus;
+  error?: string;
+  summary?: string;
+  lastText: string;
+}
+
+interface AgentStepOptions {
+  prompt: string;
+  model: string;
+  session: "new" | "continue" | "none";
+  signal: AbortSignal;
+  onEvent: (e: any) => void;
+}
+
+/** Run pi once in a fresh microVM, on the run's work/ copy. */
+async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promise<AgentStepResult> {
+  // Keep earlier steps' logs: only the latest is io/events.jsonl, which `hive log` follows.
+  const steps = meta.steps ?? 0;
+  if (steps >= 1) {
+    const ioDir = join(dir, "io");
+    for (const [from, to] of [
+      [join(ioDir, "events.jsonl"), join(ioDir, `events-${steps}.jsonl`)],
+      [join(ioDir, "stderr.log"), join(ioDir, `stderr-${steps}.log`)],
+    ]) {
+      if (existsSync(from)) renameSync(from, to);
+    }
+  }
+  meta.steps = steps + 1;
+
+  writeFileSync(join(dir, "io", "prompt.md"), o.prompt);
 
   const mounts: SandboxOptions["mounts"] = [
     { host: join(dir, "work"), container: "/work" },
@@ -419,27 +607,30 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     mounts.push({ host: config.sandbox.vmCache, container: "/root/.cache", shared: true });
   }
 
+  const sessionArgs =
+    o.session === "none" ? ["--no-session"] : o.session === "continue" ? ["--session-dir", "/session", "--continue"] : ["--session-dir", "/session"];
   const command = [
     "hive-agent",
     "-p",
-    "--provider", provider,
-    "--model", model,
-    "--thinking", thinking,
-    "--session-dir", "/session",
+    "--provider", meta.provider,
+    "--model", o.model,
+    "--thinking", meta.thinking,
+    ...sessionArgs,
     "--append-system-prompt", "/io/system.md",
     "@/io/prompt.md",
     "Do the task described in the attached file prompt.md.",
   ];
 
+  const key = providerKey(meta.provider)!;
   const handle = runSandbox({
     name: "hive-" + basename(dir),
     mounts,
-    env: { [PROVIDERS[provider].sandboxEnv]: key, ...gitIdentity() },
+    env: { [PROVIDERS[meta.provider].sandboxEnv]: key, ...gitIdentity() },
     command,
     ioDir: join(dir, "io"),
   });
 
-  let summary: string | undefined;
+  let lastText = "";
   let lastActivity = Date.now();
   let stopReason: string | undefined;
   let modelError: string | undefined;
@@ -453,7 +644,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
         .filter((b: any) => b?.type === "text" && typeof b.text === "string")
         .map((b: any) => b.text)
         .join("");
-      if (text) summary = text;
+      if (text) lastText = text;
     }
     o.onEvent(e);
   });
@@ -497,20 +688,121 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     timeoutMin: config.sandbox.timeoutMin,
     stallMin: config.sandbox.stallMin,
   });
-  let status = outcome.status;
-  let error = outcome.error;
+  return {
+    status: outcome.status,
+    error: outcome.error,
+    summary: lastText || undefined,
+    lastText,
+  };
+}
+
+export const REVIEW_PROMPT = (task: string, base: string) => `You are reviewing changes another agent just made in this repository.
+
+The task they were given:
+<task>
+${task}
+</task>
+
+Run \`git diff ${base}\` (and \`git status\` for new files) to see every change since commit ${base}.
+Check for bugs, security problems, unhandled edge cases, and whether the change does what the
+task asked. Read the surrounding code where needed and run the project's tests or build if it
+has them.
+
+Fix every real problem directly in the files and commit the fixes with a message starting
+"review:". Do not make stylistic or speculative changes. If nothing needs fixing, change nothing
+and reply with a first line of exactly: LGTM`;
+
+/** True when a reviewer said it found nothing to fix. */
+export function isLgtm(text: string): boolean {
+  return /^\s*LGTM\b/i.test(text);
+}
+
+interface RunStepsOptions {
+  continueSession: boolean;
+  signal: AbortSignal;
+  onEvent: (e: any) => void;
+  onStatus?: (status: string, extra?: Record<string, unknown>) => void;
+}
+
+/**
+ * The shared pipeline for a first prompt and a follow-up: the main agent step, optional review
+ * cycles, then export whatever was committed (always, whatever the outcome) and record the result.
+ */
+/** Record an unexpected error so the run never stays "running" or "queued". */
+function markFailed(dir: string, meta: RunMeta, err: unknown): void {
+  meta.status = "failed";
+  meta.error = (err as Error)?.message ?? String(err);
+  meta.finishedAt = Date.now();
+  writeMeta(dir, meta);
+}
+
+async function runSteps(
+  dir: string,
+  meta: RunMeta,
+  prompt: string,
+  o: RunStepsOptions,
+): Promise<{ dir: string; meta: RunMeta }> {
+  try {
+    return await runStepsInner(dir, meta, prompt, o);
+  } catch (err) {
+    markFailed(dir, meta, err);
+    throw err;
+  }
+}
+
+async function runStepsInner(
+  dir: string,
+  meta: RunMeta,
+  prompt: string,
+  o: RunStepsOptions,
+): Promise<{ dir: string; meta: RunMeta }> {
+  o.onStatus?.("running");
+  const main = await agentStep(dir, meta, {
+    prompt,
+    model: meta.model,
+    session: o.continueSession ? "continue" : "new",
+    signal: o.signal,
+    onEvent: o.onEvent,
+  });
+  let status = main.status;
+  let error = main.error;
+  if (main.summary !== undefined) meta.summary = main.summary.slice(0, 60_000);
+
+  const cycles = meta.reviewCycles ?? 0;
+  if (status === "done" && cycles > 0) {
+    for (let i = 1; i <= cycles; i++) {
+      o.onStatus?.("reviewing", { cycle: i, of: cycles });
+      const review = await agentStep(dir, meta, {
+        prompt: REVIEW_PROMPT(prompt, meta.base),
+        model: meta.reviewModel || meta.model,
+        session: "none",
+        signal: o.signal,
+        onEvent: o.onEvent,
+      });
+      if (review.status !== "done") {
+        status = review.status;
+        error = review.error;
+        break;
+      }
+      if (isLgtm(review.lastText)) break;
+    }
+  }
 
   // Export whatever the agent committed, whatever the outcome: a run that timed out, stalled,
-  // failed or was stopped still keeps the work it committed.
+  // failed or was stopped still keeps the work it committed. A follow-up exports the whole
+  // history again, so out/ starts empty.
   if (existsSync(join(dir, "work"))) {
+    const out = join(dir, "out");
+    rmSync(out, { recursive: true, force: true });
+    mkdirSync(out);
     const exp = runSandbox({
       name: "hive-" + basename(dir) + "-export",
       mounts: [
         { host: join(dir, "work"), container: "/work" },
-        { host: join(dir, "out"), container: "/out" },
+        { host: out, container: "/out" },
       ],
       env: gitIdentity(),
-      command: ["hive-export", base],
+      command: ["hive-export", meta.base],
       // Its own folder, so the export never touches the agent's event log (hive log reads it).
       ioDir: join(dir, "io-export"),
     });
@@ -530,7 +822,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
 
   meta.status = status;
   if (error !== undefined) meta.error = error;
-  if (summary !== undefined) meta.summary = summary.slice(0, 60_000);
+  else delete meta.error;
   meta.finishedAt = Date.now();
   writeMeta(dir, meta);
   return { dir, meta };

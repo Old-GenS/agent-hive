@@ -5,13 +5,24 @@
  * runs are read back from meta.json and io/events.jsonl.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { issueTicket } from "./auth.js";
 import { config } from "./config.js";
 import { changeSummary, githubSlug, issueBody, normalizeRepo, openIssue, type ChangeSummary } from "./git.js";
 import { runtimeInfo } from "./sandbox.js";
-import { cleanRun, listRuns, openPr, pushRun, readMeta, startRun, writeMeta, type RunMeta } from "./runs.js";
+import {
+  cleanRun,
+  continueRun,
+  isLive,
+  listRuns,
+  openPr,
+  pushRun,
+  readMeta,
+  startRun,
+  writeMeta,
+  type RunMeta,
+} from "./runs.js";
 
 const promptSchema = {
   body: {
@@ -42,15 +53,82 @@ const promptSchema = {
   },
 } as const;
 
+/** How many runs may be in progress at once, with a FIFO queue behind them. */
+export interface Slots {
+  acquire(signal: AbortSignal): Promise<void>;
+  release(): void;
+  running(): number;
+  queued(): number;
+}
+
+/** A fixed number of run slots, handed out FIFO. An aborted waiter leaves the queue. */
+export function createSlots(max: number): Slots {
+  let running = 0;
+  interface Waiter {
+    resolve: () => void;
+    reject: (err: Error) => void;
+    signal: AbortSignal;
+    onAbort: () => void;
+  }
+  const waiters: Waiter[] = [];
+  const abortError = () => new Error("aborted while queued");
+
+  return {
+    acquire(signal: AbortSignal): Promise<void> {
+      if (signal.aborted) return Promise.reject(abortError());
+      if (running < max) {
+        running++;
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve, reject) => {
+        const waiter: Waiter = { resolve, reject, signal, onAbort: () => {} };
+        waiter.onAbort = () => {
+          const i = waiters.indexOf(waiter);
+          if (i !== -1) waiters.splice(i, 1);
+          reject(abortError());
+        };
+        signal.addEventListener("abort", waiter.onAbort, { once: true });
+        waiters.push(waiter);
+      });
+    },
+    release(): void {
+      if (running > 0) running--;
+      while (waiters.length > 0) {
+        const waiter = waiters.shift()!;
+        waiter.signal.removeEventListener("abort", waiter.onAbort);
+        if (waiter.signal.aborted) {
+          waiter.reject(abortError());
+          continue;
+        }
+        running++;
+        waiter.resolve();
+        return;
+      }
+    },
+    running: () => running,
+    queued: () => waiters.length,
+  };
+}
+
+const slots = createSlots(config.maxConcurrent);
+
 /** A run started by this process, so its events are still in memory. */
 interface LiveRun {
   abort: AbortController;
   replay: any[];
   listeners: Set<(event: any) => void>;
+  /** this run holds a slot (and must release it exactly once when it ends) */
+  acquired: boolean;
+  /** it had to wait for a free slot */
+  waiting: boolean;
 }
 
 const liveRuns = new Map<string, LiveRun>();
 const changesById = new Map<string, ChangeSummary>();
+
+function liveEntry(abort: AbortController): LiveRun {
+  return { abort, replay: [], listeners: new Set(), acquired: false, waiting: false };
+}
 
 /** Add an event to a live run's replay buffer and hand it to every listener. */
 function publish(id: string, event: any): void {
@@ -65,13 +143,39 @@ export function liveCount(): number {
   return liveRuns.size;
 }
 
+/** The real number of running and queued runs (for `/runs` and `/capacity`). */
+export function capacity(): { running: number; queued: number; max: number } {
+  return { running: slots.running(), queued: slots.queued(), max: config.maxConcurrent };
+}
+
+/** Wait for a free slot, telling the UI when the run has to queue. */
+function waitForSlot(id: string, live: LiveRun, signal: AbortSignal): Promise<void> {
+  if (slots.running() >= config.maxConcurrent) {
+    live.waiting = true;
+    publish(id, { type: "hive_status", status: "queued", running: slots.running(), max: config.maxConcurrent });
+  }
+  return slots.acquire(signal).then(() => {
+    live.acquired = true;
+  });
+}
+
+/** Release a run's slot, at most once. */
+function releaseLive(live: LiveRun): void {
+  if (!live.acquired) return;
+  live.acquired = false;
+  slots.release();
+}
+
 /** The UI's status for a run folder: live runs are running, otherwise it follows meta.json. */
-export function uiStatus(meta: RunMeta, live: boolean): "running" | "idle" | "failed" | "aborted" {
-  if (live) return "running";
+export function uiStatus(
+  meta: RunMeta,
+  live: boolean,
+): "queued" | "running" | "idle" | "failed" | "aborted" {
+  if (live) return meta.status === "queued" ? "queued" : "running";
   if (meta.status === "done") return "idle";
   if (meta.status === "failed") return "failed";
   if (meta.status === "aborted") return "aborted";
-  // A run still marked "running" whose process is gone (server/CLI restarted) never finished.
+  // A run still marked "running"/"queued" whose process is gone (server/CLI restarted) never finished.
   return "failed";
 }
 
@@ -90,12 +194,14 @@ export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: Ch
     status: uiStatus(meta, live),
     isStreaming: live,
     repo: meta.repo,
+    newRepo: meta.newRepo?.name,
+    createdRepo: meta.createdRepo,
     resultBranch: meta.pushed?.branch,
     commitsPushed: meta.pushed ? meta.commits : 0,
     changes: changes ?? changesById.get(id),
     prUrl: meta.prUrl,
     issueUrl: meta.issueUrl,
-    repoSlug: githubSlug(meta.pushed?.url ?? meta.repo),
+    repoSlug: meta.createdRepo ?? githubSlug(meta.pushed?.url ?? meta.repo),
     usage: meta.usage,
     provider: meta.provider,
     model: meta.model,
@@ -148,7 +254,7 @@ async function finishRun(id: string): Promise<void> {
   if (meta.status === "done" && meta.commits > 0) {
     publish(id, { type: "hive_status", status: "pushing" });
     try {
-      await pushRun(dir);
+      await pushRun(dir, { update: meta.pushed !== undefined });
     } catch (err) {
       const fresh = metaOf(dir) ?? meta;
       fresh.error = (err as Error).message;
@@ -174,29 +280,83 @@ async function finishRun(id: string): Promise<void> {
   liveRuns.delete(id);
 }
 
+/** Finish a live run and release its slot, whichever way it ended. */
+async function endRun(id: string): Promise<void> {
+  const live = liveRuns.get(id);
+  try {
+    await finishRun(id);
+  } finally {
+    if (live) releaseLive(live);
+  }
+}
+
+/** Continue a finished run in the same session. */
+async function followUp(body: any, reply: FastifyReply) {
+  const id = body.sessionId as string;
+  const dir = runDir(id);
+  if (!dir) return notFound(reply);
+  const meta = metaOf(dir);
+  if (!meta) return notFound(reply);
+  if (liveRuns.has(id) || isLive(meta)) {
+    return reply.code(409).send({ error: "Session is still going; wait for it to finish or abort it" });
+  }
+
+  const abort = new AbortController();
+  const live = liveEntry(abort);
+  liveRuns.set(id, live);
+
+  const run = continueRun(dir, {
+    prompt: body.prompt,
+    signal: abort.signal,
+    onEvent: (event) => publish(id, event),
+    onStatus: (status, extra) => publish(id, { type: "hive_status", status, ...extra }),
+    waitTurn: (signal) => waitForSlot(id, live, signal),
+  });
+  void run
+    .then(() => endRun(id))
+    .catch((err: unknown) => {
+      const message = (err as Error).message;
+      const fresh = metaOf(dir) ?? meta;
+      publish(id, { type: "hive_done", ...runToJSON(id, fresh, false), status: "failed", error: message });
+      liveRuns.delete(id);
+      releaseLive(live);
+    });
+
+  return {
+    sessionId: id,
+    status: live.waiting ? "queued" : "running",
+    repo: meta.repo,
+    stepStartedAt: meta.createdAt,
+    finishedAt: undefined,
+  };
+}
+
 export default async function webRunRoutes(app: FastifyInstance) {
-  // Start a run (or try to follow one up, which the CLI engine does not support yet).
+  // Start a run, or continue a finished one with a follow-up prompt.
   app.post("/prompt", { schema: promptSchema }, async (req, reply) => {
     const body = req.body as any;
+    if (body.sessionId) return followUp(body, reply);
 
-    if (body.sessionId) return reply.code(400).send({ error: "Follow-ups aren't supported yet" });
-    if (body.newRepo) return reply.code(400).send({ error: "New projects aren't supported yet" });
-    if ((body.reviewCycles ?? 0) > 0) return reply.code(400).send({ error: "Review cycles aren't supported yet" });
-    if (!body.repo) return reply.code(400).send({ error: "Pick a repository" });
-    if (liveRuns.size >= config.maxConcurrent) {
-      return reply.code(503).send({ error: "All worker bees are busy; try again when a run finishes" });
+    if (body.repo && body.newRepo) {
+      return reply.code(400).send({ error: "Send repo or newRepo, not both" });
+    }
+    if (!body.repo && !body.newRepo) {
+      return reply.code(400).send({ error: "Pick a repository" });
     }
 
-    let remote: { url: string; name: string; ref?: string };
-    try {
-      remote = { ...normalizeRepo(body.repo), ref: body.branch };
-    } catch (err) {
-      return reply.code(400).send({ error: (err as Error).message });
+    let remote: { url: string; name: string; ref?: string } | undefined;
+    if (body.repo) {
+      try {
+        remote = { ...normalizeRepo(body.repo), ref: body.branch };
+      } catch (err) {
+        return reply.code(400).send({ error: (err as Error).message });
+      }
     }
 
     const abort = new AbortController();
     let id = "";
     let startedMeta: RunMeta | undefined;
+    let live: LiveRun | undefined;
     let didStart = false;
     let startResolve!: () => void;
     let startReject!: (err: Error) => void;
@@ -208,26 +368,33 @@ export default async function webRunRoutes(app: FastifyInstance) {
     // Don't await the run itself: respond as soon as onStart hands over the run dir and meta.
     const run = startRun({
       remote,
+      newRepo: body.newRepo ? { name: body.newRepo.name, private: body.newRepo.private ?? true } : undefined,
       prompt: body.prompt,
       provider: body.provider,
       model: body.model,
       thinking: body.thinkingLevel,
+      systemPrompt: body.systemPromptOverride,
+      reviewCycles: body.reviewCycles,
+      reviewModel: body.reviewModel,
       signal: abort.signal,
       onEvent: (event) => publish(id, event),
+      onStatus: (status, extra) => publish(id, { type: "hive_status", status, ...extra }),
+      waitTurn: (signal) => waitForSlot(id, live!, signal),
       onStart: (dir, meta) => {
         id = basename(dir);
         startedMeta = meta;
-        liveRuns.set(id, { abort, replay: [], listeners: new Set() });
-        publish(id, { type: "hive_status", status: "running" });
+        live = liveEntry(abort);
+        liveRuns.set(id, live);
+        publish(id, { type: "hive_status", status: "queued" });
         didStart = true;
         startResolve();
       },
     });
 
     void run
-      .then(() => finishRun(id))
+      .then(() => endRun(id))
       .catch((err: unknown) => {
-        if (!didStart) {
+        if (!didStart || !live) {
           startReject(err as Error);
           return;
         }
@@ -241,6 +408,7 @@ export default async function webRunRoutes(app: FastifyInstance) {
             : { type: "hive_done", status: "failed", error: message },
         );
         liveRuns.delete(id);
+        releaseLive(live);
       });
 
     try {
@@ -251,10 +419,11 @@ export default async function webRunRoutes(app: FastifyInstance) {
 
     return {
       sessionId: id,
-      status: "running",
-      repo: remote.url,
+      status: live?.waiting ? "queued" : "running",
+      repo: startedMeta!.repo,
       model: startedMeta!.model,
       provider: startedMeta!.provider,
+      newRepo: body.newRepo?.name,
       stepStartedAt: startedMeta!.createdAt,
       finishedAt: undefined,
     };
@@ -262,7 +431,7 @@ export default async function webRunRoutes(app: FastifyInstance) {
 
   app.get("/runs", async () => ({
     runs: listRuns().map(({ name, meta }) => runToJSON(name, meta, liveRuns.has(name))),
-    capacity: { running: liveRuns.size, queued: 0, max: config.maxConcurrent },
+    capacity: capacity(),
   }));
 
   app.get("/status/:sessionId", async (req, reply) => {
@@ -363,25 +532,39 @@ export default async function webRunRoutes(app: FastifyInstance) {
       return;
     }
 
-    // A finished run: replay the events the VM wrote, then the closing hive_done.
+    // A finished run: replay every step's events in order, then the closing hive_done.
     const meta = metaOf(dir);
     if (!meta) {
       socket.close(4004, "Session not found");
       return;
     }
-    let text = "";
+    const ioDir = join(dir, "io");
+    let names: string[] = [];
     try {
-      text = readFileSync(join(dir, "io", "events.jsonl"), "utf8");
+      names = readdirSync(ioDir);
     } catch {
-      // no event log: still send the hive_done below
+      // no event logs: still send the hive_done below
     }
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+    const stepFiles = names
+      .map((name) => ({ name, n: /^events-(\d+)\.jsonl$/.exec(name)?.[1] }))
+      .filter((file): file is { name: string; n: string } => file.n !== undefined)
+      .sort((a, b) => Number(a.n) - Number(b.n))
+      .map((file) => file.name);
+    for (const name of [...stepFiles, "events.jsonl"]) {
+      let text = "";
       try {
-        send(JSON.parse(trimmed));
+        text = readFileSync(join(ioDir, name), "utf8");
       } catch {
-        // skip a half-written line
+        continue;
+      }
+      for (const line of text.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          send(JSON.parse(trimmed));
+        } catch {
+          // skip a half-written line
+        }
       }
     }
     send({ type: "hive_done", ...runToJSON(id, meta, false) });

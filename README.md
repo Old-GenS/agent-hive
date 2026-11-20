@@ -82,7 +82,8 @@ hive push --pr --base main
 
 | Command | What it does |
 |---------|--------------|
-| `hive run "<prompt>"` | Clone the repo into a new run, run the agent in a VM, show its progress live, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--json`, `-f <prompt-file>`, `--repo <owner/name\|url>`, `--ref <branch>`. Ctrl+C stops the run. |
+| `hive run "<prompt>"` | Clone the repo into a new run, run the agent in a VM, show its progress live, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--review <n>` (up to 5 review cycles after the agent finishes), `--review-model <model>`, `--json`, `-f <prompt-file>`, `--repo <owner/name\|url>`, `--ref <branch>`. Ctrl+C stops the run. |
+| `hive continue [run] "<prompt>"` | Continue a finished run in the same pi session and on the same work copy, showing its progress live. `[run]` defaults to the newest run. Pushing is left to `hive push`. |
 | `hive log [run]` | Replay a run's event log. It follows the log live while the run is going. `--json` prints raw events. |
 | `hive diff [run]` | Show the run's changes. `--stat` gives a summary. |
 | `hive apply [run]` | Apply the run's patches to the current repo as uncommitted changes (the repo must be clean and at the run's base), or use `--branch <name>` to put them on a new branch. Local runs only. |
@@ -250,8 +251,9 @@ The UI at `/ui/` follows the design in [docs/GUI.md](docs/GUI.md). `npm run buil
 into `ui/dist`, and the running server serves the new files without a restart.
 
 The web UI uses the same run engine and run folders as `hive run`, so `hive list` shows web runs
-and the web run list shows CLI runs. Follow-ups, review cycles and new projects aren't available
-from the web UI yet.
+and the web run list shows CLI runs. Follow-ups, review cycles and new projects work from the web
+UI too, all through the CLI engine. When `MAX_CONCURRENT_SESSIONS` runs are already going, new runs
+wait in a FIFO queue and the run list shows them as queued.
 
 **Runs**
 - **Several runs at once:** the Runs page keeps a run list next to the current view (on a phone it
@@ -337,7 +339,7 @@ In addition to the provider and sandbox settings above:
 |----------|---------|-------------|
 | `API_TOKEN` | — | Bearer token (min 16 chars). Or `API_TOKENS` as JSON `{"token": {"name": "…"}}`. |
 | `PORT` / `HOST` | `8080` / `127.0.0.1` | Listen address |
-| `MAX_CONCURRENT_SESSIONS` / `MAX_QUEUED_SESSIONS` | `2` / `10` | Sandboxes at once / queue length before `503` |
+| `MAX_CONCURRENT_SESSIONS` / `MAX_QUEUED_SESSIONS` | `2` / `10` | Sandboxes at once / runs wait in a FIFO queue behind them (`MAX_QUEUED_SESSIONS` is no longer used as a limit) |
 | `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Idle sessions and their files are deleted after this |
 | `HIVE_RUNTIME` | `auto` | `auto` or `libkrun`; `auto` uses libkrun when it is available |
 | `WORKSPACE` | `/tmp/hive-workspace` | Task directories |

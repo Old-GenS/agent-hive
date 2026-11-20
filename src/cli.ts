@@ -13,8 +13,9 @@ import { accessSync, constants, existsSync, readFileSync, realpathSync } from "n
 import { homedir, networkInterfaces } from "node:os";
 import { basename, join } from "node:path";
 
-const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
-hive run [-m model] [-p provider] [-t thinking] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
+const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
+hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
+hive continue [run] "<prompt>"
 hive log [run] [--json]
 hive diff [run] [--stat]
 hive apply [run] [--branch <name>]
@@ -58,6 +59,8 @@ async function cmdRun(args: string[]): Promise<number> {
       file: { type: "string", short: "f" },
       repo: { type: "string" },
       ref: { type: "string" },
+      review: { type: "string" },
+      "review-model": { type: "string" },
     },
   });
   const { normalizeCliRepo, repoTop, isDirty } = await import("./git.js");
@@ -127,6 +130,8 @@ async function cmdRun(args: string[]): Promise<number> {
       provider: values.provider,
       model: values.model,
       thinking: values.thinking,
+      reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
+      reviewModel: values["review-model"],
       signal: abort.signal,
       onEvent: (e) => writeEvent(!!values.json, renderEvent, e),
     });
@@ -149,6 +154,70 @@ async function cmdRun(args: string[]): Promise<number> {
     }
     console.error(`hive diff ${name}`);
     if (meta.source !== "remote") console.error(`hive apply ${name}`);
+    console.error(`hive push ${name}`);
+    return 0;
+  }
+  if (meta.status === "aborted") {
+    console.error("hive: aborted");
+    return 130;
+  }
+  console.error(`hive: failed: ${meta.error}`);
+  return 1;
+}
+
+async function cmdContinue(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: { json: { type: "boolean" } },
+  });
+  const { continueRun, resolveRun } = await import("./runs.js");
+  const { renderEvent } = await import("./render.js");
+  const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
+
+  // `hive continue <prompt>` continues the newest run; with two positionals the first is the run.
+  const runArg = positionals.length >= 2 ? positionals[0] : undefined;
+  const prompt = positionals.length >= 2 ? positionals[1] : (positionals[0] ?? "");
+  if (!prompt.trim()) throw new Error("a prompt is required");
+
+  if (!libkrunAvailable()) {
+    console.error("hive: can't start a VM:");
+    for (const problem of checkSandbox()) console.error(problem);
+    console.error(
+      "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)",
+    );
+    return 1;
+  }
+
+  const dir = resolveRun(runArg);
+  const abort = new AbortController();
+  let stopping = false;
+  const onSigint = () => {
+    if (stopping) process.exit(130);
+    stopping = true;
+    console.error("hive: stopping…");
+    abort.abort();
+  };
+  process.on("SIGINT", onSigint);
+
+  let run: Awaited<ReturnType<typeof continueRun>>;
+  try {
+    run = await continueRun(dir, {
+      prompt,
+      signal: abort.signal,
+      onEvent: (e) => writeEvent(!!values.json, renderEvent, e),
+    });
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
+
+  const name = basename(run.dir);
+  const meta = run.meta;
+  if (meta.status === "done") {
+    console.error(
+      `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
+    );
+    console.error(`hive diff ${name}`);
     console.error(`hive push ${name}`);
     return 0;
   }
@@ -225,9 +294,15 @@ async function cmdPush(args: string[]): Promise<number> {
     },
   });
   if (values.base !== undefined && !values.pr) throw new Error("--base needs --pr");
-  const { openPr, pushRun, resolveRun } = await import("./runs.js");
+  const { openPr, pushRun, readMeta, resolveRun } = await import("./runs.js");
   const dir = resolveRun(positionals[0]);
-  const result = await pushRun(dir, { branch: values.branch, remote: values.remote, requireGithub: !!values.pr });
+  const meta = readMeta(dir);
+  const result = await pushRun(dir, {
+    branch: values.branch,
+    remote: values.remote,
+    requireGithub: !!values.pr,
+    update: meta.pushed !== undefined,
+  });
   process.stdout.write(`hive: pushed ${result.commits} commit(s) to ${result.branch} on ${result.url}\n`);
   if (values.pr) process.stdout.write((await openPr(dir, { base: values.base })) + "\n");
   return 0;
@@ -876,6 +951,9 @@ async function main(): Promise<void> {
       return;
     case "log":
       process.exitCode = await cmdLog(rest);
+      return;
+    case "continue":
+      process.exitCode = await cmdContinue(rest);
       return;
     case "diff":
       process.exitCode = await cmdDiff(rest);
