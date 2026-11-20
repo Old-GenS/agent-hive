@@ -174,10 +174,13 @@ pi release, bump `PI_VERSION` in `image/Containerfile` and rebuild both.
 ## Server (optional)
 
 The same core can also run as an HTTP server with a web UI, REST API and MCP, for a VPS or for
-using it from a phone. The server runs each task in a podman sandbox (a krun microVM with KVM, or
-gVisor or a rootless container without it), or in the libkrun backend above. It clones from GitHub
-with per-repo deploy keys and pushes results to `hive/<id>` branches. It also supports review
-cycles and follow-up messages. A future `hive serve` will put the server on top of the CLI core.
+using it from a phone or another computer. The server runs each task in the libkrun microVM above
+when it can (`HIVE_RUNTIME=auto`), or in a podman sandbox (a krun microVM, gVisor, or a rootless
+container where there's no KVM). It clones and pushes over HTTPS with the server's own `gh` login
+by default, or with per-repo SSH deploy keys (`HIVE_GIT_PROTOCOL=ssh`, handy across several
+VPSes), and pushes each run's commits to a `hive/<id>` branch. It also supports new projects,
+pull requests on click, review cycles and follow-up messages. A future `hive serve` will put the
+server on top of the CLI core.
 
 ```bash
 npm ci && npm run build && npm run build:ui && npm run build:image
@@ -185,22 +188,49 @@ cp .env.example .env      # API_TOKEN (openssl rand -hex 32) and one provider ke
 node dist/index.js        # http://127.0.0.1:8080/ui/
 ```
 
-The server listens on `127.0.0.1`. Put it behind a tunnel or a TLS reverse proxy rather than
-exposing the port. Setting up deploy keys and accounts is covered in [AGENTS.md](AGENTS.md).
+The server listens on `127.0.0.1`. To reach it from other devices, put it behind a tunnel or a
+TLS reverse proxy. On a trusted home network `HOST=0.0.0.0` also works, but that's plain HTTP, so
+the token crosses the network unencrypted. GitHub access and deploy keys are covered in
+[AGENTS.md](AGENTS.md).
+
+The server keeps runs in memory, so **restarting it stops any run in progress** and forgets
+finished ones.
 
 ### Web UI
 
-The UI at `/ui/` has two views. **Runs** is the new-run form — task, optional repository and
-branch, provider, a model box with a per-provider list you can pick from or type into, thinking
-level and review cycles — followed by a live timeline of the run with Stop, follow-up messages and
-a result banner. **Settings › API keys** shows each provider's key status, its default model and
-which provider is the default; it is read-only for now. `npm run build:ui` builds the UI into
-`ui/dist`.
+The UI at `/ui/` follows the design in [docs/GUI.md](docs/GUI.md). `npm run build:ui` builds it
+into `ui/dist`, and the running server serves the new files without a restart.
 
-Pick **New project** instead of a repository to start from an empty repo: give the project a name
-and, when the run finishes with commits, the host creates that repository under the logged-in
-`gh` account (private by default) and pushes the agent's work to its `main` branch. If the agent
-made no commits, no repository is created.
+**Runs**
+- **New run:** the task; **Existing repo** (a repository list from `gh`, and once a repo is picked,
+  its branches with the default shown) or **New project**; provider (only those with a key); a model
+  box with a per-provider list you can pick from or type into; thinking level; review cycles.
+- **While it runs:** a bee circles a honeycomb cell while the microVM works (it rests when queued,
+  lands when done, greys out on failure), with an elapsed timer. The timeline shows the agent's
+  messages and each tool step; finished steps get a check. **Stop** ends the run, and follow-up
+  messages continue the same session.
+- **When it's done:** the agent's last message is its answer or summary. The result box lists the
+  commits and every file changed with lines added and removed, links to the diff on GitHub, and
+  has an **Open pull request** button (nothing is opened until you click). The PR description is
+  the agent's write-up followed by the commit and file lists from git.
+
+Every repo run is set up to change code: the agent commits in the VM and hive pushes its commits to
+a `hive/<id>` branch, even for a review. A review-only mode isn't built yet; until then, say "don't
+edit or commit" in the task.
+
+**New project** starts from an empty repo: give it a name and, when the run finishes with
+commits, the host creates that repository under the `gh` account (private by default) and pushes
+the agent's work to its `main` branch. No commits, no repository.
+
+**Settings**
+- **API keys:** each provider's key status, its default model, and which provider is the default
+  and why. Read-only for now.
+- **This computer:** how runs are isolated (microVM via libkrun, podman with krun or gVisor, or a
+  plain container) with a short explanation, the checks behind it, the GitHub connection (the
+  `gh` login and how runs clone and push), and the limits (VM size, time limit, runs at once).
+
+The header has a light/dark toggle (it follows the device until you pick) and Log out, whose
+tooltip shows the current user.
 
 ### API
 
@@ -210,16 +240,16 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 |--------|----------|-------------|
 | POST | `/prompt` | Start a task (`prompt`, `repo`, `branch`, `newRepo` (`{name, private}`), `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`), or follow up with `sessionId` |
 | POST | `/snippet` | One-shot question about some code; waits and returns `{result}` |
-| GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `error` |
+| GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `changes` (commits and files), `prUrl`, `newRepo` / `createdRepo`, usage, `error` |
 | GET | `/messages/:id` | Conversation so far |
 | POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
 | POST | `/abort/:id` | Stop the running sandbox |
 | DELETE | `/session/:id` | Delete the session and its files |
 | GET | `/files/:id?path=`, `/file/:id?path=` | Browse the agent's working copy |
 | POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |
-| WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` |
+| WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` (`hive_done` carries `changes`, `resultBranch`, `repoSlug`, `createdRepo` and usage) |
 | GET | `/capacity` | Running / queued sandboxes |
-| GET | `/api/system` | Sandbox setup (microVM via libkrun, podman with krun or gVisor, or plain containers), its checks, VM size, capacity and git transport |
+| GET | `/api/system` | Sandbox setup (microVM via libkrun, podman with krun or gVisor, or plain containers), its checks, the `gh` login, VM size, capacity and git transport |
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
 | GET | `/api/models?provider=` | Models to offer for a provider (OpenRouter's live list, a fixed list for the others) |
 | GET | `/api/github/repos`, `/api/github/search?q=` | Repo list / search (via `gh`) |
@@ -244,8 +274,15 @@ In addition to the provider and sandbox settings above:
 
 ## Development
 
-`npm test` builds and runs the test suite. The code layout and the security rules the code relies
-on are in [AGENTS.md](AGENTS.md).
+`npm test` builds and runs the test suite in a throwaway `TMPDIR` that is deleted afterwards. The
+web UI has a browser check that fakes a run, so it never starts an agent or spends credits:
+
+```bash
+npm run build && npm run build:ui
+npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs   # needs Chromium
+```
+
+The code layout and the security rules the code relies on are in [AGENTS.md](AGENTS.md).
 
 ## License
 

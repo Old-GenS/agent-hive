@@ -87,9 +87,14 @@ For VPSs without `/dev/kvm`, and WSL without nested virtualization.
   cost totals. dsh's `--session-id` makes `hive continue` work for it too. The rootfs ships both.
 - **Web search for the agent:** a search key passed like the LLM key (Tavily or Exa free tiers),
   or a keyless fallback; pi supports search through plug-in packages.
-- **GUI with onboarding:** first run (welcome, the `hive doctor` checks with a rootfs download,
-  adding a model key) and key management, following the clickable mockup made for it. Design in
-  `docs/GUI.md`.
+- **GUI with onboarding:** the web UI's new design, Runs and Settings (API keys read-only, This
+  computer) are built. Still to do: first run (welcome, the `hive doctor` checks with a rootfs
+  download, adding a model key) and key management, following the clickable mockup. Design and
+  progress in `docs/GUI.md`.
+- **Web UI review flow:** a review-only mode (the agent answers without editing; nothing is
+  pushed), push only on click, and posting a no-change review as a GitHub issue.
+- **Server restarts without losing runs:** refuse to restart, or let running tasks finish, and keep
+  finished runs across restarts.
 - **Windows:** via WSL2 with nested virtualization (needs step 2's bundled libkrun), or gVisor
   from step 3 where there's no KVM.
 - **`hive serve` front end:** follow opencode's split (the agent as a local server, every UI a

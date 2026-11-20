@@ -2,6 +2,20 @@
 
 Clickable mockup: https://claude.ai/artifact/7aZcD6LT5b12cG5VAzC1v7 (press Play on either screen).
 
+## Built so far
+
+The web UI (`ui/`) uses the mockup's look: light and dark themes, the hexagon logo, Runs and
+Settings in the header.
+
+- **Runs** (not in the mockup): the new-run form, the bee run indicator, the timeline and the result
+  with commits, files changed and Open pull request. See the README's "Web UI" section.
+- **Settings › API keys:** the table from screen 2, read-only: key status, default model and which
+  provider is the default. Test, Make default, Remove, Add key and the storage choice wait for
+  `hive keys`.
+- **Settings › This computer:** the checks from step 2 of screen 1 (KVM, libkrun, pasta, launcher,
+  VM filesystem) plus the GitHub connection and limits. No rootfs download from the UI yet.
+- **Not built:** the first-run screens (screen 1).
+
 ## Screen 1: first run
 
 1. **Welcome:** what hive does, in three points.
