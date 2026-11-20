@@ -1,117 +1,98 @@
 ## Goal
 
-Let the user download a finished run's result: a **zip of the project files** at the end of the
-run, or a **git bundle** of its commits. Both are built **on the host, only from the run's exported
-patches** (`<run>/out/*.patch`) applied to a fresh copy of trusted source code — the same way
-pushes work. **Never read, copy or zip the run's `work/` folder**: its `.git` is controlled by the
-agent (hooks, `core.fsmonitor`, `core.hooksPath`, filters), and the host never runs git there
-(security rule #2 in `AGENTS.md`).
+Three fixes from real runs:
 
-Surfaces: `hive export [run] [--zip | --bundle] [-o <path>] [--force]` in the CLI, and **Download
-zip** / **Download git bundle** buttons on a finished run in the web UI.
+1. **Skip review cycles when the main step made no commits.** A "review and report" task makes no
+   commits; its review cycle then rebuilds the project for nothing (a real run spent 20+ minutes
+   there). Find out with the export step (in a VM, as today), never with host git in `work/`.
+2. **Live cost.** A running run shows `$0.0000` in the run list and the CLI's `hive list` until it
+   ends, because `meta.usage` is only written at the end. Save it while the run goes, and show a
+   live cost on the web UI's run page.
+3. **Markdown in the web UI's timeline.** The agent's messages show raw markdown (`## Heading`,
+   `- item`, tables). Render a safe subset as HTML.
 
 ## Files to touch
 
 - `src/runs.ts`
-- `src/web-runs.ts`
-- `src/cli.ts`
+- `ui/src/markdown.ts` (new)
 - `ui/src/main.ts`
 - `ui/src/app.css`
-- `test/export.test.mjs` (new)
-- `test/web-runs.test.mjs`
+- `test/run-steps.test.mjs`
+- `test/markdown.test.mjs` (new)
 - `README.md`
-- `AGENTS.md`
 - `.handoff/report.md`
 
 ## Steps
 
 1. Run `npm ci`, then `npm run build:vm`.
 
-2. `src/runs.ts`: `export async function exportRun(dir: string, format: "zip" | "bundle", outPath:
-   string): Promise<{ path: string; commits: number }>`:
-   - Refuse with `"run is still going"` when `isLive(meta)`, and with `"no commits to export"` when
-     `patchFiles(dir)` is empty.
-   - **Trusted source:** `<dir>/origin` when it exists (remote and new-project runs, and local runs
-     after `hive push`); otherwise `meta.repo` (a local run's own checkout, which is the user's
-     repo). Never `<dir>/work`.
-   - Make a temp dir (`mkdtempSync(join(tmpdir(), "hive-export-"))`), clone the source into it with
-     the existing `git()` helper from `src/git.ts` (it already disables hooks and fsmonitor):
-     `git(["clone", "-q", "--no-hardlinks", "--no-checkout", "--", source, tmp], undefined,
-     120_000)`, then `git(["checkout", "-q", "-B", "hive-export", meta.base], tmp)`, then
-     `git([...identity, "am", "-q", "--keep-cr", ...patchFiles(dir)], tmp, 120_000)` with the
-     configured author identity (`-c user.name=... -c user.email=...` from `config.git`, as
-     `applyAndPush` in `src/git.ts` does). A base commit missing from the source → throw
-     `` `the run's base commit is no longer in ${source}` ``; a failing `git am` → run `git am
-     --abort` and throw `` `couldn't apply the run's commits: <message>` ``.
-   - **zip:** `git(["archive", "--format=zip", "--prefix=<repo name>/", "-o", outPath,
-     "hive-export"], tmp)`, where `<repo name>` is the run folder name without its
-     `-YYYYMMDD-HHMMSS` suffix (`basename(dir).replace(/-\d{8}-\d{6}(-\d+)?$/, "")`), or `project`
-     if that is empty.
-   - **bundle:** rename the branch to `hive/<run name>` (`git branch -M hive/<run name>`), then
-     `git(["bundle", "create", outPath, "hive/<run name>"], tmp, 120_000)` (full history, so
-     `git clone <file>.bundle` works on its own).
-   - Always remove the temp dir in `finally`. Return `{ path: outPath, commits: patchFiles(dir).length }`.
+2. **Skip pointless reviews** (`src/runs.ts`):
+   - Move the export code in `runStepsInner` (empty `out/`, run the `hive-export` VM with
+     `meta.base`, count `patchFiles(dir)`) into `async function exportPatches(dir: string, meta:
+     RunMeta): Promise<{ ok: boolean; code: number; commits: number }>`, and use it for the final
+     export exactly as today (same error handling).
+   - Before the review loop, when the main step's status is `done`, `meta.reviewCycles > 0` and
+     `work/` exists, call `exportPatches`. If it succeeds with `commits === 0`, skip the review
+     cycles and call `o.onEvent({ type: "hive_note", text: "No commits, so the review was skipped." })`.
+     If it fails, run the reviews as today (don't block on it).
+   - Export a pure `export function shouldReview(o: { status: RunStatus; cycles: number; commits:
+     number | undefined }): boolean` = `status === "done" && cycles > 0 && commits !== 0` and use
+     it for that decision.
 
-3. `src/cli.ts`: `hive export [run] [--zip | --bundle] [-o <path>] [--force]` (default `--zip`;
-   both flags → usage error). The run defaults to the newest, like `hive diff`, via `resolveRun`.
-   Default output: `<cwd>/<run name>.zip` or `.bundle`. Refuse to overwrite an existing file unless
-   `--force`. Print the path, the number of commits, and for a bundle the hint
-   `git clone <path> <folder>`. Add it to the usage text.
+3. **Live cost** (`src/runs.ts`): in `agentStep`'s `followJsonl` callback, after `addUsage`, write
+   `meta.json` (with `writeMeta`) at most once every 5 seconds while usage changed since the last
+   write (track `lastUsageWrite` and the cost written). Keep the final write at the end as today.
+   Export `export function usageWriteDue(now: number, last: number, changed: boolean): boolean` =
+   `changed && now - last >= 5000` and use it.
 
-4. `src/web-runs.ts`: `GET /export/:sessionId?format=zip|bundle` (inside the authenticated scope
-   like the other routes; 404 for an unknown run as the others do; 400 `{ error: "format must be
-   zip or bundle" }`; 409 `{ error: "Run is still going" }` when live; 400 with the `exportRun`
-   message for other errors). Build into a temp file (`mkdtempSync` under `tmpdir()`), then reply
-   with the file contents, `Content-Type` `application/zip` or `application/x-git-bundle`, and
-   `Content-Disposition: attachment; filename="<run name>.<ext>"`. Delete the temp dir after the
-   reply is sent (read the file into a Buffer first, then remove the dir, then send the Buffer).
+4. **Markdown** (`ui/src/markdown.ts`, new, no dependencies, plain TypeScript with only erasable
+   syntax: no `enum`, `namespace` or parameter properties, so Node can import it with type
+   stripping): `export function renderMarkdown(text: string): string` returning HTML. **Escape
+   everything first** with the same rules as `esc()` in `ui/src/util.ts` (copy that one-line
+   function into the module so it stays self-contained), then build markup only from the escaped
+   text. Supported:
+   - fenced code blocks (```` ``` ```` with an optional language) → `<pre><code>…</code></pre>`,
+     no further processing inside;
+   - headings `#` to `####` → `<h3>` to `<h6>` (one level down, so a message never outranks the
+     page title);
+   - unordered lists (`- `, `* `) and ordered lists (`1. `), one level, consecutive lines;
+   - GitHub-style tables (a header row, a `|---|` separator row, body rows) → `<table>` with
+     `<thead>`/`<tbody>`;
+   - blank-line-separated paragraphs → `<p>`, single newlines inside a paragraph → `<br>`;
+   - inline: `` `code` ``, `**bold**`, `*italic*` / `_italic_`, and links `[text](url)` only when
+     the url starts with `https://` or `http://` → `<a href="…" target="_blank" rel="noopener
+     noreferrer">`; any other url leaves the text as plain text.
+   - Nothing else produces tags; raw HTML in the input stays escaped text.
+   In `ui/src/main.ts`, `formatContent` returns `renderMarkdown(text)` (keep the function name; it
+   is used for assistant items). Add styles in `ui/src/app.css` for headings, lists, tables
+   (borders from the existing tokens, horizontal scroll on narrow screens), `pre` and `code` inside
+   timeline assistant items, matching the existing light and dark tokens.
 
-5. `ui/src/main.ts`: in the finished-run banner (where `changesElement`, `prElement` and
-   `issueElement` are appended, around `banner.append(changesElement(item.changes))`), when the run
-   has commits (`item.changes` with at least one commit), append an `exportElement(item)` with two
-   buttons, **Download zip** (`id="downloadZipBtn"`) and **Download git bundle**
-   (`id="downloadBundleBtn"`), and a hint: `Built from the run's commits on this computer.` Each
-   button fetches `/export/<sessionId>?format=...` with the existing `api()` helper (it sends the
-   token), shows `Preparing…` while waiting, turns the response into a Blob, and saves it through a
-   temporary `<a download="<filename from Content-Disposition, else run id + ext>">` with an object
-   URL (revoke it afterwards). On an error response show the server's `error` in an
-   `alert alert-danger` under the buttons, like `prElement` does. Reuse the existing `.pr-actions`
-   and button classes; add CSS to `ui/src/app.css` only if something needs it.
+5. **Live cost on the run page** (`ui/src/main.ts`): keep a running total of
+   `event.message.usage.cost.total` from assistant `message_end` events in the run state and show
+   it in the run page's meta line (`<repo> · <provider> · <model> · $0.0123`, four decimals),
+   updated as events arrive; on `hive_done` use `event.usage.cost` when present.
 
 6. Tests:
-   - `test/export.test.mjs` (new; set `HIVE_RUNS_DIR`, `HIVE_KEYS_FILE`, `HIVE_DOTENV_PATH` to temp
-     paths before importing `../dist/`, like `test/web-runs.test.mjs`). Build a fake run folder:
-     an `origin/` git repo with one base commit (`README.md`), an `out/0001-*.patch` made with
-     `git format-patch` from a scratch clone that adds `hello.txt` in one commit, and a
-     `meta.json` (`status: "done"`, `commits: 1`, `source: "remote"`, `base` = the base sha, plus
-     the other required fields). **Do not create `work/`** (export must not need it). Check:
-     - zip: the file exists and its central directory lists `<name>/hello.txt` and
-       `<name>/README.md` (read it with `python3 -m zipfile -l <file>` or by searching the bytes for
-       the names; pick one that works in the VM);
-     - bundle: `git clone <file> <dir>` works and `git log --format=%s` there includes the patch's
-       subject;
-     - a run with no patches rejects with `no commits to export`;
-     - a run whose meta says `status: "running"` with `pid: process.pid` rejects with
-       `run is still going`;
-     - a `work/` folder containing a `.git/hooks/post-checkout` script that writes a marker file
-       is **not** run: create it, export, and assert the marker file does not exist.
-   - `test/web-runs.test.mjs`: `GET /export/<id>?format=zip` on the fake run from that file's
-     setup returns 400 `no commits to export` (it has 0 commits); `format=tar` → 400; an unknown id
-     → 404.
+   - `test/markdown.test.mjs` (new): import `../ui/src/markdown.ts` directly (Node strips the
+     types). Cases: a heading, a list, an ordered list, a table, a fenced code block whose content
+     contains `**not bold**` and `<b>` (stays literal and escaped), inline code/bold/italic, an
+     `https` link (gets `rel="noopener noreferrer"`), a `javascript:alert(1)` link (no `<a`, no
+     `javascript:` inside an attribute), raw `<script>alert(1)</script>` (escaped, no `<script`),
+     and an attribute-breaking attempt like `[x](https://a.com/"onmouseover="alert(1))` (no
+     unescaped `"` inside the href).
+   - `test/run-steps.test.mjs`: `shouldReview` (done + cycles + 0 commits → false; done + cycles +
+     undefined → true; failed → false; 0 cycles → false) and `usageWriteDue`.
 
-7. Docs: `README.md` — `hive export` and the web UI's Download buttons, and that exports are built
-   from the run's patches on the host. `AGENTS.md` — add `exportRun` to the `src/runs.ts` row and
-   `/export` to the `src/web-runs.ts` row of the layout table, and add to security rule #2 that
-   exports, like pushes, are built from the patches in a fresh clone, never from `work/`.
+7. `README.md`: one line each in the relevant sections: reviews are skipped when the run made no
+   commits; the cost updates while a run goes; the web UI renders the agent's markdown.
 
 ## Acceptance
 
 - `npm run build` exits 0.
 - `npm run build:ui` exits 0.
 - `npm test` exits 0.
-- `node --test test/export.test.mjs test/web-runs.test.mjs` exits 0 (after `npm run build`).
-- `grep -n '"work"' src/runs.ts` shows no new use of `work` inside `exportRun` (check by reading
-  the function; note the result in the report).
+- `node --test test/markdown.test.mjs test/run-steps.test.mjs` exits 0 (after `npm run build`).
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -126,17 +107,15 @@ None — do it sequentially.
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
 - The only checks to run are the **Acceptance** commands. Never boot a VM, start `hive run`, start
-  the server or call GitHub. If something outside Acceptance fails, note it in the report and
-  finish.
-- `exportRun` must never read, copy, archive or run git in `<run>/work`. All host git goes through
-  the `git()` helper in `src/git.ts`. No new dependencies (no zip library: `git archive` makes the
-  zip).
-- Don't change `vm/`, `image/`, `src/sandbox.ts` or the run steps.
+  the server or call GitHub/OpenRouter. If something outside Acceptance fails, note it in the
+  report and finish.
+- Never run host git in `<run>/work`. Don't change `vm/`, `image/`, `src/sandbox.ts` or
+  `src/stall.ts`. No new dependencies (no markdown library).
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Exporting a run with no commits, exporting uncommitted work, uploads anywhere.
+- Markdown anywhere but the timeline's assistant messages; nested lists; images.
 
 ## If blocked
 
