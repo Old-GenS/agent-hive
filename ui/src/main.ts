@@ -255,7 +255,9 @@ function exportElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement 
   bundleBtn.disabled = preparing;
   zipBtn.onclick = () => void downloadExport(item, "zip");
   bundleBtn.onclick = () => void downloadExport(item, "bundle");
-  box.append(zipBtn, bundleBtn, el("span", { class: "pr-hint" }, "Built from the run's commits on this computer."));
+  // The git bundle button is hidden for now (hive export --bundle still works); add bundleBtn back here to show it.
+  void bundleBtn;
+  box.append(zipBtn, el("span", { class: "pr-hint" }, "Built from the run's commits on this computer."));
   if (state.state === "error" && state.error) box.append(el("p", { class: "alert alert-danger" }, state.error));
   return box;
 }
