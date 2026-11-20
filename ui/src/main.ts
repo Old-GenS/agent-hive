@@ -415,7 +415,7 @@ function hiveLogo(): SVGSVGElement {
 function firstLine(text: string): string {
   const line = text.split(/\r?\n/).find((candidate) => candidate.trim().length > 0) ?? text;
   const trimmed = line.trim();
-  return trimmed.length > 120 ? trimmed.slice(0, 120) : trimmed;
+  return trimmed.length > 200 ? trimmed.slice(0, 199).trimEnd() + "\u2026" : trimmed;
 }
 
 /**
@@ -1289,7 +1289,7 @@ function buildRunView(): HTMLElement {
     el(
       "div",
       { class: "run-head" },
-      el("h1", { class: "run-title" }, state.title),
+      el("h1", { class: "run-title", title: state.title }, state.title),
       el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`),
       bee.root,
       toolbar,

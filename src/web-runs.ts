@@ -181,9 +181,14 @@ export function uiStatus(
 
 /** A one-line title for the run list: the prompt's first non-empty line, at most 80 characters. */
 function runTitle(meta: RunMeta): string {
-  const line = meta.prompt.split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
-  const trimmed = line.trim();
-  return trimmed.length > 80 ? trimmed.slice(0, 80) : trimmed;
+  const lines = meta.prompt.split("\n");
+  const index = lines.findIndex((candidate) => candidate.trim().length > 0);
+  if (index === -1) return "";
+  const trimmed = lines[index].trim();
+  // meta.prompt keeps only the first 200 characters of the prompt: a first line that reaches the
+  // end of them was cut, so say so.
+  const cut = meta.prompt.length >= 200 && index === lines.length - 1;
+  return cut ? trimmed.trimEnd() + "\u2026" : trimmed;
 }
 
 /** One run in the shapes the web UI reads (the old `Task.toJSON()`, backed by meta.json). */
