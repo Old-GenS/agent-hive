@@ -91,7 +91,7 @@ export const config = {
   sandbox: {
     runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun
     memory: process.env.HIVE_SANDBOX_MEMORY || "2048m",
-    cpus: process.env.HIVE_SANDBOX_CPUS || "2",
+    cpus: process.env.HIVE_SANDBOX_CPUS || "1",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
     // Stop a run when no file in its work/ folder changed and no agent event arrived for this many
     // minutes (like pi-vm). 0 turns it off.
