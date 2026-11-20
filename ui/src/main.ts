@@ -4,10 +4,11 @@
  * follow-ups) and Settings (API key status and defaults, read-only for now).
  *
  * Everything from the server, GitHub or the agent is rendered as text, except the output of
- * formatContent(), which escapes first and only then adds a fixed set of formatting tags.
+ * renderMarkdown(), which escapes first and only then adds a fixed set of formatting tags.
  */
 import "./app.css";
 import { createBeeIndicator, headerBee, miniHive, type BeeIndicator, type BeeState } from "./bee.js";
+import { renderMarkdown } from "./markdown.js";
 import { api, clearToken, el, esc, getToken, saveToken, setToken, serverUrl } from "./util.js";
 
 // ── types ──
@@ -340,6 +341,8 @@ interface RunState {
   stepStartedAt?: number;
   /** when the run finished, for the bee's real duration */
   finishedAt?: number;
+  /** the run's cost so far, summed from assistant message_end events (live, then hive_done's total) */
+  cost: number;
 }
 
 /** One row of GET /runs: what the run list shows. */
@@ -406,6 +409,8 @@ interface RunUi {
   pill: HTMLElement;
   stopBtn: HTMLButtonElement;
   newBtn: HTMLButtonElement;
+  /** the run page's meta line: repo · provider · model · cost */
+  meta: HTMLElement;
   timeline: HTMLOListElement;
   nodes: Map<RunItem, HTMLElement>;
   followInput: HTMLTextAreaElement;
@@ -480,16 +485,9 @@ function firstLine(text: string): string {
   return trimmed.length > 200 ? trimmed.slice(0, 199).trimEnd() + "\u2026" : trimmed;
 }
 
-/**
- * Keep the old renderer: escape first, then add only these fixed tags. The result is the only
- * non-constant value ever assigned with innerHTML.
- */
+/** The agent's timeline messages may contain Markdown: render the safe subset from markdown.ts. */
 function formatContent(text: string): string {
-  return esc(text)
-    .replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>");
+  return renderMarkdown(text);
 }
 
 function nearBottom(): boolean {
@@ -686,6 +684,7 @@ function runStateFromStatus(status: Record<string, unknown>): RunState {
     pendingIssueUrl: typeof status.issueUrl === "string" ? status.issueUrl : undefined,
     stepStartedAt: typeof status.stepStartedAt === "number" ? status.stepStartedAt : undefined,
     finishedAt: typeof status.finishedAt === "number" ? status.finishedAt : undefined,
+    cost: 0,
   };
 }
 
@@ -1266,6 +1265,7 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     lastTool: null,
     stepStartedAt: typeof data.stepStartedAt === "number" ? data.stepStartedAt : undefined,
     finishedAt: typeof data.finishedAt === "number" ? data.finishedAt : undefined,
+    cost: 0,
   };
   runUi = null;
   runsViewTarget = run.sessionId;
@@ -1345,6 +1345,7 @@ function buildRunView(): HTMLElement {
   // github.com URLs read better as owner/name.
   const repoText = repoLabel(state.repo, state.newRepo);
   const modelText = state.model || "default model";
+  const metaEl = el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`);
   const bee = createBeeIndicator();
   const head = el(
     "section",
@@ -1353,7 +1354,7 @@ function buildRunView(): HTMLElement {
       "div",
       { class: "run-head" },
       el("h1", { class: "run-title", title: state.title }, state.title),
-      el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`),
+      metaEl,
       bee.root,
       toolbar,
     ),
@@ -1384,7 +1385,7 @@ function buildRunView(): HTMLElement {
   });
   const followUp = el("div", { class: "follow-up" }, followInput, followBtn);
 
-  runUi = { pill, stopBtn, newBtn, timeline, nodes, followInput, followBtn, empty, bee };
+  runUi = { pill, stopBtn, newBtn, meta: metaEl, timeline, nodes, followInput, followBtn, empty, bee };
   syncRunUi();
   return el("div", {}, head, timelineCard, followUp);
 }
@@ -1414,6 +1415,14 @@ function syncHeaderBee(): void {
     headerBeeEl.remove();
     headerBeeEl = null;
   }
+}
+
+/** The run page's meta line, with the live cost once the run has reported any. */
+function updateRunMeta(): void {
+  if (!run || !runUi) return;
+  const parts = [repoLabel(run.repo, run.newRepo), run.providerLabel || "provider", run.model || "default model"];
+  if (run.cost > 0) parts.push(`$${run.cost.toFixed(4)}`);
+  runUi.meta.textContent = parts.join(" · ");
 }
 
 function syncRunUi(): void {
@@ -1507,7 +1516,13 @@ function handleEvent(event: any): void {
         updateItem(run.currentAssistant);
       }
       break;
-    case "message_end":
+    case "message_end": {
+      // A running run's cost grows with every assistant message; show it on the meta line now.
+      const cost = Number(event.message?.usage?.cost?.total);
+      if (event.message?.role === "assistant" && Number.isFinite(cost) && cost > 0) {
+        run.cost += cost;
+        updateRunMeta();
+      }
       if (run.currentAssistant) {
         // A replayed run has no message_update events, so take the final text from message_end.
         if (!run.currentAssistant.text) {
@@ -1525,6 +1540,7 @@ function handleEvent(event: any): void {
         run.currentAssistant = null;
       }
       break;
+    }
     case "tool_execution_start": {
       const args = event.args ?? {};
       const detail = String(args.command ?? args.path ?? args.file_path ?? "").slice(0, 200);
@@ -1543,6 +1559,11 @@ function handleEvent(event: any): void {
     case "hive_done":
       if (typeof event.stepStartedAt === "number") run.stepStartedAt = event.stepStartedAt;
       if (typeof event.finishedAt === "number") run.finishedAt = event.finishedAt;
+      // The done event carries the run's total cost; use it over the live sum when present.
+      if (event.usage?.cost !== undefined && Number.isFinite(Number(event.usage.cost))) {
+        run.cost = Number(event.usage.cost);
+        updateRunMeta();
+      }
       finishRun(event);
       break;
   }

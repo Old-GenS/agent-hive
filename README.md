@@ -302,8 +302,9 @@ wait in a FIFO queue and the run list shows them as queued.
   box with a per-provider list you can pick from or type into; thinking level; review cycles.
 - **While it runs:** a bee circles a honeycomb cell while the microVM works (it rests when queued,
   lands when done, greys out on failure), with an elapsed timer. The timeline shows the agent's
-  messages and each tool step; finished steps get a check. **Stop** ends the run, and follow-up
-  messages continue the same session.
+  messages and each tool step; finished steps get a check. The agent's messages render a safe
+  subset of Markdown (headings, lists, tables, code and links), and the run's meta line shows its
+  cost as it grows. **Stop** ends the run, and follow-up messages continue the same session.
 - **When it's done:** the agent's last message is its answer or summary. The result box lists the
   commits and every file changed with lines added and removed, links to the diff on GitHub, and
   has an **Open pull request** button (nothing is opened until you click). The PR description is
@@ -314,7 +315,8 @@ wait in a FIFO queue and the run list shows them as queued.
 Every repo run is set up to change code: the agent commits in the VM and hive pushes its commits to
 a `hive/<id>` branch (never `main`), even for a review. For a review without changes, say "don't
 edit or commit" in the task; its findings are the last message, and when nothing changed the
-result has a **Post review as an issue** button that puts them into a GitHub issue.
+result has a **Post review as an issue** button that puts them into a GitHub issue. When a run
+made no commits, its review cycles are skipped instead of rebuilding the project for nothing.
 
 **New project** starts from an empty repo: give it a name and, when the run finishes with
 commits, the host creates that repository under the `gh` account (private by default) and pushes

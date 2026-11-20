@@ -299,6 +299,47 @@ export function patchFiles(dir: string): string[] {
     .map((f) => join(out, f));
 }
 
+/**
+ * Export whatever the agent committed in work/: clear out/, run hive-export in a VM with the
+ * run's base commit, then count the patches. Runs in a VM because the host never runs git in
+ * work/. `ok` is false when the export failed; the caller decides what that means.
+ */
+async function exportPatches(
+  dir: string,
+  meta: RunMeta,
+): Promise<{ ok: boolean; code: number; commits: number }> {
+  const out = join(dir, "out");
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out);
+  const exp = runSandbox({
+    name: "hive-" + basename(dir) + "-export",
+    mounts: [
+      { host: join(dir, "work"), container: "/work" },
+      { host: out, container: "/out" },
+    ],
+    env: gitIdentity(),
+    command: ["hive-export", meta.base],
+    // Its own folder, so the export never touches the agent's event log (hive log reads it).
+    ioDir: join(dir, "io-export"),
+  });
+  const r = await exp.done;
+  if (r.code !== 0) return { ok: false, code: r.code ?? -1, commits: 0 };
+  return { ok: true, code: 0, commits: patchFiles(dir).length };
+}
+
+/**
+ * Whether a finished step should get its review cycles: only a done step with cycles left and
+ * work to look at. `commits` is undefined when the export failed, and then reviews run as before.
+ */
+export function shouldReview(o: { status: RunStatus; cycles: number; commits: number | undefined }): boolean {
+  return o.status === "done" && o.cycles > 0 && o.commits !== 0;
+}
+
+/** Throttle for saving meta.usage while the agent runs: at most once every 5 seconds, on change. */
+export function usageWriteDue(now: number, last: number, changed: boolean): boolean {
+  return changed && now - last >= 5000;
+}
+
 /** Patch text, or `git apply --stat` output; "" when the run produced no commits. */
 export async function diffRun(dir: string, stat: boolean): Promise<string> {
   const patches = patchFiles(dir);
@@ -853,9 +894,19 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   let lastActivity = Date.now();
   let stopReason: string | undefined;
   let modelError: string | undefined;
+  // Save meta.usage while the run goes (the run list and `hive list` show it live), at most every
+  // 5 seconds and only when the cost changed. The final write happens when the run ends.
+  let lastUsageWrite = 0;
+  let writtenCost = meta.usage.cost;
   const follower = followJsonl(join(dir, "io", "events.jsonl"), (e) => {
     lastActivity = Date.now();
     addUsage(meta.usage, e);
+    const now = Date.now();
+    if (usageWriteDue(now, lastUsageWrite, meta.usage.cost !== writtenCost)) {
+      lastUsageWrite = now;
+      writtenCost = meta.usage.cost;
+      writeMeta(dir, meta);
+    }
     if (e?.type === "message_end" && e.message?.role === "assistant") {
       stopReason = e.message.stopReason;
       modelError = e.message.errorMessage;
@@ -998,8 +1049,16 @@ async function runStepsInner(
   let error = main.error;
   if (main.summary !== undefined) meta.summary = main.summary.slice(0, 60_000);
 
+  // A "review and report" task makes no commits, and a review cycle on it would rebuild the
+  // project for nothing. Find out with the export step (in a VM, as for the final export), then
+  // skip the cycles when nothing was committed. A failed export leaves the reviews as they were.
   const cycles = meta.reviewCycles ?? 0;
-  if (status === "done" && cycles > 0) {
+  let commits: number | undefined;
+  if (status === "done" && cycles > 0 && existsSync(join(dir, "work"))) {
+    const pre = await exportPatches(dir, meta);
+    commits = pre.ok ? pre.commits : undefined;
+  }
+  if (shouldReview({ status, cycles, commits })) {
     for (let i = 1; i <= cycles; i++) {
       o.onStatus?.("reviewing", { cycle: i, of: cycles });
       const review = await agentStep(dir, meta, {
@@ -1016,29 +1075,17 @@ async function runStepsInner(
       }
       if (isLgtm(review.lastText)) break;
     }
+  } else if (status === "done" && cycles > 0 && commits === 0) {
+    o.onEvent({ type: "hive_note", text: "No commits, so the review was skipped." });
   }
 
   // Export whatever the agent committed, whatever the outcome: a run that timed out, stalled,
   // failed or was stopped still keeps the work it committed. A follow-up exports the whole
   // history again, so out/ starts empty.
   if (existsSync(join(dir, "work"))) {
-    const out = join(dir, "out");
-    rmSync(out, { recursive: true, force: true });
-    mkdirSync(out);
-    const exp = runSandbox({
-      name: "hive-" + basename(dir) + "-export",
-      mounts: [
-        { host: join(dir, "work"), container: "/work" },
-        { host: out, container: "/out" },
-      ],
-      env: gitIdentity(),
-      command: ["hive-export", meta.base],
-      // Its own folder, so the export never touches the agent's event log (hive log reads it).
-      ioDir: join(dir, "io-export"),
-    });
-    const r = await exp.done;
-    if (r.code !== 0) {
-      const note = `export failed (exit ${r.code})`;
+    const exp = await exportPatches(dir, meta);
+    if (!exp.ok) {
+      const note = `export failed (exit ${exp.code})`;
       if (status === "done") {
         status = "failed";
         error = note;
@@ -1046,7 +1093,7 @@ async function runStepsInner(
         error = error === undefined ? note : `${error}; ${note}`;
       }
     } else {
-      meta.commits = patchFiles(dir).length;
+      meta.commits = exp.commits;
     }
   }
 

@@ -17,7 +17,8 @@ process.env.DEEPSEEK_API_KEY = "sk-test";
 delete process.env.DEFAULT_PROVIDER;
 delete process.env.DEFAULT_MODEL;
 
-const { REVIEW_PROMPT, isLgtm, slimEvents, startRun, stepMounts, timeNote } = await import("../dist/runs.js");
+const { REVIEW_PROMPT, isLgtm, slimEvents, shouldReview, startRun, stepMounts, timeNote, usageWriteDue } =
+  await import("../dist/runs.js");
 
 const signal = () => new AbortController().signal;
 const noop = () => {};
@@ -29,6 +30,21 @@ test("isLgtm accepts a leading LGTM in any case and nothing else", () => {
   assert.equal(isLgtm("Not LGTM"), false);
   assert.equal(isLgtm(""), false);
   assert.equal(isLgtm("I found a bug"), false);
+});
+
+test("shouldReview skips the cycles only when a done run committed nothing", () => {
+  assert.equal(shouldReview({ status: "done", cycles: 2, commits: 0 }), false);
+  assert.equal(shouldReview({ status: "done", cycles: 2, commits: undefined }), true);
+  assert.equal(shouldReview({ status: "done", cycles: 2, commits: 3 }), true);
+  assert.equal(shouldReview({ status: "failed", cycles: 2, commits: 3 }), false);
+  assert.equal(shouldReview({ status: "done", cycles: 0, commits: 3 }), false);
+});
+
+test("usageWriteDue saves at most every 5 seconds and only when the cost changed", () => {
+  assert.equal(usageWriteDue(10_000, 5_000, true), true);
+  assert.equal(usageWriteDue(9_999, 5_000, true), false);
+  assert.equal(usageWriteDue(10_000, 5_000, false), false);
+  assert.equal(usageWriteDue(10_000, 9_000, true), false);
 });
 
 test("REVIEW_PROMPT includes the task and the base commit", () => {
