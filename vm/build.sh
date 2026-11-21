@@ -6,7 +6,9 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 src="$repo_root/vm/hive-vm.c"
 out="$repo_root/vm/hive-vm"
-flags=(-std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE)
+# Same hardening as distro packages: stack protector, _FORTIFY_SOURCE, PIE and full RELRO.
+flags=(-std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE
+  -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now)
 
 if command -v cc >/dev/null 2>&1; then
   cc "${flags[@]}" -o "$out" "$src"

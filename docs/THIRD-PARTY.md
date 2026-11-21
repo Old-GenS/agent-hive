@@ -21,15 +21,17 @@ locally with `npm run build:image && npm run build:rootfs`.
 
 | Project | What it does in hive | License |
 |---|---|---|
-| [libkrun](https://github.com/containers/libkrun) | Boots each microVM (loaded by `vm/hive-vm` at run time; from the system for now) | Apache 2.0 |
-| [libkrunfw](https://github.com/containers/libkrunfw) | The guest Linux kernel libkrun boots | LGPL-2.1 (library), GPL-2.0 (kernel) |
-| [passt / pasta](https://passt.top) | The VM's isolated network | GPL-2.0-or-later and BSD 3-Clause |
+| [libkrun](https://github.com/containers/libkrun) | Boots each microVM (loaded by `vm/hive-vm` at run time; the system's copy when it works, else the one bundled in releases and built from source at the pinned tag) | Apache 2.0 |
+| [libkrunfw](https://github.com/containers/libkrunfw) | The guest Linux kernel libkrun boots (bundled from upstream's prebuilt release; the corresponding source is attached to each release) | LGPL-2.1 (library), GPL-2.0 (kernel) |
+| [passt / pasta](https://passt.top) | The VM's isolated network (the distro's `passt` package, not bundled) | GPL-2.0-or-later and BSD 3-Clause |
 | [git](https://git-scm.com) | Host-side clone, patch apply and push | GPL-2.0, parts under other licenses |
 | [GitHub CLI](https://cli.github.com) (optional) | Repo lists, pull requests, issues, new repos | MIT |
 | [Node.js](https://nodejs.org) | Runs the CLI and server; bundled in releases | MIT and others |
 
-libkrun, libkrunfw, passt and git are used as separate programs or loaded libraries, not copied
-into hive's source.
+libkrun and libkrunfw are copied into release bundles as separate libraries (with their licenses
+in `share/licenses/`); passt and git are used as separate system programs, not copied into hive's
+source. Every release that bundles libkrunfw also publishes its corresponding source and the
+kernel source it was built from.
 
 ## npm packages
 

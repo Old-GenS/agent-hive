@@ -137,9 +137,16 @@ This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with an
 - **Cost of this step:** whoever publishes releases has to rebuild them for libkrun security
   fixes, and the app download grows by about 15 MB (compressed). "Keeping it up to date" below
   automates that.
-- **Testing:** the old-glibc build checks; a real run on Fedora with the system libkrun hidden;
-  a real run inside an Ubuntu 24.04 container with Ubuntu's pasta and `/dev/kvm` (Mint 22's
-  userland); then a real Mint machine. Ships as v0.5.0.
+- **libkrunfw is pinned to 5.6.2,** the version Fedora ships: 5.6.4 boots but breaks DNS in the
+  VM. A libkrun or libkrunfw bump needs a real run with DNS and HTTPS before it ships
+  (`docs/RELEASING.md`).
+- **Older pasta:** Ubuntu 24.04's pasta (February 2024) has no `--dns-host`; hive checks
+  `pasta --help` and leaves it out, and that pasta then forwards to the host's first nameserver.
+- **Testing so far:** the old-glibc build checks pass (libkrun needs glibc 2.28 at most, the
+  launcher 2.17); on Fedora the bundled libkrun loads the bundled libkrunfw through `$ORIGIN` and
+  boots a VM with working DNS and HTTPS; in an Ubuntu 24.04 container (Mint 22's userland, no system
+  libkrun, Ubuntu's own pasta) `hive doctor` picks the bundled libkrun and a real run reaches the
+  model API. Left: a real Mint machine. Ships as v0.5.0.
 
 ## Keeping it up to date
 

@@ -97,3 +97,22 @@ test("runSandbox refuses more shared folders than libkrun supports", () => {
   );
   assert.equal(existsSync(ioDir), false, "the throw must happen before the io folder or a VM is created");
 });
+
+test("buildLibkrunCommand leaves out --dns-host for a pasta without it", async () => {
+  const cmd = buildLibkrunCommand(
+    { name: "t", mounts: [], env: {}, command: ["true"], ioDir: "/runs/io" },
+    { vmBin: "/opt/hive-vm", rootfs: "/r", cpus: 1, memoryMiB: 1024, timeoutSec: 60, stderrFile: "/runs/io.launcher.log" },
+  );
+  assert.ok(!cmd.args.includes("--dns-host"));
+  assert.deepEqual(cmd.args.slice(0, 9), ["--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw", "--dns-forward", "169.254.1.53"]);
+});
+
+test("pastaSupports reads options from pasta's help text", async () => {
+  const { pastaSupports } = await import("../dist/sandbox.js");
+  const old = "  --dns-forward ADDR\tForward DNS queries sent to ADDR\n  --no-map-gw\t\tDon't map gateway address to host\n";
+  const recent = old + "  --dns-host ADDR\tHost nameserver to direct queries to\n";
+  assert.equal(pastaSupports("--dns-host", old), false);
+  assert.equal(pastaSupports("--dns-host", recent), true);
+  assert.equal(pastaSupports("--dns", recent), false);
+  assert.equal(pastaSupports("--no-map-gw", old), true);
+});

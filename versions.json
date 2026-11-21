@@ -1,0 +1,17 @@
+{
+  "libkrun": {
+    "version": "1.19.8",
+    "repo": "https://github.com/containers/libkrun",
+    "tag": "v1.19.8",
+    "commit": "c4d283c233bc0ae1993c289ec2a1b4da2242f1f8"
+  },
+  "libkrunfw": {
+    "version": "5.6.2",
+    "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-x86_64.tgz",
+    "sha256": "016c32ddb2a28aa300382cab33352d63a41a901eb36ee8d1ca24b389791c8b91",
+    "source": "https://github.com/containers/libkrunfw/archive/refs/tags/v5.6.2.tar.gz"
+  },
+  "rust": "1.99.0",
+  "buildImage": "quay.io/pypa/manylinux_2_28_x86_64@sha256:55a36963bc0504cdf004011001c1072306402f0b8b83be5a5eba7068f93eec53",
+  "node": "24.18.0"
+}

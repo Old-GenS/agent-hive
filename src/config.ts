@@ -121,7 +121,10 @@ export const config = {
     stallMin: int("HIVE_STALL_MIN", 15),
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
     rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
-    libkrun: process.env.HIVE_LIBKRUN || "libkrun.so.1",
+    // The value of HIVE_LIBKRUN, if the user forced one. The effective library is picked by
+    // libkrunChoice() in src/libkrun.ts (custom, then a working system libkrun, then the bundled
+    // one).
+    libkrun: process.env.HIVE_LIBKRUN || "",
     // ~/.cache for the agent (Playwright browsers, npm, pip, corepack...), kept between runs. The
     // folder holds one bucket per repo under repos/, so only runs of the same repo share it.
     // HIVE_VM_CACHE="" disables it.

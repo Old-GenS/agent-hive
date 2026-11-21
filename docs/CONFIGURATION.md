@@ -68,7 +68,7 @@ itself (`order` or `only`) is used as written; `{}` lets OpenRouter choose freel
 | `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where run folders live |
 | `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this are deleted; `0` keeps them forever |
 | `HIVE_ROOTFS` | `~/.local/share/agent-hive/rootfs/current` | The VM filesystem |
-| `HIVE_LIBKRUN` | `libkrun.so.1` | The libkrun library to load |
+| `HIVE_LIBKRUN` | system `libkrun.so.1` if it works, else the bundled one | The libkrun library the launcher loads. Setting it forces that library (`libkrun from HIVE_LIBKRUN` in doctor) and disables the fallback scan. |
 
 A VM only uses the memory it actually touches, but several heavy runs at once can still run a
 small machine out of memory: keep `MAX_CONCURRENT_SESSIONS` × `HIVE_SANDBOX_MEMORY` well under

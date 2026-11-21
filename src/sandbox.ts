@@ -3,13 +3,14 @@
  * a pasta network namespace. The sandbox gets only the mounts and env vars passed in; the host's
  * SSH keys, gh login and .env never enter it.
  */
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { followJsonl } from "./follow.js";
 import { fixFor, hostInfo } from "./fixes.js";
+import { libkrunChoice, libkrunLabel } from "./libkrun.js";
 import type { CheckId, Fix } from "./fixes.js";
 
 export type Isolation = "microvm" | "unavailable";
@@ -55,6 +56,24 @@ export function hostNameserver(resolvConf: string): string {
   return "1.1.1.1";
 }
 
+let pastaHelpText: string | undefined;
+
+/**
+ * Whether the installed pasta knows `option`. Distros ship pasta versions years apart (Ubuntu
+ * 24.04's is from February 2024 and has no --dns-host), so optional flags are checked against
+ * `pasta --help` once per process.
+ */
+export function pastaSupports(option: string, help?: string): boolean {
+  if (help === undefined) {
+    if (pastaHelpText === undefined) {
+      const r = spawnSync("pasta", ["--help"], { encoding: "utf8", timeout: 5_000 });
+      pastaHelpText = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    }
+    help = pastaHelpText;
+  }
+  return new RegExp(`(^|\\s)${option.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|=|$)`, "m").test(help);
+}
+
 function resolvConf(): string {
   try {
     return readFileSync("/etc/resolv.conf", "utf8");
@@ -70,11 +89,7 @@ export function libkrunAvailable(): boolean {
     if (!existsSync(config.sandbox.vmBin)) return false;
     if (!existsSync(join(realpathSync(config.sandbox.rootfs), "usr/local/bin/hive-vm-init"))) return false;
     if (!onPath("pasta")) return false;
-    execFileSync(config.sandbox.vmBin, ["--check"], {
-      env: { ...process.env, HIVE_LIBKRUN: config.sandbox.libkrun },
-      stdio: "ignore",
-    });
-    return true;
+    return libkrunChoice().ok;
   } catch {
     return false;
   }
@@ -137,7 +152,8 @@ export function buildLibkrunCommand(
     rootfs: string;
     cpus: number;
     memoryMiB: number;
-    hostDns: string;
+    /** host resolver for the VM's DNS; left out on pasta versions without --dns-host */
+    hostDns?: string;
     timeoutSec: number;
     /** where the launcher sends its own stderr, including libkrun's log lines */
     stderrFile: string;
@@ -145,7 +161,9 @@ export function buildLibkrunCommand(
 ): { file: string; args: string[] } {
   const args = [
     "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
-    "--dns-forward", "169.254.1.53", "--dns-host", p.hostDns,
+    "--dns-forward", "169.254.1.53",
+    // Older pasta has no --dns-host; it then forwards to the first nameserver in resolv.conf.
+    ...(p.hostDns !== undefined ? ["--dns-host", p.hostDns] : []),
     "--", "/usr/bin/env", p.vmBin,
     "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
     "--timeout", String(p.timeoutSec),
@@ -164,7 +182,7 @@ function spawnLibkrun(opts: SandboxOptions) {
     rootfs: realpathSync(sandbox.rootfs),
     cpus: Number.parseInt(sandbox.cpus, 10),
     memoryMiB: parseMemoryMiB(sandbox.memory),
-    hostDns: hostNameserver(resolvConf()),
+    hostDns: pastaSupports("--dns-host") ? hostNameserver(resolvConf()) : undefined,
     timeoutSec: sandbox.timeoutMin * 60,
     // A sibling of the io folder, never inside it: the VM can write io/, so it must not be able to
     // replace the log hive reads with a symlink.
@@ -172,7 +190,7 @@ function spawnLibkrun(opts: SandboxOptions) {
   });
   // The launcher reads HIVE_LIBKRUN from its own env.
   return spawn(cmd.file, cmd.args, {
-    env: { ...process.env, ...opts.env, HIVE_LIBKRUN: sandbox.libkrun },
+    env: { ...process.env, ...opts.env, HIVE_LIBKRUN: libkrunChoice().path },
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
   });
@@ -338,19 +356,13 @@ export function systemInfo(): {
     detail: kvm === "ok" ? "/dev/kvm" : `/dev/kvm: ${kvm}`,
   });
   const launcher = existsSync(config.sandbox.vmBin);
-  let libkrun = false;
-  if (launcher) {
-    try {
-      execFileSync(config.sandbox.vmBin, ["--check"], {
-        env: { ...process.env, HIVE_LIBKRUN: config.sandbox.libkrun },
-        stdio: "ignore",
-      });
-      libkrun = true;
-    } catch {
-      libkrun = false;
-    }
-  }
-  checks.push({ name: "libkrun (starts the VM)", id: "libkrun", ok: libkrun, detail: config.sandbox.libkrun });
+  const libkrun = libkrunChoice();
+  checks.push({
+    name: "libkrun (starts the VM)",
+    id: "libkrun",
+    ok: libkrun.ok,
+    detail: libkrun.ok ? `${libkrunLabel(libkrun)} (${libkrun.path})` : libkrun.path,
+  });
   checks.push({
     name: "pasta (network isolation)",
     id: "pasta",
@@ -369,7 +381,7 @@ export function systemInfo(): {
   checks.push({ name: "VM filesystem", id: "rootfs", ok: rootfsOk, detail: rootfs });
   const host = hostInfo();
   for (const check of checks) {
-    if (!check.ok) check.fix = fixFor(check.id, host);
+    if (!check.ok) check.fix = fixFor(check.id, host, check.detail);
   }
   return { isolation: runtimeInfo.isolation, runtime: runtimeInfo.runtime, warning: runtimeInfo.warning, checks };
 }

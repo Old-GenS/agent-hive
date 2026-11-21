@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 version=$(node -p "require('./package.json').version")
-NODE_VERSION=${HIVE_NODE_VERSION:-24.18.0}
+# The bundled Node version is a pin too; HIVE_NODE_VERSION still overrides it.
+NODE_VERSION=${HIVE_NODE_VERSION:-$(node -p "require('./versions.json').node")}
 key=${HIVE_SIGNING_KEY:-$HOME/.config/agent-hive/release-signing-key.pem}
 if [[ ! -f "$key" ]]; then
   echo "build-release: signing key $key not found (create it with node scripts/keygen.mjs $key)" >&2
@@ -22,7 +23,15 @@ trap 'rm -rf "$stage"' EXIT
 
 npm run build
 npm run build:ui
-npm run build:vm
+
+# The old-glibc launcher, libkrun and libkrunfw come from build-native.sh, which builds inside the
+# pinned manylinux container and checks the result (see docs/RELEASING.md). Only its last output
+# line is the output dir; the earlier ones are progress and check messages.
+native=$(bash scripts/build-native.sh | tail -n 1)
+if [[ -z "$native" || ! -f "$native/libexec/hive-vm" ]]; then
+  echo "build-release: scripts/build-native.sh did not produce libexec/hive-vm" >&2
+  exit 1
+fi
 
 # The rootfs is exported from the sandbox image; its directory name is the image id prefix that
 # VERSION/ROOTFS_VERSION in the bundle point at.
@@ -48,7 +57,15 @@ else
 fi
 
 app="$stage/hive-$version"
-mkdir -p "$app/bin" "$app/lib" "$app/libexec" "$app/ui"
+mkdir -p "$app/bin" "$app/lib" "$app/libexec" "$app/ui" "$app/share/licenses/agent-hive"
+
+# libkrun, libkrunfw and the launcher built for old glibc; libkrun finds libkrunfw next to itself
+# through its RUNPATH=$ORIGIN. Licenses ship beside the libraries.
+cp "$native/lib/libkrun.so.1" "$app/lib/libkrun.so.1"
+cp "$native/lib/libkrunfw.so.5" "$app/lib/libkrunfw.so.5"
+cp "$native/libexec/hive-vm" "$app/libexec/hive-vm"
+cp -R "$native/share/licenses/." "$app/share/licenses/"
+cp LICENSE "$app/share/licenses/agent-hive/LICENSE"
 
 # The web UI's files, next to lib/: bin/hive sets HIVE_BUNDLE_ROOT, and index.ts finds
 # <bundle>/ui/dist from it.
@@ -72,15 +89,43 @@ tar -xzf "$stage/node-v$NODE_VERSION-linux-x64.tar.gz" -C "$stage" "node-v$NODE_
 cp "$stage/node-v$NODE_VERSION-linux-x64/bin/node" "$app/libexec/node"
 chmod 755 "$app/libexec/node"
 
-cp vm/hive-vm "$app/libexec/hive-vm"
-chmod 755 "$app/libexec/hive-vm"
-
 echo "$version" > "$app/VERSION"
 echo "$rver" > "$app/ROOTFS_VERSION"
 
 tar -C "$stage" -czf "$out/hive-$version-linux-x86_64.tar.gz" "hive-$version"
 
+# libkrunfw contains the Linux kernel (GPL-2.0), so the release also publishes the corresponding
+# source: libkrunfw at the pinned tag, and the kernel tarball its Makefile builds from.
+libkrunfw_version=$(node -p "require('./versions.json').libkrunfw.version")
+libkrunfw_source=$(node -p "require('./versions.json').libkrunfw.source")
+if [[ "${HIVE_RELEASE_SKIP_SOURCES:-}" == "1" ]]; then
+  echo "build-release: skipping the GPL source assets (HIVE_RELEASE_SKIP_SOURCES=1)"
+else
+  curl -fsSL -o "$out/libkrunfw-$libkrunfw_version-source.tar.gz" "$libkrunfw_source"
+  makefile=$(tar -tzf "$out/libkrunfw-$libkrunfw_version-source.tar.gz" | grep -E '^[^/]+/Makefile$' | head -n1)
+  if [[ -z "$makefile" ]]; then
+    echo "build-release: no Makefile in $libkrunfw_source" >&2
+    exit 1
+  fi
+  # Where libkrunfw's Makefile downloads its kernel source from, asked of make itself: the layout
+  # changes between libkrunfw versions (a kernel.org tarball plus patches/, or a patched fork).
+  srcdir=$(mktemp -d)
+  tar -xzf "$out/libkrunfw-$libkrunfw_version-source.tar.gz" -C "$srcdir" "$makefile"
+  kernel_remote=$(make -s -C "$srcdir/$(dirname "$makefile")" \
+    --eval 'hive-print-kernel-remote: ; @echo $(KERNEL_REMOTE)' hive-print-kernel-remote)
+  rm -rf "$srcdir"
+  if [[ "$kernel_remote" != https://* ]]; then
+    echo "build-release: could not read KERNEL_REMOTE from $makefile (got \"$kernel_remote\")" >&2
+    exit 1
+  fi
+  kernel_file=$(basename "$kernel_remote")
+  curl -fsSL -o "$out/kernel-source-$kernel_file" "$kernel_remote"
+fi
+
 (cd "$out" && sha256sum hive-*.tar.gz > SHA256SUMS)
+if [[ "${HIVE_RELEASE_SKIP_SOURCES:-}" != "1" ]]; then
+  (cd "$out" && sha256sum libkrunfw-*-source.tar.gz kernel-source-* >> SHA256SUMS)
+fi
 node scripts/sign.mjs "$key" "$out/SHA256SUMS"
 
 ls -l "$out"

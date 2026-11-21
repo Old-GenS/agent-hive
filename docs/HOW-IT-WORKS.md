@@ -38,7 +38,8 @@ set of patches you can read before anything touches your real repo or GitHub.
 1. **Prepare.** hive makes a run folder and clones the code into `work/`: your current checkout,
    a GitHub repo (`--repo owner/name`), or an empty repo for a new project. The clone has no
    remote and shares no files with your repo.
-2. **Boot.** hive starts a microVM with [libkrun](https://github.com/containers/libkrun), behind
+2. **Boot.** hive starts a microVM with [libkrun](https://github.com/containers/libkrun) — the
+   system's copy when it works, otherwise the one bundled with a release — behind
    [pasta](https://passt.top) for networking. The VM boots its own Linux kernel and a Fedora
    filesystem with git, Node, Python, compilers and headless Chromium.
 3. **Work.** Inside the VM, [pi](https://pi.dev) gets your prompt and does the task in `/work`,

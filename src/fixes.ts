@@ -101,7 +101,7 @@ function debianFamily(host: HostInfo): boolean {
 }
 
 /** The exact text and command that fix one failed check on this host. */
-export function fixFor(check: CheckId, host: HostInfo): Fix {
+export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
   switch (check) {
     case "kvm":
       if (host.wsl) {
@@ -110,17 +110,25 @@ export function fixFor(check: CheckId, host: HostInfo): Fix {
           command: "wsl --shutdown",
         };
       }
+      if (detail?.includes("no access")) {
+        return { text: "Add yourself to the kvm group, then log out and back in.", command: "sudo usermod -aG kvm $USER" };
+      }
       return {
         text: "Enable virtualization (Intel VT-x or AMD-V) in the BIOS or UEFI settings; on a cloud VM, pick a machine type with nested virtualization.",
       };
 
     case "libkrun":
+      if (host.bundle) {
+        // A release ships libkrun, so a failed load means the installation itself is broken.
+        return { text: "The libkrun bundled with hive didn't load; reinstall hive.", command: INSTALL_CLI };
+      }
       if (dnfFamily(host)) {
         return { text: "Install the libkrun package for this distro.", command: "sudo dnf install libkrun" };
       }
       if (debianFamily(host)) {
         return {
-          text: "libkrun isn't packaged for Debian or Ubuntu yet; a bundled libkrun is planned, and Fedora works today (on WSL, the Fedora WSL distro).",
+          text: "Debian and Ubuntu don't package libkrun; install the hive release, which bundles it.",
+          command: INSTALL_CLI,
         };
       }
       return { text: "Build or install libkrun from https://github.com/containers/libkrun." };

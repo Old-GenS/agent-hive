@@ -63,16 +63,33 @@ test("fixFor kvm: WSL turns on nested virtualization, else BIOS/UEFI", () => {
   assert.equal(bareMetal.command, undefined);
 });
 
-test("fixFor libkrun: dnf family installs it; Debian/Ubuntu isn't packaged yet", () => {
+test("fixFor kvm: a permission problem adds the user to the kvm group", () => {
+  const noAccess = fixFor("kvm", fedora, "/dev/kvm: no access");
+  assert.match(noAccess.text, /Add yourself to the kvm group/);
+  assert.equal(noAccess.command, "sudo usermod -aG kvm $USER");
+  // A missing device is still a BIOS/UEFI problem, and WSL keeps its own advice.
+  assert.match(fixFor("kvm", fedora, "/dev/kvm: missing").text, /BIOS or UEFI/);
+  assert.equal(fixFor("kvm", wsl, "/dev/kvm: no access").command, "wsl --shutdown");
+});
+
+test("fixFor libkrun: dnf family installs it; Debian/Ubuntu points at the bundled release", () => {
   assert.equal(fixFor("libkrun", fedora).command, "sudo dnf install libkrun");
   assert.equal(fixFor("libkrun", rocky).command, "sudo dnf install libkrun");
   const deb = fixFor("libkrun", ubuntu);
-  assert.equal(deb.command, undefined);
-  assert.match(deb.text, /isn't packaged/);
-  assert.match(deb.text, /Fedora/);
+  assert.match(deb.command ?? "", /install-cli\.sh/);
+  assert.match(deb.text, /don't package libkrun/);
+  assert.match(deb.text, /release, which bundles it/);
   const other = fixFor("libkrun", hostInfo({ osRelease: "ID=gentoo\n", procVersion: LINUX, bundle: false }));
   assert.equal(other.command, undefined);
   assert.match(other.text, /https:\/\/github\.com\/containers\/libkrun/);
+});
+
+test("fixFor libkrun: an installed release says to reinstall, on every distro", () => {
+  for (const host of [fedora, ubuntu, rocky, arch]) {
+    const fix = fixFor("libkrun", { ...host, bundle: true });
+    assert.match(fix.command ?? "", /install-cli\.sh/);
+    assert.match(fix.text, /bundled with hive didn't load/);
+  }
 });
 
 test("fixFor pasta: one install command per package manager", () => {

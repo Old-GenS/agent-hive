@@ -1,179 +1,234 @@
 ## Goal
 
-Close the two trade-offs left from the security review.
+Bundle libkrun and libkrunfw in the release so `hive` works on distros without a libkrun package
+(Ubuntu, Debian, Mint, WSL distros), following `docs/ROADMAP.md` "Step 2 — Bundle libkrun and
+libkrunfw" (read it first; this plan implements it exactly):
 
-1. **Per-repo VM cache.** Today one `~/.cache` folder (`config.sandbox.vmCache`) is mounted
-   read-write at `/root/.cache` in every agent VM of every run, so a run on repo A can plant a
-   poisoned npm/pip/Playwright download that a later run on repo B executes. Give each repo its
-   own cache bucket: runs of the same repo (and its follow-ups and review cycles) share one; runs of
-   different repos never see each other's. Old buckets are pruned; the old flat cache is deleted.
-2. **Disk limits.** A run's VM writes to host disk through `work/`, `io/` and its cache bucket with
-   no limit. Add a disk watchdog that stops the agent step when the run (run folder + its cache
-   bucket) grows past a size cap, or when the host's free space on that disk drops below a floor.
-   Committed work is kept as with any other failure.
+- `versions.json` pins libkrun, libkrunfw, Rust, the build image and Node.
+- `scripts/build-native.sh` builds the launcher (`hive-vm`, hardened) and libkrun inside the pinned
+  `manylinux_2_28` container (glibc 2.28), downloads and verifies libkrunfw, and refuses output that
+  needs newer glibc symbols or unexpected libraries.
+- The release bundle ships `lib/libkrun.so.1`, `lib/libkrunfw.so.5`, licenses, and the
+  old-glibc launcher; the release also uploads libkrunfw's GPL source.
+- At run time hive picks libkrun in this order: `HIVE_LIBKRUN`, system libkrun (only if the
+  launcher's `--check` passes), bundled libkrun; and says which one everywhere it reports isolation.
+- pasta is NOT bundled (system package).
 
 ## Files to touch
 
+- `versions.json` (new)
+- `scripts/build-native.sh` (new)
+- `scripts/native-in-container.sh` (new)
+- `scripts/build-release.sh`
+- `vm/build.sh`
+- `.gitignore`
+- `src/libkrun.ts` (new)
 - `src/config.ts`
-- `src/vmcache.ts` (new)
-- `src/diskwatch.ts` (new)
-- `src/runs.ts`
-- `test/vmcache.test.mjs` (new)
-- `test/diskwatch.test.mjs` (new)
-- `test/run-status.test.mjs`
-- `docs/CONFIGURATION.md`
-- `docs/HOW-IT-WORKS.md`
-- `docs/ROADMAP.md`
-- `AGENTS.md`
-- `README.md`
+- `src/sandbox.ts`
+- `src/cli.ts`
+- `src/fixes.ts`
+- `src/routes/system.ts` (only if it reports libkrun; see step 6)
+- `test/libkrun.test.mjs` (new)
+- `test/versions.test.mjs` (new)
+- `test/fixes.test.mjs`
+- existing tests that assert the old libkrun texts (update them; list each in the report)
+- `docs/RELEASING.md`, `docs/THIRD-PARTY.md`, `docs/CONFIGURATION.md`, `docs/HOW-IT-WORKS.md`,
+  `README.md`, `AGENTS.md`
 - `.handoff/report.md`
 
 ## Steps
 
 1. Run `npm ci`, then `npm run build:vm`.
 
-2. `src/config.ts`:
-   - Top level, next to `runRetentionDays`: `vmCacheDays: int("HIVE_VM_CACHE_DAYS", 30, 0)` with a
-     doc comment: "Per-repo VM cache buckets not used for this many days are deleted; 0 keeps them."
-   - In `sandbox`: `diskMaxGb: int("HIVE_RUN_DISK_MAX_GB", 20, 0)` ("Stop an agent step when the run
-     folder plus its cache bucket uses more than this many GB; 0 turns it off.") and
-     `minFreeGb: int("HIVE_MIN_FREE_DISK_GB", 2, 0)` ("Stop an agent step when less than this many
-     GB are free on the disk holding the runs; 0 turns it off.").
-   - Update the `vmCache` comment: the folder now holds one bucket per repo under `repos/`.
-   - Check how `int(name, default, min)` is defined in this file and use it the same way.
+2. `versions.json` (new, repo root), exactly these keys and values:
+   ```json
+   {
+     "libkrun": {
+       "version": "1.19.8",
+       "repo": "https://github.com/containers/libkrun",
+       "tag": "v1.19.8",
+       "commit": "c4d283c233bc0ae1993c289ec2a1b4da2242f1f8"
+     },
+     "libkrunfw": {
+       "version": "5.6.4",
+       "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.4/libkrunfw-x86_64.tgz",
+       "sha256": "25a5554137dcc11dd71246627264f67539154ee783aa8450acfa79139e802e64",
+       "source": "https://github.com/containers/libkrunfw/archive/refs/tags/v5.6.4.tar.gz"
+     },
+     "rust": "1.99.0",
+     "buildImage": "quay.io/pypa/manylinux_2_28_x86_64@sha256:55a36963bc0504cdf004011001c1072306402f0b8b83be5a5eba7068f93eec53",
+     "node": "24.18.0"
+   }
+   ```
+   The libkrunfw tarball contains `lib/x86_64-linux-gnu/libkrunfw.so.5.6.4` (plus two symlinks).
 
-3. `src/vmcache.ts` (new):
-   - `export function cacheKey(meta: Pick<RunMeta, "source" | "repo" | "newRepo">): string`:
-     builds an identity string, then returns the first 16 hex chars of its sha256.
-     - `source === "new"`: `"new:" + meta.newRepo!.name.toLowerCase()`.
-     - `source === "remote"`: normalise `meta.repo`: if it is a github.com repo in any form
-       (`https://github.com/o/n(.git)`, `ssh://git@github.com/o/n(.git)`, `git@github.com:o/n(.git)`),
-       use `"github:" + "o/n".toLowerCase()`; otherwise the URL lowercased with a trailing `/` and
-       `.git` removed.
-     - `source === "local"`: `"local:" + realpathSync(meta.repo)` (fall back to `meta.repo` when
-       realpath throws).
-   - `export function cacheBucket(meta): string | undefined`: `undefined` when
-     `config.sandbox.vmCache` is empty; else `join(config.sandbox.vmCache, "repos", cacheKey(meta))`.
-   - `export function useCacheBucket(meta): string | undefined`: like `cacheBucket`, but also
-     `mkdirSync(bucket, { recursive: true })` and writes the host-only marker
-     `join(vmCache, "repos", key + ".used")` (an empty file; `writeFileSync` then `utimesSync` to
-     now). The marker sits next to the bucket, not inside it, so no VM can touch it.
-   - `export function pruneVmCache(liveKeys: Set<string>, now = Date.now()): string[]`: no-op
-     returning `[]` when `vmCache` is empty or missing.
-     - Legacy cleanup: delete every entry directly under `vmCache` except `repos`
-       (`rmSync(path, { recursive: true, force: true })`, which never follows symlinks). Use
-       `lstatSync`/`readdirSync` with `withFileTypes`.
-     - When `config.vmCacheDays > 0`: for each directory `repos/<key>` whose key is not in
-       `liveKeys`, delete it and its `.used` marker when the marker is missing or its mtime is older
-       than `vmCacheDays` days. Also delete `.used` markers whose bucket is gone. Skip anything in
-       `repos/` that `lstatSync` says is a symlink (delete the link itself with `rmSync`, never
-       recurse through it).
-     - Returns the deleted keys.
+3. `scripts/build-native.sh` (new, bash, `set -euo pipefail`, runs from any cwd, cds to the repo
+   root). Output: `build/native/` containing `lib/libkrun.so.1`, `lib/libkrunfw.so.5`,
+   `libexec/hive-vm`, `share/licenses/libkrun/` and `share/licenses/libkrunfw/`, and a `STAMP` file
+   holding the sha256 of `versions.json` plus the sha256 of `vm/hive-vm.c`.
+   - If `build/native/STAMP` matches the current values, print `build/native is up to date` and
+     exit 0 (unless `--force`).
+   - Read every pin from `versions.json` with `node -e` (no jq).
+   - **libkrunfw (on the host):** download `libkrunfw.url` with `curl -fsSL` into a `mktemp -d`
+     dir, check `sha256sum` against `libkrunfw.sha256` (exit 1 with a clear message on mismatch),
+     extract, copy `lib/x86_64-linux-gnu/libkrunfw.so.<version>` to
+     `build/native/lib/libkrunfw.so.5` (a regular file, mode 755). Download `libkrunfw.source`
+     too and copy its license files (every top-level file whose name starts with `LICENSE` or
+     `COPYING`) into `build/native/share/licenses/libkrunfw/`.
+   - **Container build:** `podman run --rm --security-opt label=disable` on `buildImage` (exact
+     digest from versions.json), with the repo mounted read-only at `/src` and a fresh
+     `mktemp -d` output dir mounted read-write at `/out`, passing the pins as `-e` variables,
+     running `bash /src/scripts/native-in-container.sh`. Then move the container's output into
+     `build/native/` (replace the old dir only after the build succeeded).
+   - Write `STAMP` last. Print the output dir.
+   - Exit 1 with `build-native: podman is required` if podman is missing.
 
-4. `src/runs.ts`:
-   - `stepMounts(dir)` takes the run meta: `stepMounts(dir: string, meta: RunMeta)`. It mounts
-     `useCacheBucket(meta)` at `/root/.cache` (`shared: true` as today) instead of the whole
-     `vmCache` folder. Update its doc comment (one bucket per repo). Update every caller (search
-     `stepMounts(`).
-   - `NPM_CONFIG_CACHE=/root/.cache/npm` stays as it is (still inside the bucket).
-   - `pruneRuns`: at its start (before the `days === 0` early return) call
-     `pruneVmCache(liveKeys)` where `liveKeys` are the `cacheKey(meta)` of every run in
-     `listRuns()` for which `isLive(meta)` is true; catch and ignore errors from it. Mention the
-     cache pruning in the doc comment. The return value stays the deleted run names.
-   - Disk watchdog in the agent step, next to `startStallWatch`:
-     ```ts
-     let diskError: string | undefined;
-     const diskWatch = startDiskWatch({
-       paths: [dir, ...(bucket ? [bucket] : [])],
-       maxBytes: config.sandbox.diskMaxGb * 1024 ** 3,
-       minFreeBytes: config.sandbox.minFreeGb * 1024 ** 3,
-       onExceeded: (reason) => { diskError = reason; void handle.stop(); },
-     });
-     ```
-     where `bucket` is `cacheBucket(meta)`. Stop it where `stallWatch.stop()` is called.
-   - `finalStatus` gets an optional `diskError?: string`. Order: aborted, then disk, then stall,
-     then time limit, then exit code, then model error. With `diskError` set it returns
-     `{ status: "failed", error: diskError }`. Update its doc comment. Pass `diskError` from the step.
+4. `scripts/native-in-container.sh` (new, bash, `set -euo pipefail`; runs inside the manylinux
+   container as root; reads `LIBKRUN_REPO`, `LIBKRUN_TAG`, `LIBKRUN_COMMIT`, `RUST_VERSION` from
+   the environment; writes only under `/out`):
+   - Install the build needs with `dnf` (at least `glibc-static` for libkrun's static init blob;
+     enable the repo that carries it on AlmaLinux 8, e.g. `--enablerepo=powertools`, falling back
+     to `crb` if that name is what exists), plus `git` and `patchelf` if not already present.
+   - Install Rust with rustup: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s
+     -- -y --profile minimal --default-toolchain "$RUST_VERSION"`, then `source
+     "$HOME/.cargo/env"`.
+   - `git clone --depth 1 --branch "$LIBKRUN_TAG" "$LIBKRUN_REPO" /tmp/libkrun`; fail unless
+     `git -C /tmp/libkrun rev-parse HEAD` equals `$LIBKRUN_COMMIT`.
+   - `make -C /tmp/libkrun` with default features (no GPU, sound, BLK, NET, SEV, TDX options).
+   - Copy the built `target/release/libkrun.so.<full version>` (the real file, not a symlink) to
+     `/out/lib/libkrun.so.1`; `patchelf --set-rpath '$ORIGIN' /out/lib/libkrun.so.1` (this sets
+     DT_RUNPATH); `strip --strip-unneeded` it. Copy libkrun's `LICENSE` (and `NOTICE` if present)
+     to `/out/share/licenses/libkrun/`.
+   - Build the launcher: `cc -std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE
+     -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now -o
+     /out/libexec/hive-vm /src/vm/hive-vm.c` (use `-ldl` if the link needs it on glibc 2.28).
+   - **Checks (exit 1 with a message naming the file and the problem):**
+     - for `/out/lib/libkrun.so.1` and `/out/libexec/hive-vm`: the highest `GLIBC_x.y` in
+       `objdump -T` is ≤ 2.28 (compare with `sort -V`);
+     - their `NEEDED` entries (`readelf -d`) are all in: `libc.so.6`, `libm.so.6`, `libdl.so.2`,
+       `libpthread.so.0`, `librt.so.1`, `libgcc_s.so.1`, `ld-linux-x86-64.so.2`;
+     - `libkrun.so.1` has `RUNPATH` exactly `$ORIGIN` and SONAME `libkrun.so.1`;
+     - `hive-vm` is PIE (`readelf -h` type `DYN`), has a `GNU_RELRO` program header and `BIND_NOW`
+       (`FLAGS` containing `BIND_NOW` or `FLAGS_1` containing `NOW`).
+   - Print each check's result.
 
-5. `src/diskwatch.ts` (new):
-   - `export async function usedBytes(paths: string[]): Promise<number | undefined>`: runs
-     `du -s -B1 -x -- <paths...>` with `execFile` (timeout 60 s, `maxBuffer` 1 MB), sums the first
-     column of each line; `undefined` on any error or unparsable output. `du` does not follow
-     symlinks by default; do not pass `-L`.
-   - `export function freeBytes(path: string): number | undefined`: `statfsSync(path)`,
-     `bavail * bsize`; `undefined` on error.
-   - `export function startDiskWatch(o: { paths: string[]; maxBytes: number; minFreeBytes: number;
-     onExceeded: (reason: string) => void; freeIntervalMs?: number; sizeIntervalMs?: number;
-     measureUsed?: (paths: string[]) => Promise<number | undefined>; measureFree?: (path: string) =>
-     number | undefined }): { stop(): void }`
-     - When both limits are 0, return `{ stop() {} }`.
-     - Every `freeIntervalMs` (default 15 000), when `minFreeBytes > 0`: `measureFree(paths[0])`
-       (default `freeBytes`); below the floor → exceeded with
-       `` `stopped: less than ${gb(minFreeBytes)} GB of disk left on this computer (HIVE_MIN_FREE_DISK_GB)` ``.
-     - Every `sizeIntervalMs` (default 60 000), when `maxBytes > 0`: `await measureUsed(paths)`
-       (default `usedBytes`); above the cap → exceeded with
-       `` `stopped: the run used more than ${gb(maxBytes)} GB of disk (HIVE_RUN_DISK_MAX_GB)` ``.
-       Never run two size checks at once (a `checking` flag, as in `src/stall.ts`).
-     - An `undefined` measurement never stops a run. `onExceeded` is called at most once; after it
-       (or `stop()`) both timers are cleared. Timers are `unref()`'d.
-     - `gb(n)` prints whole GB (`Math.round(n / 1024 ** 3)`).
+5. `vm/build.sh` (the source-checkout build): add the same hardening flags
+   (`-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now`) to `flags`.
+   `.gitignore`: add `build/`.
 
-6. Tests:
-   - `test/vmcache.test.mjs` (new; set `HIVE_VM_CACHE` and `HIVE_RUNS_DIR` to temp folders before
-     importing `../dist/vmcache.js`; remove them at the end):
-     - `cacheKey` is equal for `https://github.com/O/N.git`, `git@github.com:o/n` and
-       `ssh://git@github.com/o/n`; differs between two different repos; differs between `local`
-       repos at two paths; a `new` project key differs from a remote one; keys are 16 hex chars.
-     - `useCacheBucket` creates `repos/<key>/` and `repos/<key>.used`; two metas of different repos
-       give different buckets.
-     - `pruneVmCache`: a legacy `npm/` folder and a legacy file at the cache root are deleted, a
-       file outside the cache that a legacy symlink points to survives; a bucket whose marker is
-       older than 30 days (set with `utimesSync`) is deleted with its marker; the same old bucket is
-       kept when its key is in `liveKeys`; a fresh bucket is kept; a symlink placed in `repos/`
-       pointing at an outside folder is removed and the outside folder's file survives.
-   - `test/diskwatch.test.mjs` (new; imports `../dist/diskwatch.js`):
-     - `usedBytes` on a temp folder with a 1 MB file returns at least 1 000 000; a symlink in it to
-       a large outside file does not add the outside file's size; a missing path returns
-       `undefined`.
-     - `freeBytes` on the temp folder returns a positive number.
-     - `startDiskWatch` with fake `measureUsed`/`measureFree` and 20 ms intervals: calls
-       `onExceeded` once with the size message when used > max; once with the free-space message
-       when free < floor; never when measurements are `undefined` or within limits (wait ~150 ms);
-       never after `stop()`; both limits 0 returns without starting timers.
-   - `test/run-status.test.mjs`: add cases: `diskError` gives `{ status: "failed", error: diskError }`;
-     aborted beats `diskError`; `diskError` beats stalled and timed out.
+6. `src/libkrun.ts` (new):
+   - `export type LibkrunSource = "custom" | "system" | "bundled";`
+   - `export function libkrunCandidates(env: NodeJS.ProcessEnv, bundle: string | undefined,
+     exists: (p: string) => boolean = existsSync): { path: string; source: LibkrunSource }[]` —
+     `env.HIVE_LIBKRUN` set (non-empty) → only `[{ path: it, source: "custom" }]`; else
+     `[{ path: "libkrun.so.1", source: "system" }]` plus, when `bundle` is set and
+     `<bundle>/lib/libkrun.so.1` exists, `{ path: that, source: "bundled" }`.
+   - `export function pickLibkrun(candidates, check: (path: string) => boolean): { path; source;
+     ok: boolean }` — the first candidate whose `check` passes, `ok: true`; none pass → the first
+     candidate with `ok: false`.
+   - `export function libkrunChoice()`: memoized (computed once per process):
+     `pickLibkrun(libkrunCandidates(process.env, bundleRoot()), path => launcher --check passes)`
+     where the check runs `execFileSync(config.sandbox.vmBin, ["--check"], { env: { ...process.env,
+     HIVE_LIBKRUN: path }, stdio: "ignore", timeout: 10_000 })` and returns false on any throw or
+     when the launcher file is missing. `bundleRoot` comes from `src/release.ts`.
+   - `export function libkrunLabel(c): string` — `"bundled libkrun"`, `"system libkrun"`, or
+     `"libkrun from HIVE_LIBKRUN"`.
+   - `src/config.ts`: `sandbox.libkrun` becomes `process.env.HIVE_LIBKRUN || ""` with a comment
+     that the effective library comes from `libkrunChoice()` in `src/libkrun.ts`.
+   - Replace every use of `config.sandbox.libkrun` as a library path (`src/sandbox.ts` launcher env
+     at the sandbox start, `libkrunAvailable`, `checkSandbox`; `src/cli.ts` doctor) with
+     `libkrunChoice().path` (and `.ok` where the code ran `--check` itself, instead of running it
+     again). Search `HIVE_LIBKRUN` and `sandbox.libkrun` in `src/` to find them all.
+   - Reported text:
+     - `hive doctor`: the libkrun line becomes `ok (<label>: <path>)` when ok; the isolation line
+       `microvm (<label>)` instead of the hard-coded `microvm (system libkrun)`; when not ok, the
+       libkrun detail is `not found` and the distro-aware fix from `fixFor` (below) is what tells
+       the user what to do (remove the hard-coded Fedora hint from the detail; keep the pasta line
+       as it is).
+     - `checkSandbox()` (Settings › This computer and onboarding): the libkrun check's `detail`
+       is `<label> (<path>)` when ok, else the path tried.
+     - If `src/routes/system.ts` reports a libkrun path or isolation string, make it use the same
+       label. Don't change `ui/`.
 
-7. Docs:
-   - `docs/CONFIGURATION.md`, "Runs and the VM" table: change the `HIVE_VM_CACHE` row to say each
-     repo gets its own bucket of `~/.cache` (npm, pip, Playwright, corepack), shared by that repo's
-     runs only; add rows `HIVE_VM_CACHE_DAYS` (`30`), `HIVE_RUN_DISK_MAX_GB` (`20`),
-     `HIVE_MIN_FREE_DISK_GB` (`2`) with the meanings from step 2. Under the table, one sentence: the
-     disk limits are checked every 15 s (free space) and every minute (size), so a run can briefly
-     overshoot.
-   - `docs/HOW-IT-WORKS.md`: the "VM can" table row becomes "use a download cache (`~/.cache`) shared
-     only with runs of the same repo"; the folder tree line becomes
-     `~/.cache/agent-hive/vm-cache/repos/<id>/  ~/.cache inside the VM, one per repo`; wherever it
-     lists the time limit and stall watchdog, add the disk limit.
-   - `docs/ROADMAP.md`: remove item 6 ("Per-repo caches") and renumber nothing else (it is last).
-   - `AGENTS.md`, security rule 6: rewrite to: the VM cache is shared between runs of the same repo
-     only; each agent VM mounts `<HIVE_VM_CACHE>/repos/<cacheKey>` at `/root/.cache` (see
-     `src/vmcache.ts`); it must never hold credentials or task data; the `.used` markers live
-     outside the buckets; npm's cache lives inside it. Add a rule (next free number) for the disk
-     watchdog: `src/diskwatch.ts` stops an agent step past `HIVE_RUN_DISK_MAX_GB` or below
-     `HIVE_MIN_FREE_DISK_GB`; it measures with `du` without following symlinks. Update the layout
-     table with the two new files.
-   - `README.md`, "How it works" paragraph: "A time limit, a stall watchdog and a deadline note" →
-     "A time limit, a stall watchdog, a disk limit and a deadline note".
+7. `src/fixes.ts`:
+   - `fixFor` gets an optional third parameter `detail?: string` (callers pass the check's
+     detail; update both call sites).
+   - `"kvm"`: when not WSL and `detail` contains `no access`: `{ text: "Add yourself to the kvm
+     group, then log out and back in.", command: "sudo usermod -aG kvm $USER" }`. Other cases as
+     today.
+   - `"libkrun"`: when `host.bundle` is true: `{ text: "The libkrun bundled with hive didn't load;
+     reinstall hive.", command: INSTALL_CLI }` for every distro. Otherwise (source checkout):
+     dnf family as today; Debian/Ubuntu: `{ text: "Debian and Ubuntu don't package libkrun;
+     install the hive release, which bundles it.", command: INSTALL_CLI }`; others as today.
+   - `"pasta"`: unchanged.
+
+8. `scripts/build-release.sh`:
+   - Read the Node version from `versions.json` (`HIVE_NODE_VERSION` still overrides).
+   - Run `bash scripts/build-native.sh` and use its output: copy `build/native/lib/libkrun.so.1`
+     and `build/native/lib/libkrunfw.so.5` into `$app/lib/`, `build/native/libexec/hive-vm` into
+     `$app/libexec/hive-vm` (NOT `vm/hive-vm` any more), and `build/native/share/licenses` into
+     `$app/share/licenses`. Also copy hive's own `LICENSE` to `$app/share/licenses/agent-hive/`.
+   - Remove `npm run build:vm` from the release script (the release launcher comes from
+     build-native).
+   - **GPL source assets:** download `libkrunfw.source` to
+     `$out/libkrunfw-<version>-source.tar.gz`; read `FULL_VERSION` and `KERNEL_VERSION` from the
+     `Makefile` inside it and download
+     `https://github.com/libkrun/linux/archive/refs/tags/v<FULL_VERSION>-<KERNEL_VERSION>.tar.gz`
+     to `$out/linux-<FULL_VERSION>-<KERNEL_VERSION>-source.tar.gz`. Include both in `SHA256SUMS`
+     (change the `sha256sum hive-*.tar.gz` line so these two are listed too). Skip both when
+     `HIVE_RELEASE_SKIP_SOURCES=1`.
+   - Everything else (signing, rootfs, layout) stays.
+
+9. Tests:
+   - `test/libkrun.test.mjs` (new): `libkrunCandidates` with `HIVE_LIBKRUN` set → one custom
+     candidate; without it and no bundle → system only; with a bundle dir whose
+     `lib/libkrun.so.1` exists (fake `exists`) → system then bundled; bundle set but file missing →
+     system only. `pickLibkrun`: system passes → system; system fails, bundled passes → bundled;
+     none pass → first candidate with `ok: false`. `libkrunLabel` texts.
+   - `test/versions.test.mjs` (new): `versions.json` parses; `libkrun.commit` is 40 hex;
+     `libkrunfw.sha256` is 64 hex; `libkrunfw.url` and `libkrunfw.source` start with
+     `https://github.com/containers/libkrunfw/`; `buildImage` contains `@sha256:` + 64 hex; `rust`
+     and `node` look like `x.y.z`. Also `bash -n` on `scripts/build-native.sh`,
+     `scripts/native-in-container.sh` and `scripts/build-release.sh` exits 0.
+   - `test/fixes.test.mjs`: new cases for the kvm `no access` fix, the bundled libkrun fix, and
+     the Debian/Ubuntu source-checkout libkrun fix.
+   - Update any existing test that asserts `microvm (system libkrun)` or the old libkrun texts.
+
+10. Docs:
+    - `docs/RELEASING.md`: the release now runs `scripts/build-native.sh` (podman, network; first
+      build takes several minutes, later ones reuse `build/native` while `versions.json` and
+      `vm/hive-vm.c` are unchanged); bumping a pin = edit `versions.json`; the GPL source assets
+      and `HIVE_RELEASE_SKIP_SOURCES`; the file table gains `lib/libkrun.so.1`,
+      `lib/libkrunfw.so.5`, `share/licenses/` and the two source tarballs.
+    - `docs/THIRD-PARTY.md`: libkrun row: bundled in releases (built from source at the pinned
+      tag), system libkrun preferred when it works; libkrunfw row: bundled, upstream prebuilt,
+      corresponding source attached to each release; passt row: the system package, not bundled.
+      Update the paragraph under the table accordingly.
+    - `docs/CONFIGURATION.md`: `HIVE_LIBKRUN` row: default "system `libkrun.so.1` if it works, else
+      the bundled one"; setting it forces that library.
+    - `README.md` Requirements: release installs need only KVM and pasta (`sudo apt install passt`
+      / `sudo dnf install passt` / `sudo pacman -S passt`); libkrun is bundled; building from
+      source still needs the system libkrun (Fedora: `sudo dnf install libkrun passt`). Keep the
+      Windows/macOS lines as they are.
+    - `docs/HOW-IT-WORKS.md`: wherever it says libkrun comes from the system, say it's the system
+      one when it works, else the bundled one.
+    - `AGENTS.md`: layout table gains `versions.json`, `scripts/build-native.sh`,
+      `scripts/native-in-container.sh`, `src/libkrun.ts`; build section mentions
+      `scripts/build-native.sh` for release-grade native builds.
 
 ## Acceptance
 
 - `npm run build` exits 0.
 - `npm test` exits 0.
-- `node --test test/vmcache.test.mjs test/diskwatch.test.mjs test/run-status.test.mjs` exits 0
-  (after `npm run build`).
-- `grep -n 'container: "/root/.cache"' src/runs.ts` prints exactly one line, and
-  `grep -n 'host: config.sandbox.vmCache' src/runs.ts` prints nothing.
+- `node --test test/libkrun.test.mjs test/versions.test.mjs test/fixes.test.mjs` exits 0 (after
+  `npm run build`).
+- `bash -n scripts/build-native.sh && bash -n scripts/native-in-container.sh && bash -n scripts/build-release.sh` exits 0.
+- `grep -rn "microvm (system libkrun)" src/` prints nothing.
 - `git status --short` lists no files other than those in **Files to touch**.
+- Optional, once: if `podman` can be installed and run in this VM (`dnf install -y podman`, then
+  `podman run --rm docker.io/library/alpine:3.20 true`), run `bash scripts/build-native.sh` and
+  report its output (the checks' lines). If podman can't run here, say so in the report and do not
+  work around it; the build is verified on the host afterwards.
 
 ## Parallel work
 
@@ -187,17 +242,16 @@ None — do it sequentially.
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
 - The only checks to run are the **Acceptance** commands. Never boot a hive VM, start `hive run`,
-  start the server or call GitHub/OpenRouter. If something outside Acceptance fails, note it in the
-  report and finish.
-- No new dependencies. Don't change `vm/`, `image/` or `ui/`. Keep run behaviour the same apart
-  from the cache location and the disk watchdog.
-- Never mention pi-vm or dsh in docs.
+  start the server or call GitHub/OpenRouter APIs (plain downloads in `build-native.sh` are fine).
+  If something outside Acceptance fails, note it in the report and finish.
+- No new npm dependencies. Don't change `vm/hive-vm.c`, `image/` or `ui/`. Don't bundle pasta.
+- Never mention pi-vm or dsh in docs or code.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Real filesystem quotas (loop devices, XFS project quotas), a read-only/overlay cache, cache size
-  limits per bucket, UI changes.
+- CI, the weekly pin-bump job, the beta channel, `PI_VERSION` in the pin file, macOS, gVisor,
+  the WSL installer, publishing a release.
 
 ## If blocked
 

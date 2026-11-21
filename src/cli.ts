@@ -1216,6 +1216,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { config, providerInfo } = await import("./config.js");
   const { libkrunAvailable } = await import("./sandbox.js");
+  const { libkrunChoice, libkrunLabel } = await import("./libkrun.js");
   const { currentVersion } = await import("./release.js");
   const { fixFor, hostInfo } = await import("./fixes.js");
   type CheckId = Parameters<typeof fixFor>[0];
@@ -1233,26 +1234,14 @@ async function cmdDoctor(args: string[]): Promise<number> {
   checks.push({ ok: kvm === "ok", id: "kvm", label: "/dev/kvm", detail: kvm });
   if (kvm !== "ok") allOk = false;
 
-  const libkrun = config.sandbox.libkrun;
-  let libkrunOk = false;
-  if (existsSync(config.sandbox.vmBin)) {
-    try {
-      execFileSync(config.sandbox.vmBin, ["--check"], {
-        env: { ...process.env, HIVE_LIBKRUN: libkrun },
-        stdio: "ignore",
-      });
-      libkrunOk = true;
-    } catch {
-      libkrunOk = false;
-    }
-  }
+  const libkrun = libkrunChoice();
   checks.push({
-    ok: libkrunOk,
+    ok: libkrun.ok,
     id: "libkrun",
     label: "libkrun",
-    detail: libkrunOk ? `ok (${libkrun})` : "not found — install your distro's libkrun package (Fedora: sudo dnf install libkrun)",
+    detail: libkrun.ok ? `ok (${libkrunLabel(libkrun)}: ${libkrun.path})` : "not found",
   });
-  if (!libkrunOk) allOk = false;
+  if (!libkrun.ok) allOk = false;
 
   const pasta = commandPath("pasta");
   checks.push({
@@ -1289,7 +1278,11 @@ async function cmdDoctor(args: string[]): Promise<number> {
   if (!rootfsOk) allOk = false;
 
   const isolationOk = libkrunAvailable();
-  checks.push({ ok: isolationOk, label: "isolation", detail: isolationOk ? "microvm (system libkrun)" : "unavailable" });
+  checks.push({
+    ok: isolationOk,
+    label: "isolation",
+    detail: isolationOk ? `microvm (${libkrunLabel(libkrun)})` : "unavailable",
+  });
   if (!isolationOk) allOk = false;
 
   const providers = providerInfo();
@@ -1319,7 +1312,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const lines: string[] = [];
   const fixLines = (check: (typeof checks)[number], tty: boolean): void => {
     if (check.ok || check.id === undefined) return;
-    const fix = fixFor(check.id, host);
+    const fix = fixFor(check.id, host, check.detail);
     lines.push(tty ? dim(`  ${fix.text}`, true) : `  ${fix.text}`);
     if (fix.command !== undefined) {
       lines.push(tty ? `  $ ${cyan(fix.command, true)}` : `  $ ${fix.command}`);
