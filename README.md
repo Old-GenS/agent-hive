@@ -31,7 +31,9 @@ hive push --pr     # or push a branch and open a pull request
   covered by a bundled libkrun (see the [roadmap](docs/ROADMAP.md)).
 - An API key for at least one model provider.
 
-macOS and Windows (WSL2) are on the [roadmap](docs/ROADMAP.md).
+Windows: WSL2 with the Fedora WSL distro should work today, but hasn't been tested yet; a
+one-line PowerShell installer is next on the [roadmap](docs/ROADMAP.md#step-1b--windows-through-wsl2-next).
+macOS is on the roadmap too.
 
 ## Install
 
