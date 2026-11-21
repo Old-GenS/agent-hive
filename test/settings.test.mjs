@@ -296,3 +296,22 @@ test("DELETE /api/settings/:key is 404 for an unknown key and 409 for an environ
   }
 });
 
+
+test("a value from the server's .env reads as dotenv, and Reset goes back to it", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const dotenvPath = process.env.HIVE_DOTENV_PATH;
+  writeFileSync(dotenvPath, "HIVE_STALL_MIN=25\n");
+  try {
+    clearFile();
+    assert.equal(readSettings().stallMin.source, "dotenv");
+    applySettings({ stallMin: 30 });
+    assert.equal(readSettings().stallMin.source, "file");
+    assert.equal(config.sandbox.stallMin, 30);
+    resetSetting("stallMin");
+    assert.equal(config.sandbox.stallMin, 25, "reset falls back to the .env value, not the default");
+    assert.equal(readSettings().stallMin.source, "dotenv");
+  } finally {
+    rmSync(dotenvPath, { force: true });
+    resetSetting("stallMin");
+  }
+});
