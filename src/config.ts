@@ -117,7 +117,7 @@ export const config = {
     cpus: process.env.HIVE_SANDBOX_CPUS || "1",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
     // Stop a run when no file in its work/ folder changed and no agent event arrived for this many
-    // minutes (like pi-vm). 0 turns it off.
+    // minutes. 0 turns it off.
     stallMin: int("HIVE_STALL_MIN", 15),
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
     rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),

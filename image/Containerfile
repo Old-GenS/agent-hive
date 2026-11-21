@@ -1,8 +1,11 @@
 # The agent-hive VM image: pi plus the tools a coding task usually needs, including headless
-# Chromium. It follows pi-vm's image (same base, packages and pi version) with hive's own pieces on
-# top. The libkrun launcher boots an export of this image (npm run build:rootfs) read-only, with a
-# RAM overlay for writes. A task sees only its clone at /work, its session at /session, its /io
-# folder and one LLM API key: no SSH keys, no gh token, no git remote.
+# Chromium. The libkrun launcher boots an export of this image (npm run build:rootfs) read-only,
+# with a RAM overlay for writes. A task sees only its clone at /work, its /io folder (prompt,
+# pi's session, event log), its repo's ~/.cache and one LLM API key: no SSH keys, no gh token, no
+# git remote.
+#
+# Packages here are not pinned, so a rebuild picks up Fedora's security updates (Chromium
+# included) only when podman's layer cache is skipped: npm run build:image:fresh.
 FROM registry.fedoraproject.org/fedora:45
 
 RUN dnf -y install --setopt=install_weak_deps=False \

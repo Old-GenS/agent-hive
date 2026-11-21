@@ -1,6 +1,6 @@
 /**
  * Stall watchdog for a CLI run: stop a run when nothing in its `work/` folder changed and no agent
- * event arrived for `config.sandbox.stallMin` minutes. The file check mirrors pi-vm: a single
+ * event arrived for `config.sandbox.stallMin` minutes. The file check is a single
  * `find -mmin` that stops at the first recent file.
  */
 import { execFile } from "node:child_process";

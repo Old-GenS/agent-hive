@@ -34,6 +34,13 @@ The release build needs podman (it builds the VM image and packs the rootfs insi
    Set `HIVE_SIGNING_KEY` to use a key other than `~/.config/agent-hive/release-signing-key.pem`,
    and `HIVE_RELEASE_SKIP_ROOTFS=1` to skip building the rootfs (the bundle then records
    `ROOTFS_VERSION=none`).
+
+   **Security updates in the VM:** the image's packages (Fedora, Chromium, Node, git) aren't
+   pinned, but podman's layer cache keeps the old ones, so a plain release reuses the previous
+   rootfs. Set `HIVE_RELEASE_FRESH_ROOTFS=1` to rebuild it without the cache and with a freshly
+   pulled base image. That gives a new rootfs version, which every user downloads again (about
+   660 MB), so do it for Chromium or Fedora security fixes and at least monthly, not for every
+   app-only release. Say in the release notes when the rootfs changed.
 3. Publish:
 
    ```bash

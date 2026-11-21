@@ -1,6 +1,6 @@
 /**
  * OpenRouter setup for a run: pi's models.json for the chosen model, and provider routing chosen
- * from OpenRouter's endpoint list (the logic ported from pi-vm).
+ * from OpenRouter's endpoint list.
  *
  * The only network calls are the two OpenRouter API reads in openrouterSetup(); tests pass a fake
  * fetch and never reach the network.

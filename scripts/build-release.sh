@@ -29,7 +29,13 @@ npm run build:vm
 if [[ "${HIVE_RELEASE_SKIP_ROOTFS:-}" == "1" ]]; then
   rver=none
 else
-  npm run build:image
+  # HIVE_RELEASE_FRESH_ROOTFS=1 rebuilds the image without podman's cache and with a fresh base,
+  # so Fedora and Chromium security updates get in. Users then download the new rootfs.
+  if [[ "${HIVE_RELEASE_FRESH_ROOTFS:-}" == "1" ]]; then
+    npm run build:image:fresh
+  else
+    npm run build:image
+  fi
   npm run build:rootfs
   rootfs=$(realpath "${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs/current")
   rver=$(basename "$rootfs")
