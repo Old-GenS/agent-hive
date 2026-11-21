@@ -24,6 +24,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
 | `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session`, `/pr`, `/issue`, `/export` (a run's result as a zip or git bundle), `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
 | `src/stall.ts` | Stall watchdog: stop a run when nothing in `work/` changed and no event arrived for `HIVE_STALL_MIN` minutes |
+| `src/diskwatch.ts` | Disk watchdog: `du`-based size measurement and free-space checks that stop an agent step past `HIVE_RUN_DISK_MAX_GB` / below `HIVE_MIN_FREE_DISK_GB` |
+| `src/vmcache.ts` | Per-repo VM cache buckets: the repo identity key, the bucket a run mounts at `/root/.cache`, the `.used` markers and pruning of old buckets |
 | `src/openrouter.ts` | OpenRouter runs: pi's `models.json` from OpenRouter's model data, and a fixed provider order (maker first, then uptime, then price; low-precision endpoints skipped) |
 | `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
@@ -65,10 +67,11 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 4. **Anything from GitHub or the agent is untrusted in the UI** — render with `esc()` only.
 5. Repo URLs are restricted to github.com (`normalizeRepo`); `HIVE_ALLOW_ANY_REPO_URL=1` is for
    local testing only.
-6. **The VM cache is the one thing shared between tasks.** `HIVE_VM_CACHE` (default
-   `~/.cache/agent-hive/vm-cache`) is mounted read-write at `/root/.cache` in every agent sandbox,
-   so it must never hold credentials or task data. npm's cache lives inside it
-   (`NPM_CONFIG_CACHE=/root/.cache/npm`).
+6. **The VM cache is shared between runs of the same repo only.** Each agent VM mounts
+   `<HIVE_VM_CACHE>/repos/<cacheKey>` (default `~/.cache/agent-hive/vm-cache/repos/…`) at
+   `/root/.cache`; the key comes from `src/vmcache.ts`, so runs of different repos never see each
+   other's cache. It must never hold credentials or task data. The host-only `.used` markers live
+   outside the buckets, and npm's cache lives inside (`NPM_CONFIG_CACHE=/root/.cache/npm`).
 7. **The CLI's host git runs only in the user's repo** (rev-parse, status, clone source, apply/am
    of exported patches), never in a run's `work/`. Text crosses into and out of the VM only as
    files in `io/` and patches in `out/`.
@@ -94,6 +97,9 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
     the CLI run `recoverRuns()`: a run still marked running whose owner is gone has its leftover
     `hive-vm` stopped and is marked "interrupted". The stall watchdog stops a run that makes no
     progress for `HIVE_STALL_MIN` minutes.
+12. **A run's disk use is bounded.** `src/diskwatch.ts` stops an agent step once the run folder plus
+    its cache bucket passes `HIVE_RUN_DISK_MAX_GB` or the disk holding the runs has less than
+    `HIVE_MIN_FREE_DISK_GB` free. It measures with `du` without following symlinks.
 
 ## GitHub access (server)
 

@@ -105,6 +105,8 @@ export const config = {
   runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
   /** Finished runs older than this many days are deleted; 0 keeps them forever. */
   runRetentionDays: int("HIVE_RUN_RETENTION_DAYS", 14, 0),
+  /** Per-repo VM cache buckets not used for this many days are deleted; 0 keeps them. */
+  vmCacheDays: int("HIVE_VM_CACHE_DAYS", 30, 0),
   /** OpenRouter provider routing, parsed from HIVE_OPENROUTER_ROUTING (invalid JSON throws when used). */
   get openrouterRouting(): object {
     return openrouterRouting();
@@ -120,9 +122,16 @@ export const config = {
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
     rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
     libkrun: process.env.HIVE_LIBKRUN || "libkrun.so.1",
-    // Shared ~/.cache for the agent (Playwright browsers, npm, pip, corepack...), kept between runs.
+    // ~/.cache for the agent (Playwright browsers, npm, pip, corepack...), kept between runs. The
+    // folder holds one bucket per repo under repos/, so only runs of the same repo share it.
     // HIVE_VM_CACHE="" disables it.
     vmCache: process.env.HIVE_VM_CACHE ?? join(cacheHome, "agent-hive/vm-cache"),
+    // Stop an agent step when the run folder plus its cache bucket uses more than this many GB;
+    // 0 turns it off.
+    diskMaxGb: int("HIVE_RUN_DISK_MAX_GB", 20, 0),
+    // Stop an agent step when less than this many GB are free on the disk holding the runs;
+    // 0 turns it off.
+    minFreeGb: int("HIVE_MIN_FREE_DISK_GB", 2, 0),
   },
   git: {
     authorName: process.env.GIT_AUTHOR_NAME || "agent-hive",

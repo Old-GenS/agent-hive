@@ -38,6 +38,8 @@ import { followJsonl } from "./follow.js";
 import { openrouterSetup } from "./openrouter.js";
 import { addUsage, emptyUsage, type Usage } from "./render.js";
 import { startStallWatch } from "./stall.js";
+import { cacheBucket, cacheKey, pruneVmCache, useCacheBucket } from "./vmcache.js";
+import { startDiskWatch } from "./diskwatch.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,12 +50,14 @@ export type RunStatus = "queued" | "running" | "done" | "failed" | "aborted";
 
 /**
  * The run's outcome from how the sandbox ended and what pi's last assistant message said. The
- * order matters: an abort beats a stall, which beats the time limit, which beats the exit code.
+ * order matters: an abort beats the disk watchdog, which beats a stall, which beats the time
+ * limit, which beats the exit code.
  */
 export function finalStatus(r: {
   aborted: boolean;
   timedOut: boolean;
   stalled: boolean;
+  diskError?: string;
   code: number | null;
   stopReason?: string;
   modelError?: string;
@@ -62,6 +66,7 @@ export function finalStatus(r: {
   stallMin: number;
 }): { status: RunStatus; error?: string } {
   if (r.aborted) return { status: "aborted" };
+  if (r.diskError !== undefined) return { status: "failed", error: r.diskError };
   if (r.stalled) return { status: "failed", error: `stalled: nothing changed for ${r.stallMin} minutes` };
   if (r.timedOut) return { status: "failed", error: `timed out after ${r.timeoutMin} minutes` };
   if (r.code !== 0) return { status: "failed", error: `agent exited ${r.code}: ` + r.stderr.slice(-2000) };
@@ -160,16 +165,14 @@ function makeRunDir(repo: string): string {
 }
 
 /**
- * The folders an agent step's VM shares: the run's work/ copy and, when configured, the shared VM
- * cache (~/.cache). The /io share is added by runSandbox; a VM is limited to MAX_SHARES folders
- * (libkrun's interrupt slots), which is why pi's session now lives inside /io.
+ * The folders an agent step's VM shares: the run's work/ copy and, when configured, the repo's own
+ * cache bucket (~/.cache). The /io share is added by runSandbox; a VM is limited to MAX_SHARES
+ * folders (libkrun's interrupt slots), which is why pi's session now lives inside /io.
  */
-export function stepMounts(dir: string): SandboxOptions["mounts"] {
+export function stepMounts(dir: string, meta: RunMeta): SandboxOptions["mounts"] {
   const mounts: SandboxOptions["mounts"] = [{ host: join(dir, "work"), container: "/work" }];
-  if (config.sandbox.vmCache) {
-    mkdirSync(config.sandbox.vmCache, { recursive: true });
-    mounts.push({ host: config.sandbox.vmCache, container: "/root/.cache", shared: true });
-  }
+  const bucket = useCacheBucket(meta);
+  if (bucket) mounts.push({ host: bucket, container: "/root/.cache", shared: true });
   return mounts;
 }
 
@@ -251,10 +254,16 @@ export function recoverRuns(
 }
 
 /**
- * Delete finished runs older than config.runRetentionDays (0 = keep forever). Returns the deleted
- * run names.
+ * Delete finished runs older than config.runRetentionDays (0 = keep forever), then prune unused
+ * per-repo VM cache buckets. Returns the deleted run names.
  */
 export function pruneRuns(now = Date.now()): string[] {
+  try {
+    const liveKeys = new Set(listRuns().filter(({ meta }) => isLive(meta)).map(({ meta }) => cacheKey(meta)));
+    pruneVmCache(liveKeys);
+  } catch {
+    // Cache pruning is best effort: a problem there must not stop run cleanup.
+  }
   const days = config.runRetentionDays;
   if (days === 0) return [];
   const cutoff = days * 86_400_000;
@@ -1020,7 +1029,7 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   if (existsSync(oldSession) && !existsSync(sessionDir)) renameSync(oldSession, sessionDir);
   mkdirSync(sessionDir, { recursive: true });
 
-  const mounts = stepMounts(dir);
+  const mounts = stepMounts(dir, meta);
   // An OpenRouter run's models.json and settings.json live in <run>/agent. pi writes lock and
   // state files into its config folder, so each step gets a fresh writable copy in its io folder
   // (/io/pi-agent): whatever pi changes there is thrown away before the next step. It rides on the
@@ -1052,7 +1061,7 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   const key = providerKey(meta.provider)!;
   const env: Record<string, string> = { [PROVIDERS[meta.provider].sandboxEnv]: key, ...gitIdentity() };
   if (useAgentDir) env.PI_CODING_AGENT_DIR = "/io/pi-agent";
-  // npm downloads live in the shared ~/.cache, next to the VM cache mount.
+  // npm downloads live in the repo's cache bucket, which is mounted at ~/.cache.
   if (config.sandbox.vmCache) env.NPM_CONFIG_CACHE = "/root/.cache/npm";
   const handle = runSandbox({
     name: "hive-" + basename(dir),
@@ -1101,6 +1110,19 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
       void handle.stop();
     },
   });
+  // Stop a run that outgrows its disk budget: the run folder plus its cache bucket, and the free
+  // space on the disk holding them.
+  let diskError: string | undefined;
+  const bucket = cacheBucket(meta);
+  const diskWatch = startDiskWatch({
+    paths: [dir, ...(bucket ? [bucket] : [])],
+    maxBytes: config.sandbox.diskMaxGb * 1024 ** 3,
+    minFreeBytes: config.sandbox.minFreeGb * 1024 ** 3,
+    onExceeded: (reason) => {
+      diskError = reason;
+      void handle.stop();
+    },
+  });
   const onAbort = () => {
     void handle.stop();
   };
@@ -1110,6 +1132,7 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   const result = await handle.done;
   follower.stop();
   stallWatch.stop();
+  diskWatch.stop();
   o.signal.removeEventListener("abort", onAbort);
 
   // The VM has exited: drop streaming-only events from the saved log (the live stream is over and
@@ -1128,6 +1151,7 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
     aborted: o.signal.aborted,
     timedOut: result.timedOut,
     stalled,
+    diskError,
     code: result.code,
     stopReason,
     modelError,

@@ -19,9 +19,12 @@ delete process.env.DEFAULT_MODEL;
 
 const { REVIEW_PROMPT, isLgtm, slimEvents, shouldReview, startRun, stepMounts, timeNote, usageWriteDue } =
   await import("../dist/runs.js");
+const { cacheKey } = await import("../dist/vmcache.js");
 
 const signal = () => new AbortController().signal;
 const noop = () => {};
+/** A remote run's meta, for stepMounts. */
+const meta = { source: "remote", repo: "https://github.com/me/demo.git" };
 
 test("isLgtm accepts a leading LGTM in any case and nothing else", () => {
   assert.equal(isLgtm("LGTM"), true);
@@ -81,8 +84,8 @@ test("slimEvents drops streaming-only events and keeps everything else", () => {
   assert.equal(slimEvents('{"type":"message_update"}\n'), "\n");
 });
 
-test("stepMounts shares the work copy and the VM cache, and nothing else", () => {
-  const mounts = stepMounts(join(root, "run"));
+test("stepMounts shares the work copy and the repo's cache bucket, and nothing else", () => {
+  const mounts = stepMounts(join(root, "run"), meta);
   assert.ok(mounts.length <= 2, `expected at most 2 mounts, got ${mounts.length}`);
   assert.deepEqual(
     mounts.map((m) => m.container),
@@ -90,7 +93,7 @@ test("stepMounts shares the work copy and the VM cache, and nothing else", () =>
   );
   assert.ok(!mounts.some((m) => m.container === "/session" || m.container === "/root/.npm"));
   assert.equal(mounts[0].host, join(root, "run", "work"));
-  assert.equal(mounts[1].host, join(root, "vm-cache"));
+  assert.equal(mounts[1].host, join(root, "vm-cache", "repos", cacheKey(meta)));
   assert.equal(mounts[1].shared, true);
 });
 
@@ -98,7 +101,7 @@ test("stepMounts leaves the VM cache out when it is disabled", () => {
   // config.ts reads HIVE_VM_CACHE at import time, so the disabled case needs its own process.
   const url = new URL("../dist/runs.js", import.meta.url).href;
   const probe = `const { stepMounts } = await import(${JSON.stringify(url)});
-process.stdout.write(JSON.stringify(stepMounts("/tmp/hive-step-mounts-probe")));`;
+process.stdout.write(JSON.stringify(stepMounts("/tmp/hive-step-mounts-probe", { source: "remote", repo: "https://github.com/me/demo.git" })));`;
   const out = execFileSync(process.execPath, ["--input-type=module", "-e", probe], {
     encoding: "utf8",
     env: { ...process.env, HIVE_VM_CACHE: "" },

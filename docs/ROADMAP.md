@@ -152,8 +152,6 @@ Roughly in order of value (from `docs/RESEARCH.md`):
    fail in the summary.
 4. **The same task on two models side by side,** then pick the better diff.
 5. **Notifications** to the desktop or phone when a run finishes.
-6. **Per-repo caches** for faster starts. The shared VM cache (`~/.cache` in the VM, which holds
-   npm, pip and browser downloads) already covers the common case.
 
 ## Isolation backends considered
 

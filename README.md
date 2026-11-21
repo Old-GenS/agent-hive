@@ -122,8 +122,8 @@ your repo ──clone──► work/ ──► microVM: pi edits, runs, commits 
 hive copies your repo into a run folder and boots a microVM that sees only that copy. Inside, the
 agent has free rein. Text crosses the boundary only as files: the prompt goes in, an event log and
 patches come out. The host never runs git inside the agent's copy, so nothing the agent puts in
-`.git` can run on your machine. A time limit, a stall watchdog and a deadline note keep runs from
-running away, and committed work is kept even if a run fails.
+`.git` can run on your machine. A time limit, a stall watchdog, a disk limit and a deadline note
+keep runs from running away, and committed work is kept even if a run fails.
 
 The full picture is in **[How it works](docs/HOW-IT-WORKS.md)**.
 

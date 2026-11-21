@@ -13,6 +13,7 @@ const procRoot = join(root, "proc");
 mkdirSync(runsDir);
 mkdirSync(procRoot);
 process.env.HIVE_RUNS_DIR = runsDir;
+process.env.HIVE_VM_CACHE = join(root, "vm-cache");
 process.env.HIVE_DOTENV_PATH = join(root, "missing.env");
 process.env.HIVE_KEYS_FILE = join(root, "missing-keys");
 delete process.env.HIVE_RUN_RETENTION_DAYS;

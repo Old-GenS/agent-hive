@@ -61,7 +61,10 @@ itself (`order` or `only`) is used as written; `{}` lets OpenRouter choose freel
 | `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `2048m` / `1` | VM size. The VM's writable space lives in RAM, up to half of the memory. |
 | `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | Each agent step is stopped after this many minutes |
 | `HIVE_STALL_MIN` | `15` | Stop a run when no file changed and no event arrived for this many minutes; `0` turns it off |
-| `HIVE_VM_CACHE` | `~/.cache/agent-hive/vm-cache` | `~/.cache` inside every VM (npm, pip, Playwright, corepack), shared between runs; empty disables it. It must never hold anything secret. |
+| `HIVE_VM_CACHE` | `~/.cache/agent-hive/vm-cache` | Each repo gets its own bucket of `~/.cache` inside the VM (npm, pip, Playwright, corepack), shared by that repo's runs only; empty disables it. It must never hold anything secret. |
+| `HIVE_VM_CACHE_DAYS` | `30` | Per-repo VM cache buckets not used for this many days are deleted; `0` keeps them |
+| `HIVE_RUN_DISK_MAX_GB` | `20` | Stop an agent step when the run folder plus its cache bucket uses more than this many GB; `0` turns it off |
+| `HIVE_MIN_FREE_DISK_GB` | `2` | Stop an agent step when less than this many GB are free on the disk holding the runs; `0` turns it off |
 | `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where run folders live |
 | `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this are deleted; `0` keeps them forever |
 | `HIVE_ROOTFS` | `~/.local/share/agent-hive/rootfs/current` | The VM filesystem |
@@ -70,6 +73,9 @@ itself (`order` or `only`) is used as written; `{}` lets OpenRouter choose freel
 A VM only uses the memory it actually touches, but several heavy runs at once can still run a
 small machine out of memory: keep `MAX_CONCURRENT_SESSIONS` × `HIVE_SANDBOX_MEMORY` well under
 your RAM.
+
+The disk limits are checked every 15 s (free space) and every minute (size), so a run can briefly
+overshoot.
 
 ## Git and GitHub
 

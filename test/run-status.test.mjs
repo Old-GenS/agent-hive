@@ -75,6 +75,24 @@ test("a normal exit with a normal stop reason is done", () => {
   assert.deepEqual(finalStatus({ ...ok, stopReason: "endTurn" }), { status: "done" });
 });
 
+test("disk watchdog failure failed with its reason", () => {
+  assert.deepEqual(finalStatus({ ...ok, diskError: "stopped: the run used more than 20 GB of disk" }), {
+    status: "failed",
+    error: "stopped: the run used more than 20 GB of disk",
+  });
+});
+
+test("aborted wins over the disk watchdog", () => {
+  assert.deepEqual(finalStatus({ ...ok, aborted: true, diskError: "stopped: no disk left" }), { status: "aborted" });
+});
+
+test("the disk watchdog wins over stalled and timed out", () => {
+  assert.deepEqual(
+    finalStatus({ ...ok, diskError: "stopped: no disk left", stalled: true, timedOut: true }),
+    { status: "failed", error: "stopped: no disk left" },
+  );
+});
+
 test("aborted wins over stalled", () => {
   assert.deepEqual(finalStatus({ ...ok, aborted: true, stalled: true, timedOut: true }), { status: "aborted" });
 });
