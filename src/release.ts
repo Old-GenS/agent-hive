@@ -31,7 +31,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { RELEASE_PUBLIC_KEY } from "./release-key.js";
+import { BETA_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from "./release-key.js";
 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -71,25 +71,66 @@ export function cacheFile(): string {
   return join(cacheHome(), "agent-hive/update-check.json");
 }
 
-/** Compare dotted numeric versions. A leading `v` and missing trailing parts are ignored. */
+/**
+ * Compare dotted numeric versions. A leading `v` and missing trailing parts are ignored, and an
+ * optional `-beta.N` prerelease sorts below the same `X.Y.Z` without one; two betas of the same
+ * version compare by N.
+ */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
-  const parse = (version: string): number[] => {
-    const parts = version.replace(/^v/, "").split(".");
-    return parts.map((part) => {
-      if (!/^\d+$/.test(part)) throw new Error(`bad version: ${version}`);
-      return Number.parseInt(part, 10);
-    });
+  const parse = (version: string): { parts: number[]; beta: number | undefined } => {
+    const m = /^(\d+(?:\.\d+)*)(?:-beta\.(\d+))?$/.exec(version.replace(/^v/, ""));
+    if (!m) throw new Error(`bad version: ${version}`);
+    return {
+      parts: m[1].split(".").map((part) => Number.parseInt(part, 10)),
+      beta: m[2] === undefined ? undefined : Number.parseInt(m[2], 10),
+    };
   };
   const pa = parse(a);
   const pb = parse(b);
-  const length = Math.max(pa.length, pb.length);
+  const length = Math.max(pa.parts.length, pb.parts.length);
   for (let i = 0; i < length; i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
+    const x = pa.parts[i] ?? 0;
+    const y = pb.parts[i] ?? 0;
     if (x < y) return -1;
     if (x > y) return 1;
   }
-  return 0;
+  if (pa.beta === pb.beta) return 0;
+  if (pa.beta === undefined) return 1;
+  if (pb.beta === undefined) return -1;
+  return pa.beta < pb.beta ? -1 : 1;
+}
+
+/** True when `version` is a beta prerelease (`X.Y.Z-beta.N`), with or without a leading `v`. */
+export function isBeta(version: string): boolean {
+  return /^v?\d+(?:\.\d+)*-beta\.\d+$/.test(version);
+}
+
+export type Channel = "stable" | "beta";
+
+/** Where the update channel is remembered: a file in the data dir. */
+export function channelFile(): string {
+  return join(dataDir(), "channel");
+}
+
+/** The channel this install follows; anything but a `beta` file means the stable channel. */
+export function readChannel(): Channel {
+  try {
+    return readFileSync(channelFile(), "utf8").trim() === "beta" ? "beta" : "stable";
+  } catch {
+    return "stable";
+  }
+}
+
+export function writeChannel(channel: Channel): void {
+  mkdirSync(dataDir(), { recursive: true });
+  writeFileSync(channelFile(), channel + "\n");
+}
+
+/** The release keys this channel trusts. Empty strings are dropped. */
+export function trustedKeys(channel: Channel): string[] {
+  return (channel === "beta" ? [RELEASE_PUBLIC_KEY, BETA_RELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]).filter(
+    (key) => key !== "",
+  );
 }
 
 /** The directory that holds the running bundle, when this copy was installed from a release. */
@@ -137,6 +178,11 @@ export function verifySums(sums: Buffer, sigBase64: string, publicKeyPem: string
   }
 }
 
+/** True when any of `publicKeys` verifies the signature over `sums`. */
+export function verifySumsAny(sums: Buffer, sigBase64: string, publicKeys: string[]): boolean {
+  return publicKeys.some((publicKey) => verifySums(sums, sigBase64, publicKey));
+}
+
 /** SHA-256 of a file, read in a stream so release tarballs never sit in memory. */
 export function sha256File(path: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -163,11 +209,24 @@ function releaseRepo(): string {
   return process.env.HIVE_RELEASE_REPO || "ogsapps/agent-hive";
 }
 
-/** Look up the latest release, or a specific tag, on GitHub (or HIVE_RELEASE_API). */
-export async function fetchRelease(tag?: string, timeoutMs = 30_000): Promise<Release> {
-  const url = tag
-    ? `${releaseApi()}/repos/${releaseRepo()}/releases/tags/${tag}`
-    : `${releaseApi()}/repos/${releaseRepo()}/releases/latest`;
+type RawRelease = {
+  tag_name?: string;
+  draft?: boolean;
+  assets?: { name?: string; url?: string; browser_download_url?: string }[];
+};
+
+function toRelease(json: RawRelease): Release {
+  return {
+    version: String(json.tag_name ?? "").replace(/^v/, ""),
+    assets: (json.assets ?? []).map((asset) => ({
+      name: String(asset.name ?? ""),
+      url: String(asset.url ?? ""),
+      downloadUrl: String(asset.browser_download_url ?? ""),
+    })),
+  };
+}
+
+async function fetchReleaseJson(url: string, timeoutMs: number): Promise<unknown> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "User-Agent": "agent-hive",
@@ -177,18 +236,48 @@ export async function fetchRelease(tag?: string, timeoutMs = 30_000): Promise<Re
 
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new Error(`release lookup failed: HTTP ${response.status}`);
-  const json = (await response.json()) as {
-    tag_name?: string;
-    assets?: { name?: string; url?: string; browser_download_url?: string }[];
-  };
-  return {
-    version: String(json.tag_name ?? "").replace(/^v/, ""),
-    assets: (json.assets ?? []).map((asset) => ({
-      name: String(asset.name ?? ""),
-      url: String(asset.url ?? ""),
-      downloadUrl: String(asset.browser_download_url ?? ""),
-    })),
-  };
+  return response.json();
+}
+
+/**
+ * Look up the latest release, or a specific tag, on GitHub (or HIVE_RELEASE_API). Without a tag,
+ * the stable channel uses `/releases/latest`; the beta channel lists the recent releases and picks
+ * the highest version, prereleases included.
+ */
+export async function fetchRelease(tag?: string, timeoutMs = 30_000, channel: Channel = "stable"): Promise<Release> {
+  if (tag !== undefined) {
+    const json = (await fetchReleaseJson(
+      `${releaseApi()}/repos/${releaseRepo()}/releases/tags/${tag}`,
+      timeoutMs,
+    )) as RawRelease;
+    return toRelease(json);
+  }
+  if (channel === "stable") {
+    const json = (await fetchReleaseJson(
+      `${releaseApi()}/repos/${releaseRepo()}/releases/latest`,
+      timeoutMs,
+    )) as RawRelease;
+    return toRelease(json);
+  }
+
+  const json = await fetchReleaseJson(
+    `${releaseApi()}/repos/${releaseRepo()}/releases?per_page=30`,
+    timeoutMs,
+  );
+  if (!Array.isArray(json)) throw new Error("no releases found");
+  let best: Release | undefined;
+  for (const item of json as RawRelease[]) {
+    if (item === null || typeof item !== "object" || item.draft) continue;
+    const release = toRelease(item);
+    try {
+      compareVersions(release.version, release.version);
+    } catch {
+      continue;
+    }
+    if (best === undefined || compareVersions(release.version, best.version) > 0) best = release;
+  }
+  if (best === undefined) throw new Error("no releases found");
+  return best;
 }
 
 /** How far a download has got: bytes received and the total when the server sent one. */
@@ -269,9 +358,9 @@ export async function ensureRootfs(
  * Install a release into `versions/<version>` and fetch its rootfs unless it is already there.
  * Nothing is activated: call activate() once this returns.
  */
-export async function installRelease(rel: Release, o: { publicKey?: string } = {}): Promise<string> {
-  const key = o.publicKey ?? RELEASE_PUBLIC_KEY;
-  if (!key) throw new Error("this build has no release signing key, so updates can't be verified");
+export async function installRelease(rel: Release, o: { publicKeys?: string[] } = {}): Promise<string> {
+  const keys = (o.publicKeys ?? trustedKeys(readChannel())).filter((key) => key !== "");
+  if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 
   const app = `hive-${rel.version}-linux-x86_64.tar.gz`;
   const sumsAsset = rel.assets.find((a) => a.name === "SHA256SUMS");
@@ -290,7 +379,7 @@ export async function installRelease(rel: Release, o: { publicKey?: string } = {
     await download(sigAsset, sigPath);
     const sums = readFileSync(sumsPath);
     const sig = readFileSync(sigPath, "utf8");
-    if (!verifySums(sums, sig, key)) throw new Error("release signature check failed");
+    if (!verifySumsAny(sums, sig, keys)) throw new Error("release signature check failed");
 
     const appPath = join(tmp, app);
     await download(appAsset, appPath);
@@ -324,14 +413,18 @@ export async function installRelease(rel: Release, o: { publicKey?: string } = {
  * Download the VM rootfs that belongs to the running bundle (hive setup). `onProgress` is called
  * as the archive downloads; it is never required.
  */
-export async function setupRootfs(o: { publicKey?: string; onProgress?: OnProgress } = {}): Promise<string> {
+export async function setupRootfs(
+  o: { publicKeys?: string[]; onProgress?: OnProgress } = {},
+): Promise<string> {
   if (!bundleRoot()) throw new Error("not an installed release");
   const rver = readFileSync(join(bundleRoot() as string, "ROOTFS_VERSION"), "utf8").trim();
   const dest = join(rootfsDir(), rver);
   if (existsSync(join(dest, ".complete"))) return dest;
 
-  const key = o.publicKey ?? RELEASE_PUBLIC_KEY;
-  if (!key) throw new Error("this build has no release signing key, so updates can't be verified");
+  // A beta build trusts the beta key too, whether or not the channel file says so.
+  const channel = isBeta(currentVersion() ?? "0.0.0") ? "beta" : readChannel();
+  const keys = (o.publicKeys ?? trustedKeys(channel)).filter((key) => key !== "");
+  if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 
   const rel = await fetchRelease(`v${currentVersion()}`);
   const sumsAsset = rel.assets.find((a) => a.name === "SHA256SUMS");
@@ -346,7 +439,7 @@ export async function setupRootfs(o: { publicKey?: string; onProgress?: OnProgre
     await download(sumsAsset, sumsPath);
     await download(sigAsset, sigPath);
     const sums = readFileSync(sumsPath);
-    if (!verifySums(sums, readFileSync(sigPath, "utf8"), key)) {
+    if (!verifySumsAny(sums, readFileSync(sigPath, "utf8"), keys)) {
       throw new Error("release signature check failed");
     }
     await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, o.onProgress);
@@ -473,7 +566,7 @@ export async function updateNotice(): Promise<string | undefined> {
       latest = undefined;
     }
     if (latest === undefined) {
-      const rel = await fetchRelease(undefined, 3000);
+      const rel = await fetchRelease(undefined, 3000, readChannel());
       latest = rel.version;
       mkdirSync(dirname(cacheFile()), { recursive: true });
       writeFileSync(cacheFile(), JSON.stringify({ checkedAt: Date.now(), latest }));

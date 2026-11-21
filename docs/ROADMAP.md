@@ -169,27 +169,31 @@ How they stay current:
 1. **One pin file.** Every version above is pinned in one file (`versions.json`), so a release is
    reproducible and a bump is a small change you can review. `image/Containerfile` and the release
    scripts read it.
-2. **A weekly check.** A scheduled GitHub Actions job looks for a new upstream release of each
-   pinned piece and, when there is one, opens a pull request against `beta` that bumps the pin.
-3. **CI on every bump.** The pull request builds libkrun, the bundle and the rootfs, runs
-   `npm test`, and boots one real VM run where the runner has KVM.
-4. **Rootfs rebuilt every release,** even with no pin change, so Fedora's security updates reach
-   the VMs.
-5. **Security fixes skip the wait.** A libkrun, libkrunfw or Chromium security fix goes to `beta`
-   and, once its CI passes, straight on to a stable release. Other bumps batch.
+2. **A daily check** *(done)*. `scripts/check-updates.mjs` in `bump.yml` looks for a new upstream
+   release of each pinned piece and, when there is one, opens a pull request against `beta` that
+   bumps the pin (`scripts/rootfs-plan.mjs` decides whether the rootfs is rebuilt).
+3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
+   rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`); the pull request
+   merges automatically once `test` and `vm` pass.
+4. **The rootfs is reused while it is current** *(done)*. The daily beta build reuses the tested
+   rootfs unless `image/` changed, it has pending security updates, it is 14+ days old with
+   updates, or it was dispatched with `fresh_rootfs`.
+5. **Security fixes skip the wait** *(done)*. A libkrun, libkrunfw or Chromium security fix goes to
+   `beta` and gets a beta prerelease the same night; promotion to stable is one merge.
 
 ### The beta channel
 
 - **`beta` branch:** the newest of everything above. Bump pull requests merge into it automatically
   once CI passes, so it's always the latest, but only CI-tested, not used in real work yet.
-- **Beta releases:** every merge to `beta` publishes a signed GitHub prerelease,
-  `v<version>-beta.<n>`. `hive update --channel beta` (or `HIVE_UPDATE_CHANNEL=beta`) follows
-  them; the default channel follows only full releases. `hive doctor` and Settings › This computer
-  show the channel.
+- **Beta releases** *(done)*: every day with new commits, `beta.yml` publishes a signed GitHub
+  prerelease, `v<version>-beta.<n>`, after a real VM smoke test. `hive update --channel beta`
+  follows them; the default channel follows only full releases. `hive doctor` shows the channel.
 - **Promotion:** after a beta has run real tasks for a few days without trouble, merge `beta` into
   `main` and publish a full release from `main`.
 - **Rollback:** `hive update --rollback` works the same on both channels; going back to stable is
-  `hive update --channel stable`.
+  `hive update --channel stable` (never a downgrade: it waits for the next stable release).
+- **Setup:** see "Automation and the beta channel" in [RELEASING.md](RELEASING.md) for the two
+  signing keys, the branch protection and how to rotate the beta key.
 
 ## Step 3 — gVisor fallback when there is no KVM
 

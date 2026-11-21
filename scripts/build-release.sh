@@ -8,6 +8,14 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 version=$(node -p "require('./package.json').version")
+# HIVE_RELEASE_VERSION lets CI build a beta prerelease without committing a package.json bump.
+if [[ -n "${HIVE_RELEASE_VERSION:-}" ]]; then
+  version=$HIVE_RELEASE_VERSION
+  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+    echo "build-release: HIVE_RELEASE_VERSION must look like 1.2.3 or 1.2.3-beta.4 (got \"$version\")" >&2
+    exit 1
+  fi
+fi
 # The bundled Node version is a pin too; HIVE_NODE_VERSION still overrides it.
 NODE_VERSION=${HIVE_NODE_VERSION:-$(node -p "require('./versions.json').node")}
 key=${HIVE_SIGNING_KEY:-$HOME/.config/agent-hive/release-signing-key.pem}
@@ -38,6 +46,27 @@ fi
 # VERSION/ROOTFS_VERSION in the bundle point at.
 if [[ "${HIVE_RELEASE_SKIP_ROOTFS:-}" == "1" ]]; then
   rver=none
+elif [[ -n "${HIVE_RELEASE_REUSE_ROOTFS:-}" ]]; then
+  # Reuse a rootfs a previous (beta) release already built and tested instead of building it again.
+  reuse=$HIVE_RELEASE_REUSE_ROOTFS
+  if [[ ! -f "$reuse" ]]; then
+    echo "build-release: HIVE_RELEASE_REUSE_ROOTFS=$reuse is not a file" >&2
+    exit 1
+  fi
+  reuse_name=$(basename "$reuse")
+  if [[ "$reuse_name" =~ ^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$ ]]; then
+    rver=${BASH_REMATCH[1]}
+  else
+    echo "build-release: rootfs file name must be hive-rootfs-<12 hex>-linux-x86_64.tar.gz (got \"$reuse_name\")" >&2
+    exit 1
+  fi
+  cp "$reuse" "$out/hive-rootfs-$rver-linux-x86_64.tar.gz"
+  reuse_info="$(dirname "$reuse")/rootfs-info.json"
+  if [[ ! -f "$reuse_info" ]]; then
+    echo "build-release: $reuse_info is missing (it names the image tree the rootfs was built from)" >&2
+    exit 1
+  fi
+  cp "$reuse_info" "$out/rootfs-info.json"
 else
   # HIVE_RELEASE_FRESH_ROOTFS=1 rebuilds the image without podman's cache and with a fresh base,
   # so Fedora and Chromium security updates get in. Users then download the new rootfs.
@@ -55,6 +84,11 @@ else
   # /run at boot, and the export can leave unreadable mount points there.
   podman unshare tar -C "$rootfs" --exclude=./.complete --exclude='./run/*' \
     -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
+  # What the beta channel's rootfs plan compares next time: which image tree this rootfs came from
+  # and when it was built. Clients never read it, so it is not in SHA256SUMS.
+  image_tree=$(git rev-parse HEAD:image)
+  built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '{"rootfs":"%s","imageTree":"%s","built":"%s"}\n' "$rver" "$image_tree" "$built" > "$out/rootfs-info.json"
 fi
 
 app="$stage/hive-$version"

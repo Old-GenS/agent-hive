@@ -52,7 +52,8 @@ curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli
 ```
 
 The release brings its own Node.js and downloads the VM filesystem. `hive update` installs newer
-releases after checking their signature.
+releases after checking their signature. `hive update --channel beta` follows the daily signed
+prereleases instead.
 
 **From source** (also needs Node.js 20+, git and podman):
 

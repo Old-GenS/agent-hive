@@ -37,7 +37,8 @@ delete process.env.HIVE_NO_UPDATE_CHECK;
 
 const { privateKey: testPrivateKey, publicKey: testPublicKey } = generateKeyPairSync("ed25519");
 const publicKey = testPublicKey.export({ type: "spki", format: "pem" });
-const { privateKey: otherPrivateKey } = generateKeyPairSync("ed25519");
+const { privateKey: otherPrivateKey, publicKey: otherPublicKey } = generateKeyPairSync("ed25519");
+const otherPublicKeyPem = otherPublicKey.export({ type: "spki", format: "pem" });
 
 function sha256(buf) {
   return createHash("sha256").update(buf).digest("hex");
@@ -85,6 +86,8 @@ function makeRelease(version, rver, { tamper } = {}) {
 
 // The release the local API currently serves.
 let current = null;
+// The releases the beta channel's list endpoint serves: [{ version, files, draft }].
+let releaseList = null;
 let baseUrl = "";
 const requestCounts = new Map();
 
@@ -114,6 +117,20 @@ const server = await listenOnEphemeralPort((req, res) => {
   const path = new URL(req.url, "http://127.0.0.1").pathname;
   requestCounts.set(path, (requestCounts.get(path) ?? 0) + 1);
 
+  if (path === "/repos/o/r/releases" && releaseList !== null) {
+    const releases = releaseList.map((entry) => ({
+      tag_name: `v${entry.version}`,
+      draft: entry.draft === true,
+      assets: [...entry.files.keys()].map((name) => ({
+        name,
+        url: `${baseUrl}/api/${name}`,
+        browser_download_url: `${baseUrl}/dl/${name}`,
+      })),
+    }));
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(releases));
+    return;
+  }
   if (current === null) {
     res.writeHead(404).end();
     return;
@@ -158,6 +175,38 @@ test("compareVersions compares dotted numbers numerically", () => {
   assert.throws(() => release.compareVersions("1.x", "1.0.0"), /bad version: 1\.x/);
 });
 
+test("compareVersions orders beta prereleases below their release", () => {
+  assert.equal(release.compareVersions("0.5.1-beta.2", "0.5.1-beta.10"), -1);
+  assert.equal(release.compareVersions("0.5.1-beta.10", "0.5.1"), -1);
+  assert.equal(release.compareVersions("0.5.1", "0.5.1-beta.10"), 1);
+  assert.equal(release.compareVersions("0.5.0", "0.5.1-beta.1"), -1);
+  assert.equal(release.compareVersions("v0.5.1-beta.3", "0.5.1-beta.3"), 0);
+  assert.throws(() => release.compareVersions("0.5.1-rc.1", "0.5.1"), /bad version: 0\.5\.1-rc\.1/);
+  assert.equal(release.isBeta("0.5.1-beta.2"), true);
+  assert.equal(release.isBeta("v0.5.1-beta.2"), true);
+  assert.equal(release.isBeta("0.5.1"), false);
+});
+
+test("readChannel/writeChannel keep the channel in the data dir", () => {
+  assert.equal(release.channelFile(), join(dataDir, "channel"));
+  assert.equal(release.readChannel(), "stable");
+  release.writeChannel("beta");
+  assert.equal(release.readChannel(), "beta");
+  assert.equal(readFileSync(release.channelFile(), "utf8"), "beta\n");
+  writeFileSync(release.channelFile(), "something else\n");
+  assert.equal(release.readChannel(), "stable");
+  release.writeChannel("stable");
+});
+
+test("trustedKeys adds the beta key only on the beta channel", () => {
+  const stable = release.trustedKeys("stable");
+  const beta = release.trustedKeys("beta");
+  assert.equal(stable.length, 1);
+  assert.equal(beta.length, 2);
+  assert.equal(beta[0], stable[0]);
+  assert.match(beta[1], /^-----BEGIN PUBLIC KEY-----/);
+});
+
 test("verifySums accepts only the right key and body", () => {
   const body = Buffer.from("hello\n");
   const good = cryptoSign(null, body, testPrivateKey).toString("base64");
@@ -170,7 +219,7 @@ test("verifySums accepts only the right key and body", () => {
 test("install 1.1.0 and activate it", async () => {
   current = makeRelease("1.1.0", "aaaaaaaaaaaa");
   const rel = await release.fetchRelease();
-  const dir = await release.installRelease(rel, { publicKey });
+  const dir = await release.installRelease(rel, { publicKeys: [publicKey] });
   assert.equal(dir, join(dataDir, "versions/1.1.0"));
 
   release.activate("1.1.0");
@@ -186,7 +235,7 @@ test("install 1.2.0 reuses the rootfs, then rollback swaps current and previous"
   assert.equal(requestCounts.get(rootfsPath), 1);
 
   const rel = await release.fetchRelease();
-  await release.installRelease(rel, { publicKey });
+  await release.installRelease(rel, { publicKeys: [publicKey] });
   assert.equal(requestCounts.get(rootfsPath), 1);
 
   release.activate("1.2.0");
@@ -201,18 +250,49 @@ test("install 1.2.0 reuses the rootfs, then rollback swaps current and previous"
 test("a tampered app tarball is rejected and current stays unchanged", async () => {
   current = makeRelease("1.3.0", "aaaaaaaaaaaa", { tamper: "app" });
   const before = readlinkSync(release.currentLink());
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKey }), /checksum mismatch/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey] }), /checksum mismatch/);
   assert.equal(readlinkSync(release.currentLink()), before);
 });
 
 test("a signature from the wrong key is rejected", async () => {
   current = makeRelease("1.4.0", "aaaaaaaaaaaa", { tamper: "sig" });
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKey }), /signature/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey] }), /signature/);
 });
 
 test("an empty public key refuses to verify anything", async () => {
   current = makeRelease("1.5.0", "aaaaaaaaaaaa");
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKey: "" }), /signing key/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [] }), /signing key/);
+});
+
+test("a release signed by a second key installs only when that key is trusted", async () => {
+  current = makeRelease("1.6.0", "aaaaaaaaaaaa", { tamper: "sig" });
+  const rel = await release.fetchRelease();
+  await assert.rejects(release.installRelease(rel, { publicKeys: [publicKey] }), /signature/);
+  const dir = await release.installRelease(rel, { publicKeys: [publicKey, otherPublicKeyPem] });
+  assert.equal(dir, join(dataDir, "versions/1.6.0"));
+  assert.ok(existsSync(join(dir, "VERSION")));
+});
+
+test("fetchRelease picks the newest release from the beta channel's list", async () => {
+  current = makeRelease("1.7.0", "aaaaaaaaaaaa");
+  releaseList = [
+    { version: "2.0.0", files: new Map(), draft: true },
+    { version: "1.7.0", files: current.files },
+    { version: "1.8.0-beta.3", files: new Map() },
+    { version: "1.8.0-beta.10", files: new Map() },
+    { version: "not-a-version", files: new Map() },
+  ];
+  const beta = await release.fetchRelease(undefined, 30_000, "beta");
+  assert.equal(beta.version, "1.8.0-beta.10");
+  assert.equal(beta.assets.length, 0);
+  releaseList = null;
+
+  // The stable channel still asks for /releases/latest.
+  const latestPath = "/repos/o/r/releases/latest";
+  const hits = requestCounts.get(latestPath) ?? 0;
+  const stableRel = await release.fetchRelease(undefined, 30_000, "stable");
+  assert.equal(stableRel.version, "1.7.0");
+  assert.equal(requestCounts.get(latestPath), hits + 1);
 });
 
 test("prune keeps the current and previous versions and their rootfs only", () => {

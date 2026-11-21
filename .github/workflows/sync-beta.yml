@@ -1,0 +1,30 @@
+name: Sync main into beta
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open the sync pull request and enable auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url=$(gh pr list --base beta --head main --state open --json url --jq '.[0].url // ""')
+          if [ -z "$url" ]; then
+            url=$(gh pr create \
+              --base beta \
+              --head main \
+              --title "Sync main into beta" \
+              --body "Keeps the beta branch level with main. CI already ran on the pushed commit, so this merges automatically once its checks pass.")
+          fi
+          gh pr merge --auto --merge "$url"

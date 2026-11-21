@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, beta]
+  push:
+    branches: [main, beta]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - id: node
+        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - name: Configure the git identity
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:ui
+      - name: Syntax-check every shell script
+        run: |
+          for f in scripts/*.sh vm/*.sh; do
+            bash -n "$f" || exit 1
+          done
+
+  vm:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - id: node
+        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - run: npm ci
+      - name: Enable KVM and install pasta
+        run: bash scripts/ci-enable-kvm.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/native
+          key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
+      - name: Create a throwaway signing key
+        run: node scripts/keygen.mjs "$RUNNER_TEMP/release-signing-key.pem" > /dev/null
+      - name: Build the release
+        env:
+          HIVE_SIGNING_KEY: ${{ runner.temp }}/release-signing-key.pem
+          HIVE_RELEASE_SKIP_SOURCES: "1"
+        run: npm run release
+      - name: Extract the app bundle and its rootfs
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          mkdir -p "$RUNNER_TEMP/bundle"
+          tar -xzf "release/$version/hive-$version-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/bundle"
+          rootfs_archive=$(ls "release/$version"/hive-rootfs-*-linux-x86_64.tar.gz)
+          rver=$(basename "$rootfs_archive" | sed -E 's/^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$/\1/')
+          dest="$HOME/.local/share/agent-hive/rootfs/$rver"
+          mkdir -p "$dest"
+          tar -xzf "$rootfs_archive" -C "$dest" --no-same-owner
+          touch "$dest/.complete"
+          echo "HIVE_BUNDLE_ROOT=$RUNNER_TEMP/bundle/hive-$version" >> "$GITHUB_ENV"
+          echo "HIVE_ROOTFS=$dest" >> "$GITHUB_ENV"
+      - name: Real VM smoke test
+        run: node scripts/vm-smoke.mjs

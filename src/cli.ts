@@ -52,7 +52,7 @@ hive serve [--host <addr>] [--port <n>] [--open | --no-open]
 hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>] [--dry-run]
 hive setup
 hive doctor
-hive update [--check | --rollback]
+hive update [--check | --rollback | --channel stable|beta]
 hive --version
 `;
 
@@ -1205,7 +1205,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const { libkrunAvailable } = await import("./sandbox.js");
   const { libkrunChoice, libkrunLabel } = await import("./libkrun.js");
   const { pastaChoice, pastaLabel } = await import("./pasta.js");
-  const { currentVersion } = await import("./release.js");
+  const { currentVersion, readChannel } = await import("./release.js");
   const { fixFor, hostInfo } = await import("./fixes.js");
   type CheckId = Parameters<typeof fixFor>[0];
   const host = hostInfo();
@@ -1298,6 +1298,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   notes.push(`thinking: ${def.thinking}`);
 
   const lines: string[] = [];
+  const channel = readChannel();
   const fixLines = (check: (typeof checks)[number], tty: boolean): void => {
     if (check.ok || check.id === undefined) return;
     const fix = fixFor(check.id, host, check.detail);
@@ -1308,6 +1309,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   };
   if (colorEnabled(process.stdout)) {
     lines.push(bold(version));
+    lines.push(dim(`update channel   ${channel}`, true));
     for (const check of checks) {
       lines.push(`${check.ok ? green(symbols.done, true) : red(symbols.failed, true)} ${check.label}  ${check.detail}`);
       fixLines(check, true);
@@ -1315,6 +1317,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
     for (const note of notes) lines.push(dim(note, true));
   } else {
     lines.push(version);
+    lines.push(`update channel   ${channel}`);
     for (const check of checks) {
       lines.push(`${check.label}: ${check.detail}`);
       fixLines(check, false);
@@ -1346,10 +1349,29 @@ async function cmdUpdate(args: string[]): Promise<number> {
     options: {
       check: { type: "boolean" },
       rollback: { type: "boolean" },
+      channel: { type: "string" },
     },
   });
-  const { activate, bundleRoot, compareVersions, currentVersion, fetchRelease, installRelease, prune, rollback } =
-    await import("./release.js");
+  if (values.channel !== undefined && values.channel !== "stable" && values.channel !== "beta") {
+    throw new Error("--channel must be stable or beta");
+  }
+  const {
+    activate,
+    bundleRoot,
+    compareVersions,
+    currentVersion,
+    fetchRelease,
+    installRelease,
+    isBeta,
+    prune,
+    readChannel,
+    rollback,
+    writeChannel,
+  } = await import("./release.js");
+  if (values.channel !== undefined) {
+    writeChannel(values.channel);
+    process.stdout.write(`hive: update channel is now ${values.channel}\n`);
+  }
   if (!bundleRoot()) {
     throw new Error(
       "hive update works for installed releases; this copy runs from source (git pull && npm run build)",
@@ -1363,18 +1385,29 @@ async function cmdUpdate(args: string[]): Promise<number> {
     return 0;
   }
 
-  const rel = await fetchRelease();
+  const channel = readChannel();
+  const suffix = channel === "beta" ? " (beta channel)" : "";
+  const rel = await fetchRelease(undefined, undefined, channel);
+
+  // Switching to stable must not downgrade an install that is already on a newer beta.
+  if (channel === "stable" && isBeta(cur) && compareVersions(cur, rel.version) > 0) {
+    process.stdout.write(
+      `hive ${cur} is newer than the latest stable release (${rel.version}); you'll get the next stable release\n`,
+    );
+    return 0;
+  }
+
   if (values.check) {
     if (compareVersions(rel.version, cur) > 0) {
-      process.stdout.write(`hive ${rel.version} is available (you have ${cur})\n`);
+      process.stdout.write(`hive ${rel.version} is available (you have ${cur})${suffix}\n`);
     } else {
-      process.stdout.write(`hive ${cur} is up to date\n`);
+      process.stdout.write(`hive ${cur} is up to date${suffix}\n`);
     }
     return 0;
   }
 
   if (compareVersions(rel.version, cur) <= 0) {
-    process.stdout.write(`hive ${cur} is up to date\n`);
+    process.stdout.write(`hive ${cur} is up to date${suffix}\n`);
     return 0;
   }
   await installRelease(rel);
