@@ -314,6 +314,16 @@ const COMPONENTS = [
   },
 ];
 
+/**
+ * versions.json's `skip` lists upstream versions known to be broken for hive, by component:
+ * `{ "libkrunfw": { "5.6.4": "reason" } }`. A skipped version is never offered.
+ */
+export function skipReason(files, name, version) {
+  const skip = JSON.parse(files[VERSIONS_FILE]).skip ?? {};
+  const reason = skip[name]?.[version];
+  return typeof reason === "string" ? reason : undefined;
+}
+
 function usage() {
   return "usage: node scripts/check-updates.mjs [--list | --apply <component>]";
 }
@@ -324,6 +334,11 @@ async function list(files) {
     try {
       const found = await component.check();
       const current = component.current(files);
+      const skip = skipReason(files, component.name, component.latest(found));
+      if (skip !== undefined) {
+        process.stderr.write(`check-updates: ${component.name} ${component.latest(found)}: skipped (${skip})\n`);
+        continue;
+      }
       if (component.isUpdate(current, found)) {
         updates.push({ name: component.name, current: String(current), latest: component.latest(found) });
       }

@@ -185,6 +185,44 @@ async function checkVm() {
   }
 }
 
+/**
+ * A second VM on the direct network (pasta's own, HIVE_NETWORK=direct), where the guest resolves
+ * names itself. The proxied VM never does DNS (the proxy resolves on the host), so this is the
+ * check that catches a guest-kernel DNS regression like libkrunfw 5.6.4's.
+ */
+async function checkDirectDns() {
+  const { config } = await import("../dist/config.js");
+  const { runSandbox } = await import("../dist/sandbox.js");
+  const work = mkdtempSync(join(tmpdir(), "hive-vm-smoke-dns-"));
+  cleanup(() => rmSync(work, { recursive: true, force: true }));
+  const ioDir = join(work, "io");
+  mkdirSync(ioDir, { recursive: true });
+  const before = config.sandbox.network;
+  config.sandbox.network = "direct";
+  let handle;
+  try {
+    handle = await runSandbox({
+      name: "vm-smoke-dns",
+      mounts: [],
+      env: {},
+      command: [
+        "bash",
+        "-c",
+        'if out=$(getent hosts example.com); then echo "dns-ok $out"; else echo "dns-failed"; fi',
+      ],
+      ioDir,
+    });
+  } finally {
+    config.sandbox.network = before;
+  }
+  cleanup(() => handle.stop());
+  const result = await handle.done;
+  const out = readText(join(ioDir, "events.jsonl")).trim();
+  if (!out.startsWith("dns-ok")) {
+    throw new Error(`no DNS in the VM on the direct network: ${out || `vm exit ${result.code}`}`);
+  }  pass("direct-dns");
+}
+
 /** Run a shell-free command to completion with a timeout, collecting stdout+stderr. */
 function run(command, args, options, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -301,6 +339,7 @@ async function main() {
   } catch (err) {
     for (const name of VM_CHECKS) fail(name, errorText(err));
   }
+  await check("direct-dns", checkDirectDns);
   try {
     await checkFakeKeyRun();
   } catch (err) {

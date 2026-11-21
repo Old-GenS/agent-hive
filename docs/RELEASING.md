@@ -56,6 +56,7 @@ until a newer one passes that check.
 | `rust` | The toolchain `scripts/native-in-container.sh` installs with rustup |
 | `buildImage` | The `manylinux_2_28` image digest the native build runs in |
 | `node` | The Node.js version bundled in the app (`HIVE_NODE_VERSION` still overrides it) |
+| `skip` | Upstream versions known to be broken for hive, per component, with the reason. The daily bump check never offers them (libkrunfw 5.6.4: DNS fails in the VM) |
 
 ## Cut a release
 
