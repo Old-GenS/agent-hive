@@ -181,7 +181,7 @@ try {
   );
   const changedFiles = await page.$$eval(".changes-files li", (nodes) => nodes.length);
   assert(changedFiles === 3, `the result lists the files changed (got ${changedFiles})`);
-  const compareHref = await page.$eval(".banner-link", (a) => a.getAttribute("href"));
+  const compareHref = await page.$eval("#openGithubLink", (a) => a.getAttribute("href"));
   assert(
     compareHref === "https://github.com/demo/repo/compare/hive/demo1234",
     `the result links to the changes on GitHub (got ${compareHref})`,
