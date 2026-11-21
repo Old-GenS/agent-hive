@@ -137,6 +137,9 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | POST | `/api/keys/:provider/test` | Test a provider's key |
 | DELETE | `/api/keys/:provider` | Remove a saved key |
 | PUT | `/api/keys/default` | Make a provider the default (`provider`) |
+| GET | `/api/settings` | The run settings (value, default, limits, where each comes from) and this computer's CPUs and memory |
+| PUT | `/api/settings` | Save any of `cpus`, `memoryMiB`, `maxConcurrent`, `timeoutMin`, `stallMin`, `diskMaxGb`; 400 with field errors, 409 for a value set in the server's environment |
+| DELETE | `/api/settings/:key` | Reset one setting to its `.env` value or default |
 | GET | `/api/github/repos` | Your repos (via `gh`) |
 | GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first |
 | GET | `/health` | Health check (no auth) |

@@ -119,9 +119,10 @@ hive serve                  # opens http://127.0.0.1:8080/ui/ in your browser
 hive service install        # or keep it running in the background
 ```
 
-Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups, open
-pull requests and download results, from the browser or your phone. Runs from the web UI and the
-terminal share one list. Details in [docs/SERVER.md](docs/SERVER.md).
+Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups or
+**Continue** a run that stopped, open pull requests and download results, from the browser or your
+phone. **Settings › Runs** sets the VM size, how many runs go at once and the time limits. Runs
+from the web UI and the terminal share one list. Details in [docs/SERVER.md](docs/SERVER.md).
 
 <p>
   <img src="docs/images/new-run.png" alt="Starting a new run: task, repo or new project, provider, model, thinking and review" width="68%">
