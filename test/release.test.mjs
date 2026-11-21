@@ -269,7 +269,7 @@ test("CLI doctor reports a source checkout", () => {
     encoding: "utf8",
     env: { ...process.env },
   });
-  assert.ok(result.stdout.startsWith("hive dev (from source)"));
+  assert.match(result.stdout, /^hive \d+\.\d+\.\d+ \(from source\)/);
 });
 
 test("CLI help lists the release commands", () => {

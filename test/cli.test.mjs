@@ -3,7 +3,7 @@
 // HIVE_RUNS_DIR at import time.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -212,4 +212,13 @@ test("hive list colours a terminal listing, and stays plain with NO_COLOR", () =
   assert.equal(plain.status, 0, plain.stderr);
   assert.doesNotMatch(plain.stdout, /\u001b\[/, "NO_COLOR means no ANSI escapes");
   assert.match(plain.stdout, /commit\(s\)/, "NO_COLOR keeps today's line format");
+});
+
+test("hive --version prints the version, from source marked as such", () => {
+  const { version } = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  for (const flag of ["--version", "-V", "version"]) {
+    const r = spawnSync(process.execPath, ["dist/cli.js", flag], { cwd: repoRoot, encoding: "utf8" });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout, `hive ${version} (from source)\n`);
+  }
 });

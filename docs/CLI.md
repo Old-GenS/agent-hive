@@ -80,6 +80,7 @@ credential helper or `gh` login; none of these ever enter the VM. Commits use yo
 | `hive doctor` | Check `/dev/kvm`, libkrun, pasta, the launcher, the VM filesystem, and show the default provider and model. |
 | `hive setup` | Download the VM filesystem an installed release needs. |
 | `hive update` | Install the latest release after checking its signature (`--check` only reports, `--rollback` goes back). |
+| `hive --version` | Print the installed version (`-V` and `hive version` work too). |
 
 ## Server
 

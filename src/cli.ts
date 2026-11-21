@@ -52,6 +52,7 @@ hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>
 hive setup
 hive doctor
 hive update [--check | --rollback]
+hive --version
 `;
 
 function sleep(ms: number): Promise<void> {
@@ -1200,7 +1201,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const host = hostInfo();
 
   let allOk = true;
-  const version = `hive ${currentVersion() ?? "dev (from source)"}`;
+  const version = `hive ${versionLabel(currentVersion())}`;
   // Plain output is `<label>: <detail>` for every check, exactly as before; the terminal view
   // replaces the colon with a ✓/✗ and keeps the same fix hint in the detail. A failed check that
   // has a distro-aware fix prints its text and command on the lines below.
@@ -1398,6 +1399,21 @@ function gitConfigValue(key: string): string | undefined {
   }
 }
 
+/**
+ * The version to show: the release's VERSION file, or package.json's version marked "from
+ * source" when running from a checkout (dist/cli.js sits next to package.json's folder).
+ */
+function versionLabel(released: string | undefined): string {
+  if (released) return released;
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    if (typeof pkg.version === "string") return `${pkg.version} (from source)`;
+  } catch {
+    // no package.json: fall through
+  }
+  return "dev (from source)";
+}
+
 async function main(): Promise<void> {
   process.env.HIVE_DOTENV_PATH ||= join(
     process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
@@ -1440,6 +1456,11 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === "--help" || cmd === "-h") {
     process.stdout.write(USAGE);
+    return;
+  }
+  if (cmd === "--version" || cmd === "-V" || cmd === "version") {
+    const { currentVersion } = await import("./release.js");
+    process.stdout.write(`hive ${versionLabel(currentVersion())}\n`);
     return;
   }
 
