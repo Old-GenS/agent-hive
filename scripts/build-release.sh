@@ -33,9 +33,12 @@ else
   npm run build:rootfs
   rootfs=$(realpath "${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs/current")
   rver=$(basename "$rootfs")
-  # /run's contents are left out: the VM's init mounts a fresh tmpfs over /run at boot, and the
-  # export can leave unreadable mount points there (e.g. systemd's dissect-root).
-  tar -C "$rootfs" --exclude=./.complete --exclude='./run/*' -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
+  # Packed inside podman's rootless user namespace, where this user is root over its own files:
+  # the image has files nobody may read (/etc/shadow, setuid sudo), and the archive should record
+  # root ownership anyway. /run's contents are left out: the VM's init mounts a fresh tmpfs over
+  # /run at boot, and the export can leave unreadable mount points there.
+  podman unshare tar -C "$rootfs" --exclude=./.complete --exclude='./run/*' \
+    -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
 fi
 
 app="$stage/hive-$version"
