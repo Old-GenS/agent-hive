@@ -139,6 +139,13 @@ async function checkRuntime() {
   pass("runtime");
 }
 
+/** An empty folder to share as the VM's /work. */
+function workDir(parent) {
+  const dir = join(parent, "work");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 async function checkVm() {
   const { runSandbox } = await import("../dist/sandbox.js");
   const work = mkdtempSync(join(tmpdir(), "hive-vm-smoke-"));
@@ -158,7 +165,8 @@ async function checkVm() {
   mkdirSync(ioDir, { recursive: true });
   const handle = await runSandbox({
     name: "vm-smoke",
-    mounts: [],
+    // hive-vm-init starts every command in /work, as for a real run.
+    mounts: [{ host: workDir(work), container: "/work" }],
     env: { LAN_IP: lanIp, LAN_PORT: String(lanPort) },
     command: ["bash", "-c", VM_SCRIPT],
     ioDir,
@@ -203,7 +211,7 @@ async function checkDirectDns() {
   try {
     handle = await runSandbox({
       name: "vm-smoke-dns",
-      mounts: [],
+      mounts: [{ host: workDir(work), container: "/work" }],
       env: {},
       command: [
         "bash",
