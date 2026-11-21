@@ -1,146 +1,123 @@
 ## Goal
 
-**First-run onboarding in the web UI**, following "Screen 1" in `docs/GUI.md` (mockup:
-https://claude.ai/artifact/7aZcD6LT5b12cG5VAzC1v7). A new user who opens the web UI on a machine
-that isn't set up yet is walked through: **Welcome → Check this computer → Add a model key →
-GitHub (optional) → Ready.** Every failed check shows the exact command that fixes it, for the
-user's distro, and WSL gets its own advice. `hive doctor` prints the same fix commands.
+Close a VM-to-host escape. A run's `io/` folder is shared read-write with every VM step of the run
+(the main step, review cycles, follow-ups), and `out/` with the export VM. Between steps the host
+reads and writes files there **by name, following symlinks**, so an agent in one step can plant a
+symlink that makes the host, before the next step:
+
+- read any host file into `io/` (e.g. `io/system-base.md` → `../../../../.config/agent-hive/env`
+  copies the keys file into the next step's system prompt);
+- write agent-controlled text into any host file (e.g. `io/system.md` → `~/.bashrc`);
+- read a host file as a "patch" (`out/0001-x.patch` → a symlink) during `git am`.
+
+Fix it everywhere: host-only data never lives in `io/`; every host write into a VM-shared folder
+creates a fresh file without following links; every host read from one goes through a single safe
+reader (`O_NOFOLLOW`, regular files only, size cap); patches are copied into a host-only folder
+before git sees them.
 
 ## Files to touch
 
-- `src/fixes.ts` (new)
+- `src/vmfiles.ts` (new)
+- `src/runs.ts`
 - `src/sandbox.ts`
-- `src/release.ts`
-- `src/routes/onboarding.ts` (new)
-- `src/routes/system.ts`
-- `src/index.ts`
-- `src/cli.ts`
-- `ui/src/onboarding.ts` (new)
-- `ui/src/main.ts`
-- `ui/src/app.css`
-- `test/fixes.test.mjs` (new)
-- `test/onboarding.test.mjs` (new)
-- `scripts/ui-smoke.mjs`
-- `docs/GUI.md`
-- `docs/SERVER.md`
+- `src/git.ts`
+- `src/web-runs.ts`
+- `src/follow.ts`
+- `test/vmfiles.test.mjs` (new)
+- `test/symlink-escape.test.mjs` (new)
+- `AGENTS.md`
 - `.handoff/report.md`
 
 ## Steps
 
 1. Run `npm ci`, then `npm run build:vm`.
 
-2. **Fix commands** (`src/fixes.ts`, new, pure functions):
-   - `export interface HostInfo { distro: string; distroLike: string[]; wsl: boolean; bundle:
-     boolean }` and `export function hostInfo(o?: { osRelease?: string; procVersion?: string;
-     bundle?: boolean }): HostInfo`, parsing `/etc/os-release` (`ID`, `ID_LIKE`) and
-     `/proc/version` (WSL when it contains `microsoft` or `WSL`, case-insensitive); the defaults
-     read the real files (missing files → `distro: "unknown"`, `wsl: false`) and
-     `bundle: bundleRoot() !== undefined`.
-   - `export function fixFor(check: "kvm" | "libkrun" | "pasta" | "launcher" | "rootfs", host:
-     HostInfo): { text: string; command?: string }`, where `text` is one plain sentence and
-     `command` a single copyable command (or absent):
-     - `kvm`: WSL → text says to turn on nested virtualization: in `%UserProfile%\.wslconfig` put
-       `nestedVirtualization=true` under `[wsl2]`, then run `wsl --shutdown` in Windows (command:
-       `wsl --shutdown`); otherwise → enable virtualization (Intel VT-x / AMD-V) in the BIOS or
-       UEFI settings, or on a cloud VM pick a type with nested virtualization; no command.
-     - `libkrun`: Fedora, RHEL, CentOS, Rocky, Alma (`ID` or `ID_LIKE` contains `fedora` or
-       `rhel`) → command `sudo dnf install libkrun`; Debian/Ubuntu (`debian` or `ubuntu`) → text:
-       libkrun isn't packaged for this distro yet; a bundled libkrun is planned, or use Fedora
-       (and, on WSL, the Fedora WSL distro); other → text pointing at
-       `https://github.com/containers/libkrun`.
-     - `pasta`: dnf family → `sudo dnf install passt`; Debian/Ubuntu → `sudo apt install passt`;
-       Arch (`arch`) → `sudo pacman -S passt`; other → text pointing at `https://passt.top`.
-     - `launcher`: bundle → text: reinstall hive (command: the `curl … install-cli.sh | sh` line
-       from `README.md`); source checkout → command `npm run build:vm`.
-     - `rootfs`: bundle → command `hive setup` (the UI also offers a Download button); source
-       checkout → command `npm run build:image && npm run build:rootfs`.
+2. `src/vmfiles.ts` (new): the only way host code touches files in a VM-shared folder (`io/`,
+   `io-export/`, `out/`, and the `hivectl`-style folders are excluded: the launcher handles those).
+   - `export function readVmFile(path: string, max = 50 * 1024 * 1024): string` — `openSync(path,
+     O_RDONLY | O_NOFOLLOW | O_NONBLOCK)`, `fstatSync` must be a regular file (`isFile()`), else
+     throw `` `not a regular file: ${path}` ``; refuse files larger than `max`
+     (`` `too large: ${path}` ``); read with the fd (never by path); close in `finally`.
+     `O_NONBLOCK` keeps a FIFO from hanging the open (it then fails the regular-file check).
+   - `export function readVmFileOrEmpty(path, max?)`: `""` when the file is missing (`ENOENT`);
+     any other refusal still throws.
+   - `export function writeVmFile(path: string, data: string | Buffer): void` — `rmSync(path,
+     { force: true })` (removes a planted symlink or file, never follows it; if `path` is a
+     directory, throw `` `not a file: ${path}` `` instead of deleting it), then `writeFileSync(path,
+     data, { flag: "wx", mode: 0o644 })` (`O_CREAT | O_EXCL`: fails rather than follows if
+     something reappeared).
+   - `export function copyVmFileOut(src: string, dest: string, max?)`: `readVmFile(src)` and write
+     to `dest` (a host-only path) with `flag: "wx"`.
 
-3. `src/sandbox.ts`: `SystemCheck` gains `id: "kvm" | "libkrun" | "pasta" | "launcher" | "rootfs"`
-   and `fix?: { text: string; command?: string }`, set (from `fixFor` with `hostInfo()`) only on
-   failed checks. Keep the existing `name`, `ok`, `detail`.
+3. `src/runs.ts`:
+   - **Host-only base prompt:** `startRun` writes the run's system prompt to `<run>/system-base.md`
+     (the run folder, which no VM mounts), not `io/system-base.md`. `agentStep` reads it from
+     there with a normal `readFileSync` (it's host-only); when missing (older runs), use
+     `config.systemPrompt`. **Never read `io/system-base.md`.**
+   - `io/system.md` and `io/prompt.md` are written with `writeVmFile`.
+   - The event-log slimming after a step: read `io/events.jsonl` with `readVmFileOrEmpty`, write the
+     slimmed text to `io/events.jsonl` with `writeVmFile` (drop the `.tmp` + `renameSync` dance);
+     on any refusal leave the log as it is (it's already inside `io/`).
+   - `io/stderr.log` for the error message: `readVmFileOrEmpty` (capped, e.g. 1 MB, tail kept as
+     today).
+   - The per-step renames (`events.jsonl` → `events-<n>.jsonl`, `stderr.log` → `stderr-<n>.log`)
+     may stay `renameSync` (renaming a symlink renames the link, it doesn't follow it).
+   - `patchFiles(dir)`: keep only entries that `lstatSync` says are regular files.
+   - `exportRun`: copy each patch with `copyVmFileOut` into a host-only temp folder (inside the
+     export's `mkdtempSync` dir) and pass **those** paths to `git am`.
+   - `reportMarkdown` and everything reading `meta.json` stay as they are (host-only file).
+   - The OpenRouter `io/pi-agent` copy: keep `rmSync(…, { recursive: true, force: true })` (doesn't
+     follow) and `cpSync`; add a comment that this is safe because no VM runs between the two.
 
-4. `src/release.ts`: `setupRootfs` gains an optional `onProgress?: (p: { received: number; total:
-   number | undefined }) => void`, called as the rootfs archive downloads (thread it through
-   `ensureRootfs`/`download` as needed; `total` from `Content-Length` when present). Keep the
-   current behaviour when it's not given.
+4. `src/git.ts`, `applyAndPush`: before `git am`, copy every `out/*.patch` that `lstatSync` says is
+   a regular file into a host-only temp folder with `copyVmFileOut`; check the count and total size
+   on the copies (`MAX_PATCHES`, `MAX_PATCH_BYTES` as today); run `git am` on the copies; remove
+   the temp folder in `finally`. Non-regular entries are ignored.
 
-5. **Server** (`src/routes/onboarding.ts`, new; registered in the authenticated scope in
-   `src/index.ts`):
-   - `GET /api/onboarding` → `{ needed, checks (as in /api/system, with fixes), hasKey,
-     defaultProvider, github: { connected, login? }, host: { distro, wsl, bundle }, rootfs: {
-     ok, canDownload, download: { state: "idle" | "downloading" | "done" | "error", received,
-     total, error? } } }`. `needed` is true when no provider has a key or any check fails.
-     `canDownload` is true only for an installed release (`bundle`) whose rootfs is missing.
-     Reuse `githubStatus()` from `src/routes/system.ts` (export it there).
-   - `POST /api/setup/rootfs` → 409 `{ error }` when `canDownload` is false or a download is
-     already running; otherwise start `setupRootfs({ onProgress })` in the background, keep its
-     state in memory for the `download` field above, and respond 202 `{ state: "downloading" }`.
+5. `src/sandbox.ts`: `resetIoDir` keeps its unlink + `wx` creation; replace `readTail`'s open with
+   the same checks as `readVmFile` (regular file only, `O_NONBLOCK`) or call into `vmfiles.ts`.
+   `src/follow.ts`: after its `O_NOFOLLOW` open, also require `fstatSync(fd).isFile()` (skip the
+   poll otherwise) and open with `O_NONBLOCK`.
 
-6. **CLI** (`src/cli.ts`): `hive doctor` prints, under each failed check, the fix `text` and, when
-   present, `  $ <command>` (in the existing plain and TTY styles; in TTY mode the command in cyan).
-   Passing checks are unchanged.
+6. `src/web-runs.ts`: the finished-run replay reads `io/events-<n>.jsonl` and `io/events.jsonl`
+   with `readVmFileOrEmpty` (skip a file it refuses).
 
-7. **Web UI** (`ui/src/onboarding.ts`, new module; keep `main.ts` changes to routing and a
-   Settings link). A full-page flow at `#setup` with a step indicator (1–5) and Back / Next
-   buttons, in the existing design (light and dark tokens, hexagon logo, cards, buttons):
-   1. **Welcome:** what hive does, in three short points (runs a coding agent on your code in its
-      own microVM; nothing secret goes in but one model key; you review everything before it
-      reaches your repo or GitHub). Next.
-   2. **Check this computer:** the checks from `GET /api/onboarding` as rows with ✓ / ✗. A failed
-      check shows its fix text and, when present, the command in a `<code>` box with a **Copy**
-      button (`navigator.clipboard.writeText`, with a "Copied" confirmation). When
-      `rootfs.canDownload`, a **Download VM filesystem** button calls `POST /api/setup/rootfs` and
-      shows a progress bar (`received/total`, polling `GET /api/onboarding` every second while
-      `downloading`). **Check again** re-fetches. On WSL show one extra note that WSL needs nested
-      virtualization and, for now, the Fedora WSL distro. Next is enabled even when checks fail
-      (label it "Continue anyway" then), so a user can add a key first.
-   3. **Add a model key:** if a key exists, say which provider is the default and offer Next;
-      otherwise a provider select (from `GET /api/providers`), a password input for the key and a
-      **Test and save** button using the existing `POST /api/keys` (it tests before saving); show
-      the server's error inline on failure; after success show the provider's default model and a
-      **Make default** option when other providers already have keys (`PUT /api/keys/default`).
-   4. **GitHub (optional):** connected → "Signed in to GitHub as <login>": hive can list your
-      repos, push branches and open pull requests. Not connected → explain it's optional (local
-      repos and the terminal still work) and show `gh auth login` in a copy box, with **Check
-      again**. **Skip** and Next.
-   5. **Ready:** a short summary (checks passed or not, key provider, GitHub) and two actions:
-      **Start your first run** (goes to `#runs` and focuses the task box) and the terminal
-      equivalents in a copy box (`hive run "<task>"` from inside a repo).
-   - **When it shows:** on login, `main.ts` fetches `GET /api/onboarding`; when `needed` is true
-     and the browser hasn't dismissed it (`localStorage` key `hive-onboarding-done`, read and
-     written in `try`/`catch`), go to `#setup`. Finishing or skipping (a **Skip setup** link on
-     every step) sets that key. Settings gets a **Run setup again** link to `#setup`.
-   - Render everything from the server with `el()` / `esc()` only (security rule #4 in
-     `AGENTS.md`); no `innerHTML` with server text.
+7. Search the whole `src/` tree for any other `readFileSync`, `writeFileSync`, `appendFileSync`,
+   `openSync`, `createReadStream`, `copyFileSync` or `statSync` on a path under a run's `io/`,
+   `io-export/` or `out/` folder and move it to `vmfiles.ts` helpers (or `lstatSync`). List each
+   place in the report.
 
 8. Tests:
-   - `test/fixes.test.mjs` (new): `hostInfo` on sample `os-release` / `proc/version` strings
-     (Fedora, Ubuntu, Rocky via `ID_LIKE`, WSL detection, missing input); `fixFor` for each check
-     on Fedora, Ubuntu, WSL and bundle vs source, checking the command strings above.
-   - `test/onboarding.test.mjs` (new): a bare Fastify app with the plugin (temp `HIVE_KEYS_FILE`,
-     no keys) → `GET /api/onboarding` has `needed: true` and `hasKey: false`; with a provider key
-     in the env → `hasKey: true`; `POST /api/setup/rootfs` from a source checkout → 409.
-   - `scripts/ui-smoke.mjs`: add a section that mocks `GET /api/onboarding` (needed, one failed
-     check with a fix command, `canDownload: true`) and `POST /api/setup/rootfs`, clears the
-     `hive-onboarding-done` key, logs in, and walks Welcome → Checks (the fix command is visible,
-     the Download button exists) → Key → GitHub → Ready → **Start your first run** lands on the
-     Runs page; save a screenshot of the checks step.
+   - `test/vmfiles.test.mjs` (new): `readVmFile` on a regular file works; on a symlink to a real
+     file throws (and doesn't return its content); on a FIFO (`mkfifo` via `child_process`, skip
+     the case if `mkfifo` is missing) throws without hanging; over `max` throws;
+     `readVmFileOrEmpty` on a missing file returns `""`. `writeVmFile` over a symlink pointing at a
+     host file replaces the link with a regular file and leaves the target's content unchanged;
+     onto a directory throws and leaves it.
+   - `test/symlink-escape.test.mjs` (new; temp `HIVE_RUNS_DIR`, `HIVE_KEYS_FILE`,
+     `HIVE_DOTENV_PATH` set before importing `../dist/`): build a fake finished run folder and a
+     "secret" host file outside it. Plant, as a VM could:
+     `io/system.md` → secret, `io/prompt.md` → secret, `io/system-base.md` → secret,
+     `io/events.jsonl` → secret, `io/stderr.log` → secret, `out/0001-x.patch` → secret.
+     Then call the host code paths without booting a VM (export the small internal pieces you
+     need, e.g. a `prepareStepFiles(dir, meta, prompt)` that writes `system.md`/`prompt.md`, and a
+     `slimStepLog(dir)`), plus `patchFiles` and `exportRun` on a run whose `out/` has one real
+     patch and one symlinked one. Assert: the secret file's content is unchanged; no file under
+     `io/` contains the secret text; `patchFiles` ignores the symlink; `exportRun` succeeds with
+     the real patch only.
 
-9. Docs: `docs/GUI.md` — move the first-run screens from "Not built" to built, describe what's
-   built. `docs/SERVER.md` — a short "First run" paragraph and the two new API endpoints in the
-   API table.
+9. `AGENTS.md`, security rule 8: files the VM can write (`io/`, `io-export/`, `out/`) are read
+   only through `src/vmfiles.ts` (`O_NOFOLLOW`, regular files only, size caps) and written only by
+   deleting first and creating with `wx`; host-only data (the base system prompt, `meta.json`)
+   lives in the run folder, never in `io/`; patches are copied out of `out/` before git reads them.
 
 ## Acceptance
 
 - `npm run build` exits 0.
-- `npm run build:ui` exits 0.
 - `npm test` exits 0.
-- `node --test test/fixes.test.mjs test/onboarding.test.mjs` exits 0 (after `npm run build`).
-- `npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs` exits 0 (it starts its
-  own server on a test port with temp files, as it already does; system Chromium at
-  `/usr/lib64/chromium-browser/chromium-browser`).
-- `git status --short` lists no files other than those in **Files to touch** (plus files the smoke
-  test writes and cleans up itself).
+- `node --test test/vmfiles.test.mjs test/symlink-escape.test.mjs` exits 0 (after `npm run build`).
+- `grep -n 'io", "system-base.md"\|io/system-base' src/*.ts` prints nothing.
+- `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
 
@@ -153,16 +130,16 @@ None — do it sequentially.
   throwaway VM and is discarded), but every such file must appear in the report under "outside
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
-- The only checks to run are the **Acceptance** commands; the smoke test is the one server this
-  plan runs. Never boot a hive VM, start `hive run`, download a real rootfs, or call
-  GitHub/OpenRouter. If something outside Acceptance fails, note it in the report and finish.
-- No new npm dependencies. Don't change `vm/`, `image/`, `src/runs.ts` or `src/web-runs.ts`.
+- The only checks to run are the **Acceptance** commands. Never boot a hive VM, start `hive run`,
+  start the server or call GitHub/OpenRouter. If something outside Acceptance fails, note it in the
+  report and finish.
+- No new dependencies. Don't change `vm/` or `image/`. Keep run behaviour the same apart from these
+  file-handling changes.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Onboarding in the terminal (beyond `hive doctor`'s fixes), installing packages for the user,
-  a bundled libkrun, WSL testing on Windows.
+- The shared VM cache (`HIVE_VM_CACHE`) cross-run trade-off, disk quotas.
 
 ## If blocked
 
