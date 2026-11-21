@@ -16,12 +16,27 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
 const cacheHome = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
 
-function int(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
+function intValue(name: string, raw: string | undefined, fallback: number, min: number): number {
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < min) throw new Error(`${name} must be ${min === 0 ? "a non-negative" : "a positive"} integer, got "${raw}"`);
   return n;
+}
+
+function int(name: string, fallback: number, min = 1): number {
+  return intValue(name, process.env[name], fallback, min);
+}
+
+/**
+ * A run setting the web UI can change (Settings > Runs writes it to the keys file): the shell
+ * environment wins, then the saved file, then the server's .env.
+ */
+function saved(name: string): string | undefined {
+  return shellEnv[name] || readKeysFile()[name] || process.env[name] || undefined;
+}
+
+function savedInt(name: string, fallback: number, min = 1): number {
+  return intValue(name, saved(name), fallback, min);
 }
 
 /** HIVE_OPENROUTER_ROUTING: a JSON object of OpenRouter provider routing, or the default. */
@@ -107,7 +122,7 @@ function gitProtocol(): "https" | "ssh" {
 export const config = {
   port: int("PORT", 8080),
   host: process.env.HOST || "127.0.0.1",
-  maxConcurrent: int("MAX_CONCURRENT_SESSIONS", 2),
+  maxConcurrent: savedInt("MAX_CONCURRENT_SESSIONS", 2),
   defaultModel: process.env.DEFAULT_MODEL || "",
   defaultThinking: process.env.DEFAULT_THINKING || "low",
   systemPrompt:
@@ -128,12 +143,12 @@ export const config = {
     // the local network; direct = the old behaviour (pasta's own network: internet and LAN, not
     // this computer).
     network: networkMode(),
-    memory: process.env.HIVE_SANDBOX_MEMORY || "2048m",
-    cpus: process.env.HIVE_SANDBOX_CPUS || "1",
-    timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
+    memory: saved("HIVE_SANDBOX_MEMORY") || "2048m",
+    cpus: saved("HIVE_SANDBOX_CPUS") || "1",
+    timeoutMin: savedInt("HIVE_SANDBOX_TIMEOUT_MIN", 60),
     // Stop a run when no file in its work/ folder changed and no agent event arrived for this many
     // minutes. 0 turns it off.
-    stallMin: int("HIVE_STALL_MIN", 15),
+    stallMin: savedInt("HIVE_STALL_MIN", 15, 0),
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
     rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
     // The value of HIVE_LIBKRUN, if the user forced one. The effective library is picked by
@@ -146,7 +161,7 @@ export const config = {
     vmCache: process.env.HIVE_VM_CACHE ?? join(cacheHome, "agent-hive/vm-cache"),
     // Stop an agent step when the run folder plus its cache bucket uses more than this many GB;
     // 0 turns it off.
-    diskMaxGb: int("HIVE_RUN_DISK_MAX_GB", 20, 0),
+    diskMaxGb: savedInt("HIVE_RUN_DISK_MAX_GB", 20, 0),
     // Stop an agent step when less than this many GB are free on the disk holding the runs;
     // 0 turns it off.
     minFreeGb: int("HIVE_MIN_FREE_DISK_GB", 2, 0),

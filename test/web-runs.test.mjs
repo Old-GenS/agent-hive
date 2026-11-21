@@ -192,6 +192,48 @@ test("createSlots removes an aborted waiter from the queue", async () => {
   assert.equal(slots.running(), 0);
 });
 
+test("createSlots setMax raises the limit and starts queued waiters right away", async () => {
+  const slots = createSlots(1);
+  await slots.acquire(new AbortController().signal);
+  const order = [];
+  const second = slots.acquire(new AbortController().signal).then(() => order.push("second"));
+  const third = slots.acquire(new AbortController().signal).then(() => order.push("third"));
+  assert.equal(slots.queued(), 2);
+
+  slots.setMax(3);
+  await Promise.all([second, third]);
+  assert.deepEqual(order, ["second", "third"]);
+  assert.equal(slots.running(), 3);
+  assert.equal(slots.queued(), 0);
+
+  slots.release();
+  slots.release();
+  slots.release();
+  assert.equal(slots.running(), 0);
+});
+
+test("createSlots setMax lowering the limit lets running runs finish and holds new ones back", async () => {
+  const slots = createSlots(2);
+  await slots.acquire(new AbortController().signal);
+  await slots.acquire(new AbortController().signal);
+  slots.setMax(1);
+  // Running runs are never stopped; they just finish before anything else starts.
+  assert.equal(slots.running(), 2);
+
+  const order = [];
+  const next = slots.acquire(new AbortController().signal).then(() => order.push("next"));
+  assert.equal(slots.queued(), 1);
+  slots.release();
+  await Promise.resolve();
+  assert.deepEqual(order, [], "a release does not start a run while running >= max");
+
+  slots.release();
+  await next;
+  assert.deepEqual(order, ["next"]);
+  slots.release();
+  assert.equal(slots.running(), 0);
+});
+
 test("runToJSON returns the old Task.toJSON fields", () => {
   const json = runToJSON(ID, meta, false);
   assert.equal(json.sessionId, ID);

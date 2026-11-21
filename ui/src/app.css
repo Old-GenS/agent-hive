@@ -1353,6 +1353,93 @@ td.provider-name {
   color: var(--text-3);
 }
 
+/* Settings › Runs: one row per limit */
+.runs-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.runs-settings-form h2 {
+  font-size: 16px;
+}
+
+.settings-rows {
+  gap: 0;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 230px;
+  gap: 4px 24px;
+  align-items: start;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.setting-row:last-child {
+  border-bottom: 0;
+}
+
+.setting-label label {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.setting-label .field-hint {
+  max-width: 52ch;
+}
+
+.setting-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.setting-input-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-input-line input {
+  width: 110px;
+  flex: none;
+}
+
+.setting-unit {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.setting-hint {
+  color: var(--text-3);
+  font-size: 12px;
+  margin: 0;
+}
+
+.setting-reset {
+  font-size: 12px;
+}
+
+.settings-live {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .setting-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
 /* ── responsive ── */
 
 @media (max-width: 760px) {

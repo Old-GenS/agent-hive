@@ -93,9 +93,12 @@ repository.
 - **API keys:** each provider's key (masked), where it comes from, its default model, and which
   provider is the default. **Add key** tests a key before saving it; saved keys can be tested,
   made the default or removed.
+- **Runs:** the VM size (CPUs and memory per run), runs at once, the time limit, the stall time
+  and the disk limit per run, checked against this computer's CPUs and RAM. Saved values apply to
+  new runs without a restart; values set in the server's environment are shown read-only.
 - **This computer:** how runs are isolated, the checks behind it (KVM, libkrun, pasta, launcher,
   VM filesystem), the GitHub login, a live **Resources** section (CPU, memory, disk, temperature,
-  runs) and the limits.
+  runs) and the limits, with a link to **Settings › Runs**.
 
 The header has a light/dark toggle and Log out.
 

@@ -71,6 +71,12 @@ itself (`order` or `only`) is used as written; `{}` lets OpenRouter choose freel
 | `HIVE_LIBKRUN` | system `libkrun.so.1` if it works, else the bundled one | The libkrun library the launcher loads. Setting it forces that library (`libkrun from HIVE_LIBKRUN` in doctor) and disables the fallback scan. |
 | `HIVE_NETWORK` | `proxy` | `proxy`: the VM's only way out is hive's egress proxy, which allows public internet addresses only (not this computer or the local network). `direct`: pasta's own network (internet and local network, still not this computer). |
 
+`HIVE_SANDBOX_MEMORY`, `HIVE_SANDBOX_CPUS`, `HIVE_SANDBOX_TIMEOUT_MIN`, `HIVE_STALL_MIN`,
+`HIVE_RUN_DISK_MAX_GB` and `MAX_CONCURRENT_SESSIONS` can also be changed in the web UI under
+**Settings › Runs**, which writes the same keys file (`HIVE_KEYS_FILE`) and applies to new runs
+without a restart; the CLI reads the file when it starts. A value set in the server's environment
+wins over the file and is shown read-only there.
+
 A VM only uses the memory it actually touches, but several heavy runs at once can still run a
 small machine out of memory: keep `MAX_CONCURRENT_SESSIONS` × `HIVE_SANDBOX_MEMORY` well under
 your RAM.
