@@ -145,6 +145,12 @@ npm run build:ui             # rebuild the web UI
 
 The code layout and the security invariants the code relies on are in [AGENTS.md](AGENTS.md).
 
+## Built with AI assistance
+
+Much of Agent Hive's code and documentation was written with AI coding assistants, including
+coding agents running inside hive itself. The design decisions, reviews and testing on real
+machines are done by its maintainer. Bug reports and pull requests are welcome either way.
+
 ## Thanks
 
 Agent Hive is a thin layer over some excellent open-source projects. Thank you to everyone who
