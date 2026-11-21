@@ -12,6 +12,23 @@ import { randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, join } from "node:path";
+import { renderEvent, renderEventStyled, addUsage, emptyUsage } from "./render.js";
+import {
+  StatusLine,
+  ask,
+  bold,
+  colorEnabled,
+  cyan,
+  dim,
+  formatCost,
+  formatDuration,
+  green,
+  red,
+  select,
+  symbols,
+  table,
+  yellow,
+} from "./tui.js";
 
 const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
 hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
@@ -50,6 +67,175 @@ function writeEvent(json: boolean, render: (e: any) => string | undefined, e: an
   if (line !== undefined) process.stdout.write(line + "\n");
 }
 
+/** The first line of an error, for the one-line summary. */
+function firstLine(text: string | undefined): string {
+  return String(text ?? "").split("\n")[0].trim();
+}
+
+/** `2h ago`, or `running 3m` while a run is live. */
+function runAge(meta: { status: string; createdAt: number; finishedAt?: number }, now = Date.now()): string {
+  if (meta.status === "running" || meta.status === "queued") return `running ${formatDuration(now - meta.createdAt)}`;
+  const ms = now - (meta.finishedAt ?? meta.createdAt);
+  if (ms < 60_000) return "just now";
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+/** The coloured STATUS cell of `hive list`; the running dot only on a terminal. */
+function runStatusCell(status: string, tty: boolean): string {
+  const dot = (text: string): string => (tty ? `${symbols.running} ${text}` : text);
+  switch (status) {
+    case "done":
+      return green(status, true);
+    case "failed":
+      return red(status, true);
+    case "aborted":
+      return yellow(status, true);
+    case "running":
+    case "queued":
+      return cyan(dot(status), true);
+    default:
+      return status;
+  }
+}
+
+/**
+ * The live view of one run on stderr: a status line while the steps run, a line per finished
+ * step, and the final summary. In plain mode (`rich` false) only `print` writes, so every line is
+ * exactly what it was before.
+ */
+class RunProgress {
+  readonly rich: boolean;
+  readonly outColor: boolean;
+  private readonly json: boolean;
+  private readonly out: NodeJS.WriteStream;
+  private readonly err: NodeJS.WriteStream;
+  private readonly status: StatusLine;
+  private readonly startedAt = Date.now();
+  private readonly usage = emptyUsage();
+  private tools = 0;
+  private step = "Starting";
+  private lastStatus: string | undefined;
+  private ticker: ReturnType<typeof setInterval> | undefined;
+  private repoLabel = "the repo";
+
+  constructor(o: { json: boolean; out?: NodeJS.WriteStream; err?: NodeJS.WriteStream }) {
+    this.json = o.json;
+    this.out = o.out ?? process.stdout;
+    this.err = o.err ?? process.stderr;
+    this.rich = !o.json && colorEnabled(this.err);
+    this.outColor = !o.json && colorEnabled(this.out);
+    this.status = new StatusLine(this.err);
+  }
+
+  elapsedMs(): number {
+    return Date.now() - this.startedAt;
+  }
+
+  private statusText(): string {
+    const tools = `${this.tools} tool${this.tools === 1 ? "" : "s"}`;
+    return `${this.step} · ${formatDuration(this.elapsedMs())} · ${formatCost(this.usage.cost)} · ${tools}`;
+  }
+
+  private refresh(): void {
+    if (this.rich) this.status.update(this.statusText());
+  }
+
+  /** Start the status line. The announce poll prints `hive: run <name>` separately. */
+  runStarted(o: { label?: string } = {}): void {
+    if (o.label !== undefined) this.repoLabel = o.label;
+    if (!this.rich) return;
+    this.status.start(this.statusText());
+    this.ticker = setInterval(() => this.refresh(), 250);
+    this.ticker.unref?.();
+  }
+
+  /** Enter a run step; the previous step's finished line is printed when it ends. */
+  setStep(status: string, extra?: Record<string, unknown>): void {
+    const previous = this.lastStatus;
+    this.lastStatus = status;
+    if (status === "cloning") this.step = "Cloning";
+    else if (status === "queued") this.step = "Waiting for a slot";
+    else if (status === "exporting") this.step = "Exporting";
+    else if (status === "running") {
+      if (this.rich && previous === "cloning") this.status.print(green(`${symbols.done} Cloned ${this.repoLabel}`, true));
+      else if (this.rich && previous === "queued") this.status.print(green(`${symbols.done} Got a slot`, true));
+      this.step = "Agent working";
+    } else if (status === "reviewing") {
+      if (this.rich && previous !== "reviewing") this.status.print(green(`${symbols.done} Agent finished`, true));
+      const cycle = Number(extra?.cycle ?? 0);
+      const of = Number(extra?.of ?? 0);
+      this.step = `Reviewing (${cycle}/${of})`;
+    } else this.step = status;
+    this.refresh();
+  }
+
+  /** Print one pi event: raw JSON with --json, Markdown with colour, plain text otherwise. */
+  event(e: any): void {
+    if (e?.type === "tool_execution_start") this.tools++;
+    addUsage(this.usage, e);
+    if (this.json) {
+      this.out.write(JSON.stringify(e) + "\n");
+      return;
+    }
+    const width = (this.out as { columns?: number }).columns ?? 80;
+    const line = this.outColor
+      ? renderEventStyled(e, { enabled: true, width })
+      : renderEvent(e);
+    if (this.rich) {
+      // Through the status line, so agent text never lands on it; empty lines are dropped.
+      if (line) this.status.printOn(this.out, line);
+    } else if (line !== undefined) this.out.write(line + "\n");
+    this.refresh();
+  }
+
+  /** A permanent stderr line: through the status line when it is live, straight out otherwise. */
+  print(line: string): void {
+    if (this.rich) this.status.print(line);
+    else this.err.write(line + "\n");
+  }
+
+  /** One `✓ Agent finished` line for the step that was in progress when the run ended. */
+  stepResult(status: string): void {
+    if (!this.rich) return;
+    const symbol =
+      status === "done"
+        ? green(symbols.done, true)
+        : status === "aborted"
+          ? yellow(symbols.stopped, true)
+          : red(symbols.failed, true);
+    const what = status === "done" ? "finished" : status === "aborted" ? "stopped" : "failed";
+    if (this.lastStatus === "running") this.status.print(`${symbol} Agent ${what}`);
+    else if (this.lastStatus === "reviewing") this.status.print(`${symbol} Review ${what}`);
+  }
+
+  /** Clear the status line and ticker (also on a thrown error); safe to call twice. */
+  cleanup(): void {
+    if (this.ticker !== undefined) {
+      clearInterval(this.ticker);
+      this.ticker = undefined;
+    }
+    this.status.stop();
+  }
+
+  /** The final one-line summary, its dimmed hints, then stop. */
+  finish(o: { kind: "done" | "failed" | "stopped"; body: string; hints?: string[]; extra?: string[] }): void {
+    this.cleanup();
+    if (!this.rich) return;
+    const symbol =
+      o.kind === "done"
+        ? green(symbols.done, true)
+        : o.kind === "failed"
+          ? red(symbols.failed, true)
+          : yellow(symbols.stopped, true);
+    const body = o.kind === "done" ? green(o.body, true) : o.kind === "failed" ? red(o.body, true) : yellow(o.body, true);
+    this.err.write(`${symbol} ${body}\n`);
+    for (const line of o.extra ?? []) this.err.write(dim(line, true) + "\n");
+    for (const line of o.hints ?? []) this.err.write(dim(line, true) + "\n");
+  }
+}
+
 async function cmdRun(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
@@ -69,14 +255,17 @@ async function cmdRun(args: string[]): Promise<number> {
   const { normalizeCliRepo, repoTop, isDirty } = await import("./git.js");
   const { startRun, listRuns, recoverRuns, pruneRuns } = await import("./runs.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
-  const { renderEvent } = await import("./render.js");
   const { bundleRoot, updateNotice } = await import("./release.js");
+  const progress = new RunProgress({ json: !!values.json });
 
   // Stop VMs left by a crashed hive and drop finished runs past the retention limit.
   recoverRuns();
   pruneRuns();
 
-  const prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[0] ?? "");
+  let prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[0] ?? "");
+  if (!prompt.trim() && values.file === undefined && process.stdin.isTTY === true) {
+    prompt = await ask("What should the agent do?");
+  }
   if (!prompt.trim()) throw new Error("a prompt is required");
   if (values.ref !== undefined && values.repo === undefined) throw new Error("--ref needs --repo");
 
@@ -87,6 +276,7 @@ async function cmdRun(args: string[]): Promise<number> {
   } else {
     repo = await repoTop(process.cwd());
   }
+  const repoLabel = remote?.name ?? (repo === undefined ? "the repo" : basename(repo));
 
   if (!libkrunAvailable()) {
     console.error("hive: can't start a VM:");
@@ -113,7 +303,7 @@ async function cmdRun(args: string[]): Promise<number> {
   const onSigint = () => {
     if (stopping) process.exit(130);
     stopping = true;
-    console.error("hive: stopping…");
+    progress.print("hive: stopping…");
     abort.abort();
   };
   process.on("SIGINT", onSigint);
@@ -123,7 +313,7 @@ async function cmdRun(args: string[]): Promise<number> {
   const announce = setInterval(() => {
     const fresh = listRuns().find((r) => !before.has(r.dir));
     if (fresh) {
-      console.error(`hive: run ${fresh.name}`);
+      progress.print(progress.rich ? dim(`hive: run ${fresh.name}`, true) : `hive: run ${fresh.name}`);
       clearInterval(announce);
     }
   }, 100);
@@ -140,10 +330,13 @@ async function cmdRun(args: string[]): Promise<number> {
       reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
       reviewModel: values["review-model"],
       signal: abort.signal,
-      onEvent: (e) => writeEvent(!!values.json, renderEvent, e),
+      onStart: () => progress.runStarted({ label: repoLabel }),
+      onStatus: (status, extra) => progress.setStep(status, extra),
+      onEvent: (e) => progress.event(e),
     });
   } finally {
     clearInterval(announce);
+    progress.cleanup();
     process.removeListener("SIGINT", onSigint);
   }
 
@@ -153,26 +346,40 @@ async function cmdRun(args: string[]): Promise<number> {
   const name = basename(dir);
   const routing = meta.routing as any;
   if (Array.isArray(routing?.order) && routing.order.length > 0) {
-    console.error(`hive: providers, in order: ${routing.order.join(", ")}`);
+    const line = `hive: providers, in order: ${routing.order.join(", ")}`;
+    progress.print(progress.rich ? dim(line, true) : line);
   }
+  progress.stepResult(meta.status);
   if (meta.status === "done") {
-    console.error(
-      `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
-    );
-    if (meta.commits === 0) {
-      console.error("hive: no changes");
-      return 0;
+    const hints = [`hive diff ${name}`];
+    if (meta.source !== "remote") hints.push(`hive apply ${name}`);
+    hints.push(`hive push ${name}`);
+    if (progress.rich) {
+      progress.finish({
+        kind: "done",
+        body: `Done · ${meta.commits} commit${meta.commits === 1 ? "" : "s"} · ${formatDuration(progress.elapsedMs())} · ${formatCost(meta.usage.cost)}`,
+        hints: meta.commits === 0 ? [] : hints,
+        extra: meta.commits === 0 ? ["no changes"] : [],
+      });
+    } else {
+      console.error(
+        `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
+      );
+      if (meta.commits === 0) {
+        console.error("hive: no changes");
+        return 0;
+      }
+      for (const hint of hints) console.error(hint);
     }
-    console.error(`hive diff ${name}`);
-    if (meta.source !== "remote") console.error(`hive apply ${name}`);
-    console.error(`hive push ${name}`);
     return 0;
   }
   if (meta.status === "aborted") {
-    console.error("hive: aborted");
+    if (progress.rich) progress.finish({ kind: "stopped", body: "Stopped" });
+    else console.error("hive: aborted");
     return 130;
   }
-  console.error(`hive: failed: ${meta.error}`);
+  if (progress.rich) progress.finish({ kind: "failed", body: `Failed · ${firstLine(meta.error)}` });
+  else console.error(`hive: failed: ${meta.error}`);
   return 1;
 }
 
@@ -196,12 +403,15 @@ async function cmdNew(args: string[]): Promise<number> {
   });
   const projectName = positionals[0];
   if (!projectName) throw new Error("hive new needs a project name");
-  const prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[1] ?? "");
+  let prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[1] ?? "");
+  if (!prompt.trim() && values.file === undefined && process.stdin.isTTY === true) {
+    prompt = await ask("What should the agent do?");
+  }
   if (!prompt.trim()) throw new Error("a prompt is required");
 
   const { startRun, listRuns, recoverRuns, pruneRuns } = await import("./runs.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
-  const { renderEvent } = await import("./render.js");
+  const progress = new RunProgress({ json: false });
   recoverRuns();
   pruneRuns();
 
@@ -219,7 +429,7 @@ async function cmdNew(args: string[]): Promise<number> {
   const onSigint = () => {
     if (stopping) process.exit(130);
     stopping = true;
-    console.error("hive: stopping…");
+    progress.print("hive: stopping…");
     abort.abort();
   };
   process.on("SIGINT", onSigint);
@@ -229,7 +439,7 @@ async function cmdNew(args: string[]): Promise<number> {
   const announce = setInterval(() => {
     const fresh = listRuns().find((r) => !before.has(r.dir));
     if (fresh) {
-      console.error(`hive: run ${fresh.name}`);
+      progress.print(progress.rich ? dim(`hive: run ${fresh.name}`, true) : `hive: run ${fresh.name}`);
       clearInterval(announce);
     }
   }, 100);
@@ -245,10 +455,13 @@ async function cmdNew(args: string[]): Promise<number> {
       reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
       reviewModel: values["review-model"],
       signal: abort.signal,
-      onEvent: (e) => writeEvent(false, renderEvent, e),
+      onStart: () => progress.runStarted({ label: projectName }),
+      onStatus: (status, extra) => progress.setStep(status, extra),
+      onEvent: (e) => progress.event(e),
     });
   } finally {
     clearInterval(announce);
+    progress.cleanup();
     process.removeListener("SIGINT", onSigint);
   }
 
@@ -256,25 +469,41 @@ async function cmdNew(args: string[]): Promise<number> {
   const meta = run.meta;
   const routing = meta.routing as any;
   if (Array.isArray(routing?.order) && routing.order.length > 0) {
-    console.error(`hive: providers, in order: ${routing.order.join(", ")}`);
+    const line = `hive: providers, in order: ${routing.order.join(", ")}`;
+    progress.print(progress.rich ? dim(line, true) : line);
   }
+  progress.stepResult(meta.status);
   if (meta.status === "done") {
-    console.error(
-      `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
-    );
-    console.error(`hive: new project ${projectName} (run ${runName})`);
-    if (meta.commits === 0) {
-      console.error("hive: no changes");
-      return 0;
+    if (progress.rich) {
+      progress.finish({
+        kind: "done",
+        body: `Done · ${meta.commits} commit${meta.commits === 1 ? "" : "s"} · ${formatDuration(progress.elapsedMs())} · ${formatCost(meta.usage.cost)}`,
+        extra: [
+          `new project ${projectName} (run ${runName})`,
+          ...(meta.commits === 0 ? ["no changes"] : []),
+        ],
+        hints: meta.commits === 0 ? [] : [`hive push ${runName}`],
+      });
+    } else {
+      console.error(
+        `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
+      );
+      console.error(`hive: new project ${projectName} (run ${runName})`);
+      if (meta.commits === 0) {
+        console.error("hive: no changes");
+        return 0;
+      }
+      console.error(`hive push ${runName}`);
     }
-    console.error(`hive push ${runName}`);
     return 0;
   }
   if (meta.status === "aborted") {
-    console.error("hive: aborted");
+    if (progress.rich) progress.finish({ kind: "stopped", body: "Stopped" });
+    else console.error("hive: aborted");
     return 130;
   }
-  console.error(`hive: failed: ${meta.error}`);
+  if (progress.rich) progress.finish({ kind: "failed", body: `Failed · ${firstLine(meta.error)}` });
+  else console.error(`hive: failed: ${meta.error}`);
   return 1;
 }
 
@@ -285,8 +514,8 @@ async function cmdContinue(args: string[]): Promise<number> {
     options: { json: { type: "boolean" } },
   });
   const { continueRun, recoverRuns, resolveRun } = await import("./runs.js");
-  const { renderEvent } = await import("./render.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
+  const progress = new RunProgress({ json: !!values.json });
   recoverRuns();
 
   // `hive continue <prompt>` continues the newest run; with two positionals the first is the run.
@@ -309,37 +538,51 @@ async function cmdContinue(args: string[]): Promise<number> {
   const onSigint = () => {
     if (stopping) process.exit(130);
     stopping = true;
-    console.error("hive: stopping…");
+    progress.print("hive: stopping…");
     abort.abort();
   };
   process.on("SIGINT", onSigint);
 
+  progress.runStarted({ label: basename(dir) });
   let run: Awaited<ReturnType<typeof continueRun>>;
   try {
     run = await continueRun(dir, {
       prompt,
       signal: abort.signal,
-      onEvent: (e) => writeEvent(!!values.json, renderEvent, e),
+      onStatus: (status, extra) => progress.setStep(status, extra),
+      onEvent: (e) => progress.event(e),
     });
   } finally {
+    progress.cleanup();
     process.removeListener("SIGINT", onSigint);
   }
 
   const name = basename(run.dir);
   const meta = run.meta;
+  progress.stepResult(meta.status);
   if (meta.status === "done") {
-    console.error(
-      `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
-    );
-    console.error(`hive diff ${name}`);
-    console.error(`hive push ${name}`);
+    const hints = [`hive diff ${name}`, `hive push ${name}`];
+    if (progress.rich) {
+      progress.finish({
+        kind: "done",
+        body: `Done · ${meta.commits} commit${meta.commits === 1 ? "" : "s"} · ${formatDuration(progress.elapsedMs())} · ${formatCost(meta.usage.cost)}`,
+        hints,
+      });
+    } else {
+      console.error(
+        `hive: done, ${meta.commits} commit(s), $${meta.usage.cost.toFixed(4)}, ${meta.usage.input} in / ${meta.usage.output} out tokens`,
+      );
+      for (const hint of hints) console.error(hint);
+    }
     return 0;
   }
   if (meta.status === "aborted") {
-    console.error("hive: aborted");
+    if (progress.rich) progress.finish({ kind: "stopped", body: "Stopped" });
+    else console.error("hive: aborted");
     return 130;
   }
-  console.error(`hive: failed: ${meta.error}`);
+  if (progress.rich) progress.finish({ kind: "failed", body: `Failed · ${firstLine(meta.error)}` });
+  else console.error(`hive: failed: ${meta.error}`);
   return 1;
 }
 
@@ -464,6 +707,23 @@ async function cmdList(args: string[]): Promise<number> {
     process.stdout.write("no runs\n");
     return 0;
   }
+  if (colorEnabled(process.stdout)) {
+    const tty = process.stdout.isTTY === true;
+    const now = Date.now();
+    const rows: string[][] = [["RUN", "STATUS", "COMMITS", "COST", "AGE", "REPO"]];
+    for (const run of runs) {
+      rows.push([
+        run.name,
+        runStatusCell(run.meta.status, tty),
+        String(run.meta.commits),
+        formatCost(run.meta.usage.cost),
+        runAge(run.meta, now),
+        run.meta.repo,
+      ]);
+    }
+    process.stdout.write(table(rows, { header: true, enabled: true }) + "\n");
+    return 0;
+  }
   for (const run of runs) {
     process.stdout.write(
       `${run.name}  ${run.meta.status}  ${run.meta.commits} commit(s)  $${run.meta.usage.cost.toFixed(4)}  ${run.meta.repo}\n`,
@@ -490,7 +750,24 @@ async function cmdClean(args: string[]): Promise<number> {
     }
     return 0;
   }
-  if (positionals.length === 0) throw new Error("clean needs a run name or --all");
+  if (positionals.length === 0) {
+    if (process.stdin.isTTY === true && process.stdout.isTTY === true) {
+      const finished = listRuns().filter((run) => !isLive(run.meta));
+      if (finished.length === 0) throw new Error("no finished runs to clean");
+      const dir = await select(
+        "Which run should be deleted?",
+        finished.map((run) => ({
+          label: run.name,
+          value: run.dir,
+          hint: `${run.meta.status}, ${runAge(run.meta)}`,
+        })),
+      );
+      cleanRun(dir);
+      process.stdout.write(`hive: cleaned ${basename(dir)}\n`);
+      return 0;
+    }
+    throw new Error("clean needs a run name or --all");
+  }
   const dir = resolveRun(positionals[0]);
   cleanRun(dir);
   process.stdout.write(`hive: cleaned ${basename(dir)}\n`);
@@ -559,15 +836,28 @@ async function cmdKeysList(): Promise<number> {
       key: found ? maskKey(found.value) : "no key",
       source: found ? sourceText[found.source] : "-",
       model: effectiveModel(id) ?? "none",
-      isDefault: id === defaultProvider ? " (default)" : "",
+      isDefault: id === defaultProvider,
     };
   });
+  if (colorEnabled(process.stdout)) {
+    const tableRows: string[][] = [["PROVIDER", "KEY", "SOURCE", "DEFAULT MODEL"]];
+    for (const row of rows) {
+      tableRows.push([
+        row.isDefault ? symbols.running + " " + row.label : row.label,
+        row.key,
+        row.source,
+        row.model,
+      ]);
+    }
+    process.stdout.write(table(tableRows, { header: true, enabled: true }) + "\n");
+    return 0;
+  }
   const labelWidth = Math.max(...rows.map((r) => r.label.length));
   const keyWidth = Math.max(...rows.map((r) => r.key.length));
   const sourceWidth = Math.max(...rows.map((r) => r.source.length));
   for (const row of rows) {
     process.stdout.write(
-      `${row.label.padEnd(labelWidth)}  ${row.key.padEnd(keyWidth)}  ${row.source.padEnd(sourceWidth)}  ${row.model}${row.isDefault}\n`,
+      `${row.label.padEnd(labelWidth)}  ${row.key.padEnd(keyWidth)}  ${row.source.padEnd(sourceWidth)}  ${row.model}${row.isDefault ? " (default)" : ""}\n`,
     );
   }
   return 0;
@@ -579,9 +869,15 @@ async function cmdKeysAdd(args: string[]): Promise<number> {
     allowPositionals: true,
     options: { "no-test": { type: "boolean" } },
   });
-  const provider = positionals[0];
-  if (!provider) throw new Error("keys add needs a provider");
   const { PROVIDERS } = await import("./config.js");
+  let provider = positionals[0];
+  if (provider === undefined) {
+    if (process.stdin.isTTY !== true) throw new Error("keys add needs a provider");
+    provider = await select(
+      "Which provider?",
+      Object.keys(PROVIDERS).map((id) => ({ label: PROVIDERS[id].label, value: id })),
+    );
+  }
   const { keysFilePath, setKeysFileValue, testKey } = await import("./keys.js");
   const entry = PROVIDERS[provider];
   if (!entry) throw new Error(`unknown provider "${provider}"; supported: ${Object.keys(PROVIDERS).join(", ")}`);
@@ -657,9 +953,17 @@ async function cmdKeysRemove(args: string[]): Promise<number> {
 
 async function cmdKeysDefault(args: string[]): Promise<number> {
   const { positionals } = parseArgs({ args, allowPositionals: true });
-  const provider = positionals[0];
-  if (!provider) throw new Error("keys default needs a provider");
   const { PROVIDERS, providerKey } = await import("./config.js");
+  let provider = positionals[0];
+  if (provider === undefined) {
+    if (process.stdin.isTTY !== true) throw new Error("keys default needs a provider");
+    const available = Object.keys(PROVIDERS).filter((id) => providerKey(id));
+    if (available.length === 0) throw new Error("no provider has a key; add one with hive keys add");
+    provider = await select(
+      "Which provider should be the default?",
+      available.map((id) => ({ label: PROVIDERS[id].label, value: id })),
+    );
+  }
   const { keysFilePath, setKeysFileValue } = await import("./keys.js");
   const entry = PROVIDERS[provider];
   if (!entry) throw new Error(`unknown provider "${provider}"; supported: ${Object.keys(PROVIDERS).join(", ")}`);
@@ -893,10 +1197,14 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const { currentVersion } = await import("./release.js");
 
   let allOk = true;
-  const lines: string[] = [`hive ${currentVersion() ?? "dev (from source)"}`];
+  const version = `hive ${currentVersion() ?? "dev (from source)"}`;
+  // Plain output is `<label>: <detail>` for every check, exactly as before; the terminal view
+  // replaces the colon with a ✓/✗ and keeps the same fix hint in the detail.
+  const checks: { ok: boolean; label: string; detail: string }[] = [];
+  const notes: string[] = [];
 
   const kvm = kvmState();
-  lines.push(`/dev/kvm: ${kvm}`);
+  checks.push({ ok: kvm === "ok", label: "/dev/kvm", detail: kvm });
   if (kvm !== "ok") allOk = false;
 
   const libkrun = config.sandbox.libkrun;
@@ -912,21 +1220,27 @@ async function cmdDoctor(args: string[]): Promise<number> {
       libkrunOk = false;
     }
   }
-  lines.push(
-    libkrunOk
-      ? `libkrun: ok (${libkrun})`
-      : "libkrun: not found — install your distro's libkrun package (Fedora: sudo dnf install libkrun)",
-  );
+  checks.push({
+    ok: libkrunOk,
+    label: "libkrun",
+    detail: libkrunOk ? `ok (${libkrun})` : "not found — install your distro's libkrun package (Fedora: sudo dnf install libkrun)",
+  });
   if (!libkrunOk) allOk = false;
 
   const pasta = commandPath("pasta");
-  lines.push(pasta ? `pasta: ok (${pasta})` : "pasta: not found — install passt (Fedora: sudo dnf install passt)");
+  checks.push({
+    ok: pasta !== undefined,
+    label: "pasta",
+    detail: pasta ? `ok (${pasta})` : "not found — install passt (Fedora: sudo dnf install passt)",
+  });
   if (!pasta) allOk = false;
 
   const launcherOk = existsSync(config.sandbox.vmBin);
-  lines.push(
-    launcherOk ? `launcher: ok (${config.sandbox.vmBin})` : `launcher: missing (${config.sandbox.vmBin})`,
-  );
+  checks.push({
+    ok: launcherOk,
+    label: "launcher",
+    detail: launcherOk ? `ok (${config.sandbox.vmBin})` : `missing (${config.sandbox.vmBin})`,
+  });
   if (!launcherOk) allOk = false;
 
   let rootfsOk = false;
@@ -937,37 +1251,53 @@ async function cmdDoctor(args: string[]): Promise<number> {
   } catch {
     rootfsOk = false;
   }
-  lines.push(rootfsOk ? `rootfs: ok (${rootfsPath})` : `rootfs: missing (${config.sandbox.rootfs}) — run hive setup`);
+  checks.push({
+    ok: rootfsOk,
+    label: "rootfs",
+    detail: rootfsOk ? `ok (${rootfsPath})` : `missing (${config.sandbox.rootfs}) — run hive setup`,
+  });
   if (!rootfsOk) allOk = false;
 
   const isolationOk = libkrunAvailable();
-  lines.push(`isolation: ${isolationOk ? "microvm (system libkrun)" : "unavailable"}`);
+  checks.push({ ok: isolationOk, label: "isolation", detail: isolationOk ? "microvm (system libkrun)" : "unavailable" });
   if (!isolationOk) allOk = false;
 
   const providers = providerInfo();
   const def = providers.default;
   if (def.provider !== null) {
-    lines.push(
+    notes.push(
       def.providerSource === "DEFAULT_PROVIDER"
         ? `provider: ${def.provider} (DEFAULT_PROVIDER)`
         : `provider: ${def.provider} (first provider with a key; set DEFAULT_PROVIDER to choose)`,
     );
   } else if (process.env.DEFAULT_PROVIDER) {
-    lines.push(
+    notes.push(
       `provider: unknown "${process.env.DEFAULT_PROVIDER}" (DEFAULT_PROVIDER); supported: deepseek, zai, openrouter, anthropic, openai`,
     );
   } else {
-    lines.push("provider: none (no API key set)");
+    notes.push("provider: none (no API key set)");
   }
   if (def.model !== null) {
-    lines.push(
+    notes.push(
       def.modelSource === "DEFAULT_MODEL"
         ? `model: ${def.model} (DEFAULT_MODEL)`
         : `model: ${def.model} (${def.provider}'s default)`,
     );
   }
-  lines.push(`thinking: ${def.thinking}`);
+  notes.push(`thinking: ${def.thinking}`);
 
+  const lines: string[] = [];
+  if (colorEnabled(process.stdout)) {
+    lines.push(bold(version));
+    for (const check of checks) {
+      lines.push(`${check.ok ? green(symbols.done, true) : red(symbols.failed, true)} ${check.label}  ${check.detail}`);
+    }
+    for (const note of notes) lines.push(dim(note, true));
+  } else {
+    lines.push(version);
+    for (const check of checks) lines.push(`${check.label}: ${check.detail}`);
+    lines.push(...notes);
+  }
   process.stdout.write(lines.join("\n") + "\n");
   return allOk ? 0 : 1;
 }

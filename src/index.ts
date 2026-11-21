@@ -3,12 +3,13 @@ import Fastify from "fastify";
 import fWebSocket from "@fastify/websocket";
 import fStatic from "@fastify/static";
 import { existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadTokens, requireAuth } from "./auth.js";
 import { checkSandbox, runtimeInfo } from "./sandbox.js";
 import { capacity, default as webRunRoutes } from "./web-runs.js";
 import { pruneRuns, recoverRuns } from "./runs.js";
+import { uiDistCandidates } from "./release.js";
 import githubRoutes from "./routes/github.js";
 import providerRoutes from "./routes/providers.js";
 import systemRoutes from "./routes/system.js";
@@ -34,8 +35,8 @@ const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 await app.register(fWebSocket);
 
 // ── public: UI assets, health ──
-const uiDist = join(here, "..", "ui", "dist");
-if (existsSync(uiDist)) {
+const uiDist = uiDistCandidates(process.env, here).find((candidate) => existsSync(candidate));
+if (uiDist !== undefined) {
   await app.register(fStatic, { root: uiDist, prefix: "/ui/", decorateReply: false });
   app.get("/ui", (_req, reply) => reply.redirect("/ui/"));
 } else {

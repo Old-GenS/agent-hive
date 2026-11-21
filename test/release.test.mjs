@@ -280,3 +280,19 @@ test("CLI help lists the release commands", () => {
   });
   assert.match(result.stdout, /hive update/);
 });
+
+test("uiDistCandidates tries HIVE_UI_DIR, the bundle, then the checkout", () => {
+  const here = "/srv/hive/dist";
+  const source = join("/srv/hive", "ui", "dist");
+  assert.deepEqual(release.uiDistCandidates({}, here), [source]);
+  assert.deepEqual(release.uiDistCandidates({ HIVE_UI_DIR: "/opt/ui" }, here), ["/opt/ui", source]);
+  assert.deepEqual(release.uiDistCandidates({ HIVE_BUNDLE_ROOT: "/opt/hive" }, here), [
+    join("/opt/hive", "ui", "dist"),
+    source,
+  ]);
+  assert.deepEqual(release.uiDistCandidates({ HIVE_UI_DIR: "/opt/ui", HIVE_BUNDLE_ROOT: "/opt/hive" }, here), [
+    "/opt/ui",
+    join("/opt/hive", "ui", "dist"),
+    source,
+  ]);
+});

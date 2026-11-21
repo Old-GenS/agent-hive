@@ -3,6 +3,21 @@
 `[run]` defaults to the newest run. Run names look like `<repo>-<YYYYMMDD-HHMMSS>`; `hive list`
 shows them.
 
+## Output
+
+In a terminal, `hive` uses colour, a live status line while a run goes (spinner, the current step,
+elapsed time, cost and tool count), a line per finished step, tidy tool-call lines, the agent's
+Markdown rendered for the terminal, and aligned tables for `hive list` and `hive keys list`.
+
+When output is piped, or `NO_COLOR` is set, every command prints plain text exactly as before, so
+scripts and `grep` keep working. `--json` prints pi's raw events, one JSON object per line.
+`FORCE_COLOR=1` keeps the colour when output is piped.
+
+When a command needs something you didn't pass and stdin is a terminal, `hive` asks: `hive run`
+and `hive new` for a prompt, `hive keys add` and `hive keys default` for a provider, and
+`hive clean` for the run to delete (arrow keys and Enter). Without a terminal these are usage
+errors, as before.
+
 ## Running the agent
 
 | Command | What it does |

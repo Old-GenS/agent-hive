@@ -1,6 +1,8 @@
 /**
  * Plain-text rendering of pi's JSONL events for the `hive` CLI. No ANSI colours.
  */
+import { dim, red, renderMarkdownTerminal, symbols } from "./tui.js";
+
 export function renderEvent(e: any): string | undefined {
   if (e?.type === "message_end" && e.message?.role === "assistant") {
     if (e.message.errorMessage) return "error: " + e.message.errorMessage;
@@ -42,4 +44,53 @@ export function addUsage(total: Usage, e: any): void {
   total.cacheRead += u.cacheRead ?? 0;
   total.cacheWrite += u.cacheWrite ?? 0;
   total.cost += u.cost?.total ?? 0;
+}
+
+/** The tool call's argument summary: the same text renderEvent uses, first line only. */
+function toolSummary(e: any): string {
+  const args = e.args ?? {};
+  const summary =
+    e.toolName === "bash"
+      ? args.command
+      : e.toolName === "read" || e.toolName === "edit" || e.toolName === "write"
+        ? args.path
+        : JSON.stringify(args);
+  return String(summary ?? "").replace(/\s+/g, " ").trim();
+}
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, Math.max(0, max - 1)) + "…";
+}
+
+/**
+ * A pi event for a terminal: Markdown-rendered assistant text, a dimmed tool-call line and a red
+ * failed-tool line. Falls back to renderEvent when colour is disabled, so plain output is
+ * byte-for-byte what it was.
+ */
+export function renderEventStyled(e: any, o: { enabled: boolean; width?: number }): string | undefined {
+  if (!o.enabled) return renderEvent(e);
+  if (e?.type === "message_end" && e.message?.role === "assistant") {
+    if (e.message.errorMessage) return red("error: " + e.message.errorMessage, true);
+    const text = (Array.isArray(e.message.content) ? e.message.content : [])
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("");
+    return text ? renderMarkdownTerminal(text, true) : undefined;
+  }
+  if (e?.type === "hive_note") {
+    const text = String(e.text ?? "");
+    return text ? dim(text, true) : undefined;
+  }
+  if (e?.type === "tool_execution_start") {
+    const tool = String(e.toolName ?? "");
+    const prefix = `  ${symbols.tool} ${tool}  `;
+    const room = Math.max(10, (o.width ?? 80) - prefix.length);
+    const summary = truncate(toolSummary(e), room);
+    return `  ${symbols.tool} ${tool}  ${dim(summary, true)}`;
+  }
+  if (e?.type === "tool_execution_end" && e.isError === true) {
+    return red(`  ${symbols.failed} ${String(e.toolName ?? "")}  failed`, true);
+  }
+  return undefined;
 }

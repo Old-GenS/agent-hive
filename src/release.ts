@@ -97,6 +97,19 @@ export function bundleRoot(): string | undefined {
   return process.env.HIVE_BUNDLE_ROOT || undefined;
 }
 
+/**
+ * Where the web UI's built files (`ui/dist`) can be, in the order to try: an explicit
+ * HIVE_UI_DIR, the installed release bundle's `ui/dist`, then a source checkout's `ui/dist`
+ * relative to the running module (`<checkout>/dist` -> `<checkout>/ui/dist`).
+ */
+export function uiDistCandidates(env: NodeJS.ProcessEnv, here: string): string[] {
+  const candidates: string[] = [];
+  if (env.HIVE_UI_DIR) candidates.push(env.HIVE_UI_DIR);
+  if (env.HIVE_BUNDLE_ROOT) candidates.push(join(env.HIVE_BUNDLE_ROOT, "ui", "dist"));
+  candidates.push(join(here, "..", "ui", "dist"));
+  return candidates;
+}
+
 /** The released version this bundle came from, or undefined when running from source. */
 export function currentVersion(): string | undefined {
   const root = bundleRoot();

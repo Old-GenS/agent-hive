@@ -164,3 +164,52 @@ test("CLI: --help, list and an unknown command", () => {
   const bogus = spawnSync(process.execPath, ["dist/cli.js", "bogus"], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(bogus.status, 1);
 });
+
+test("hive list colours a terminal listing, and stays plain with NO_COLOR", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hive-list-colour-"));
+  const runDir = join(dir, "owner-repo-20240101-000000");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(
+    join(runDir, "meta.json"),
+    JSON.stringify({
+      repo: "/tmp/owner/repo",
+      source: "local",
+      base: "abc",
+      provider: "deepseek",
+      model: "m",
+      thinking: "low",
+      prompt: "p",
+      status: "done",
+      pid: 1,
+      commits: 2,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.0123 },
+      createdAt: Date.now() - 7_200_000,
+      finishedAt: Date.now() - 3_600_000,
+    }),
+  );
+
+  const env = (extra) => {
+    const result = { ...process.env, HIVE_RUNS_DIR: dir, ...extra };
+    delete result.FORCE_COLOR;
+    delete result.NO_COLOR;
+    Object.assign(result, extra);
+    return result;
+  };
+  const run = (extra) =>
+    spawnSync(process.execPath, ["dist/cli.js", "list"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: env(extra),
+    });
+
+  const coloured = run({ FORCE_COLOR: "1" });
+  assert.equal(coloured.status, 0, coloured.stderr);
+  assert.match(coloured.stdout, /RUN/, "the coloured view has a table header");
+  assert.match(coloured.stdout, /\u001b\[/, "the coloured view has ANSI escapes");
+  assert.match(coloured.stdout, /owner-repo-20240101-000000/);
+
+  const plain = run({ NO_COLOR: "1" });
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.doesNotMatch(plain.stdout, /\u001b\[/, "NO_COLOR means no ANSI escapes");
+  assert.match(plain.stdout, /commit\(s\)/, "NO_COLOR keeps today's line format");
+});

@@ -21,6 +21,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
 npm run build
+npm run build:ui
 npm run build:vm
 
 # The rootfs is exported from the sandbox image; its directory name is the image id prefix that
@@ -36,7 +37,11 @@ else
 fi
 
 app="$stage/hive-$version"
-mkdir -p "$app/bin" "$app/lib" "$app/libexec"
+mkdir -p "$app/bin" "$app/lib" "$app/libexec" "$app/ui"
+
+# The web UI's files, next to lib/: bin/hive sets HIVE_BUNDLE_ROOT, and index.ts finds
+# <bundle>/ui/dist from it.
+cp -R ui/dist "$app/ui/dist"
 
 cat > "$app/bin/hive" <<'EOF'
 #!/bin/sh
