@@ -37,8 +37,10 @@ hive push --pr     # or push a branch and open a pull request
 - Building from source also needs the system **libkrun** (Fedora: `sudo dnf install libkrun`).
 - An API key for at least one model provider.
 
-Windows: WSL2 with the Fedora WSL distro should work today, but hasn't been tested yet; a
-one-line PowerShell installer is next on the [roadmap](docs/ROADMAP.md#step-1b--windows-through-wsl2-next).
+Tested on Fedora 45 and Linux Mint 22.1, and in Ubuntu 22.04 and 24.04 containers.
+
+Windows: WSL2 (any distro, with nested virtualization) should work with the release, but hasn't
+been tested yet; a one-line PowerShell installer is next on the [roadmap](docs/ROADMAP.md#step-1b--windows-through-wsl2-next).
 macOS is on the roadmap too.
 
 ## Install

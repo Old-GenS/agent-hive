@@ -18,9 +18,20 @@ opens the UI and hands the token to the browser in the URL fragment, which the U
 from the address bar. `--open` forces that, `--no-open` turns it off; the background service never
 opens a browser.
 
-It listens on `127.0.0.1` by default. To use it from other devices, put it behind a tunnel or a
-TLS reverse proxy. `HOST=0.0.0.0` also works on a trusted home network, but that's plain HTTP:
-the token crosses the network unencrypted.
+It listens on `127.0.0.1` by default.
+
+**From your phone or another computer on your home network:**
+
+1. `hive serve --host 0.0.0.0`. It prints the addresses it's reachable at, such as
+   `http://192.168.1.20:8080/ui/`; open one on the other device.
+2. Log in with the token: on the hive machine, `grep API_TOKEN ~/.config/agent-hive/env` and paste
+   the part after `API_TOKEN=`.
+3. If the page doesn't load, the machine's firewall may block the port: `sudo ufw allow 8080/tcp`
+   (Ubuntu, Mint) or `sudo firewall-cmd --add-port=8080/tcp` (Fedora).
+
+That's plain HTTP, so the token crosses your network unencrypted: fine on your own Wi-Fi, not on a
+shared network. From outside your home, use a tunnel (Tailscale, for example) or a TLS reverse
+proxy rather than opening the port.
 
 From a source checkout, build the UI first: `npm run build && npm run build:ui`. A running server
 picks up a rebuilt UI without a restart.
