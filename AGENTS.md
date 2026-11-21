@@ -28,6 +28,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/vmcache.ts` | Per-repo VM cache buckets: the repo identity key, the bucket a run mounts at `/root/.cache`, the `.used` markers and pruning of old buckets |
 | `src/openrouter.ts` | OpenRouter runs: pi's `models.json` from OpenRouter's model data, and a fixed provider order (maker first, then uptime, then price; low-precision endpoints skipped) |
 | `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
+| `src/egress.ts` | The egress proxy, the VM's only network path: pasta forwards its port to the host's loopback, and it resolves destinations itself and refuses non-public addresses (this computer, the local network) |
 | `src/libkrun.ts` | Which libkrun the launcher loads: `HIVE_LIBKRUN`, then the system one when `hive-vm --check` passes, then the bundled one; the label every isolation report uses |
 | `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, URL, SHA-256, source), Rust, the manylinux build image digest and the bundled Node version |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
@@ -104,6 +105,11 @@ the pinned manylinux container from `versions.json`. Run the tests with `npm tes
 12. **A run's disk use is bounded.** `src/diskwatch.ts` stops an agent step once the run folder plus
     its cache bucket passes `HIVE_RUN_DISK_MAX_GB` or the disk holding the runs has less than
     `HIVE_MIN_FREE_DISK_GB` free. It measures with `du` without following symlinks.
+13. **The VM's only network path is hive's egress proxy** (`src/egress.ts`). pasta runs without
+    `--config-net` and forwards a single port to the proxy on the host's loopback; the proxy
+    resolves each destination, allows public addresses only (checked after resolving and connected
+    by address, so DNS rebinding cannot get around it) and carries HTTP/HTTPS only. `HIVE_NETWORK=direct`
+    is the explicit opt-out.
 
 ## GitHub access (server)
 

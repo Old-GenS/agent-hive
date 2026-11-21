@@ -193,8 +193,8 @@ How they stay current:
 For VPSs without `/dev/kvm`, WSL without nested virtualization, some CI runners and PCs with
 virtualization off in the firmware.
 
-- **First, a spike:** rootless `runsc` inside pasta's network namespace (so the agent still
-  reaches the internet but not the host or the LAN). The rest of this step depends on that
+- **First, a spike:** rootless `runsc` inside the same network setup (so the agent still
+  reaches the internet only through hive's egress proxy). The rest of this step depends on that
   combination working; if it doesn't, rethink before building the backend.
 
 - `runsc` is one static Go binary, published upstream, so it's easy to bundle.
@@ -277,5 +277,9 @@ carries over with a Mac launcher, an arm64 rootfs and a network setup without pa
 alternative. **Windows without WSL** would mean QEMU or Hyper-V; not worth it while WSL exists.
 
 Networking: libkrun's built-in TSI networking gives the guest the host's network as it is, with
-nothing blocked. A TAP device needs root plus firewall rules. pasta gives the guest the internet
-while blocking the host's loopback, gateway and LAN, with no root. That's why pasta is used.
+nothing blocked. A TAP device needs root plus firewall rules. pasta blocks this computer (its
+loopback, gateway and own addresses) with no root, but not the rest of the LAN. LAN isolation comes
+from hive's egress proxy (`src/egress.ts`, done): pasta forwards only the proxy's port, and the
+proxy allows public addresses only, checked after resolving and connected by address. That's why
+pasta plus the proxy is used; the per-run allowlist (item 2 under Later) then only needs an
+allowlist inside that proxy.

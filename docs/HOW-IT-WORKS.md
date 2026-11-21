@@ -68,8 +68,15 @@ Follow-ups (`hive continue`, or the message box in the web UI) start a fresh VM 
 | use a download cache (`~/.cache`) shared only with runs of the same repo | keep anything else between runs |
 
 The VM's root filesystem is read-only, with a writable layer in RAM that disappears when the VM
-stops. pasta gives it a private network that can reach the internet but not the host's loopback,
-gateway or LAN addresses.
+stops. Its only network path is hive's egress proxy. pasta runs without `--config-net` and forwards
+just one port from the VM to the host's loopback, where the proxy listens. The proxy resolves each
+destination itself, refuses every non-public address (this computer, the router, the NAS, other
+devices on the LAN) and only then connects to the vetted address, so a DNS answer that changes
+after the check cannot get around it. Tools in the VM use the proxy through the standard
+`HTTP_PROXY`/`HTTPS_PROXY` variables (Node 24's `fetch` and `http` also need
+`NODE_USE_ENV_PROXY=1`, which hive sets). Only HTTP and HTTPS leave the VM: raw TCP, UDP and SSH
+have no way out. `HIVE_NETWORK=direct` is the explicit opt-out that restores pasta's own network
+(internet and local network, still not this computer).
 
 ## How results get back safely
 

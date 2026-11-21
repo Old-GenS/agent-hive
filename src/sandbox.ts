@@ -8,6 +8,7 @@ import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, ope
 import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import { config } from "./config.js";
+import { sharedEgressProxy } from "./egress.js";
 import { followJsonl } from "./follow.js";
 import { fixFor, hostInfo } from "./fixes.js";
 import { libkrunChoice, libkrunLabel } from "./libkrun.js";
@@ -157,13 +158,25 @@ export function buildLibkrunCommand(
     timeoutSec: number;
     /** where the launcher sends its own stderr, including libkrun's log lines */
     stderrFile: string;
+    /**
+     * The port of hive's egress proxy, when the VM's only way out is that proxy. With it, pasta
+     * runs without --config-net and forwards just this one port from the VM to the host's
+     * loopback; the VM gets no DNS and no direct network.
+     */
+    proxyPort?: number;
   },
 ): { file: string; args: string[] } {
+  const netArgs =
+    p.proxyPort !== undefined
+      ? ["-q", "-T", String(p.proxyPort), "-U", "none", "--no-map-gw"]
+      : [
+          "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
+          "--dns-forward", "169.254.1.53",
+          // Older pasta has no --dns-host; it then forwards to the first nameserver in resolv.conf.
+          ...(p.hostDns !== undefined ? ["--dns-host", p.hostDns] : []),
+        ];
   const args = [
-    "--config-net", "-q", "-T", "none", "-U", "none", "--no-map-gw",
-    "--dns-forward", "169.254.1.53",
-    // Older pasta has no --dns-host; it then forwards to the first nameserver in resolv.conf.
-    ...(p.hostDns !== undefined ? ["--dns-host", p.hostDns] : []),
+    ...netArgs,
     "--", "/usr/bin/env", p.vmBin,
     "--rootfs", p.rootfs, "--cpus", String(p.cpus), "--memory", String(p.memoryMiB),
     "--timeout", String(p.timeoutSec),
@@ -171,11 +184,13 @@ export function buildLibkrunCommand(
   ];
   for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
   for (const name of Object.keys(opts.env)) args.push("--env", name);
-  args.push("--dns", "169.254.1.53", "--workdir", "/work", "--", ...opts.command);
+  // With the proxy there is no DNS in the VM: names are resolved by the proxy, on the host.
+  if (p.proxyPort === undefined) args.push("--dns", "169.254.1.53");
+  args.push("--workdir", "/work", "--", ...opts.command);
   return { file: "pasta", args };
 }
 
-function spawnLibkrun(opts: SandboxOptions) {
+function spawnLibkrun(opts: SandboxOptions, proxyPort?: number) {
   const { sandbox } = config;
   const cmd = buildLibkrunCommand(opts, {
     vmBin: sandbox.vmBin,
@@ -187,6 +202,7 @@ function spawnLibkrun(opts: SandboxOptions) {
     // A sibling of the io folder, never inside it: the VM can write io/, so it must not be able to
     // replace the log hive reads with a symlink.
     stderrFile: `${opts.ioDir}.launcher.log`,
+    proxyPort,
   });
   // The launcher reads HIVE_LIBKRUN from its own env.
   return spawn(cmd.file, cmd.args, {
@@ -218,15 +234,26 @@ export function resetIoDir(ioDir: string): void {
   }
 }
 
-export function runSandbox(opts: SandboxOptions): SandboxHandle {
+export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   const { sandbox } = config;
   const ioDir = opts.ioDir;
   if (opts.mounts.length + 1 > MAX_SHARES) {
     throw new Error(`too many shared folders for one VM: ${opts.mounts.length + 1} (libkrun supports ${MAX_SHARES})`);
   }
+  // The proxy must be listening before pasta forwards its port, so this has to happen before the
+  // VM is spawned: that is what makes runSandbox async.
+  let proxyPort: number | undefined;
+  let env = opts.env;
+  if (sandbox.network === "proxy") {
+    const proxy = await sharedEgressProxy();
+    proxyPort = proxy.port;
+    // Names are passed to the launcher as --env NAME; values ride in the child's environment.
+    env = { ...opts.env, ...proxy.env };
+  }
   resetIoDir(ioDir);
   const launch: SandboxOptions = {
     ...opts,
+    env,
     mounts: [...opts.mounts, { host: ioDir, container: "/io" }],
     command: ["bash", "-c", 'exec "$@" > /io/events.jsonl 2> /io/stderr.log', "hive-io", ...opts.command],
   };
@@ -241,7 +268,7 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
       }
     });
   }
-  const child = spawnLibkrun(launch);
+  const child = spawnLibkrun(launch, proxyPort);
 
   // Stdout and stderr are only kept as a tail for error messages; events come from io/events.jsonl.
   let stdoutTail = "";
@@ -367,7 +394,10 @@ export function systemInfo(): {
     name: "pasta (network isolation)",
     id: "pasta",
     ok: onPath("pasta"),
-    detail: "VMs reach the internet, not this computer or the local network",
+    detail:
+      config.sandbox.network === "proxy"
+        ? "VMs reach the internet through hive's proxy, not this computer or the local network"
+        : "VMs reach the internet and the local network, not this computer (HIVE_NETWORK=direct)",
   });
   checks.push({ name: "VM launcher", id: "launcher", ok: launcher, detail: config.sandbox.vmBin });
   let rootfs = config.sandbox.rootfs;

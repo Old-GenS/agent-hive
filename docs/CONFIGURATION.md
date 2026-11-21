@@ -69,6 +69,7 @@ itself (`order` or `only`) is used as written; `{}` lets OpenRouter choose freel
 | `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this are deleted; `0` keeps them forever |
 | `HIVE_ROOTFS` | `~/.local/share/agent-hive/rootfs/current` | The VM filesystem |
 | `HIVE_LIBKRUN` | system `libkrun.so.1` if it works, else the bundled one | The libkrun library the launcher loads. Setting it forces that library (`libkrun from HIVE_LIBKRUN` in doctor) and disables the fallback scan. |
+| `HIVE_NETWORK` | `proxy` | `proxy`: the VM's only way out is hive's egress proxy, which allows public internet addresses only (not this computer or the local network). `direct`: pasta's own network (internet and local network, still not this computer). |
 
 A VM only uses the memory it actually touches, but several heavy runs at once can still run a
 small machine out of memory: keep `MAX_CONCURRENT_SESSIONS` × `HIVE_SANDBOX_MEMORY` well under

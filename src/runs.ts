@@ -337,7 +337,7 @@ async function exportPatches(
   const out = join(dir, "out");
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out);
-  const exp = runSandbox({
+  const exp = await runSandbox({
     name: "hive-" + basename(dir) + "-export",
     mounts: [
       { host: join(dir, "work"), container: "/work" },
@@ -1063,7 +1063,7 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   if (useAgentDir) env.PI_CODING_AGENT_DIR = "/io/pi-agent";
   // npm downloads live in the repo's cache bucket, which is mounted at ~/.cache.
   if (config.sandbox.vmCache) env.NPM_CONFIG_CACHE = "/root/.cache/npm";
-  const handle = runSandbox({
+  const handle = await runSandbox({
     name: "hive-" + basename(dir),
     mounts,
     env,

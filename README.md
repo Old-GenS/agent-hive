@@ -18,7 +18,8 @@ hive push --pr     # or push a branch and open a pull request
 ```
 
 - **Isolated:** every run boots its own microVM ([libkrun](https://github.com/containers/libkrun))
-  with its own kernel, and a network that reaches the internet but not your machine or your LAN.
+  with its own kernel, and a network that reaches the internet only through a proxy hive runs,
+  which refuses your computer and your local network (router, NAS, other devices).
 - **Nothing secret goes in:** the VM gets the repo copy and one LLM API key. Your SSH keys, GitHub
   login and other files stay outside.
 - **You stay in control:** results come back as patches. Nothing is pushed or opened on GitHub
@@ -173,8 +174,8 @@ builds and maintains them:
   **[libkrunfw](https://github.com/containers/libkrunfw)**: the library that boots a microVM in a
   few hundred milliseconds, and the small Linux kernel it runs, from the
   [containers](https://github.com/containers) project.
-- **[passt / pasta](https://passt.top)**: rootless networking that gives each VM the internet
-  without access to your machine or your LAN.
+- **[passt / pasta](https://passt.top)**: rootless networking that gives each VM its one way out,
+  to that proxy, without root.
 - **[Fedora](https://fedoraproject.org)**: the base of the VM's filesystem, which also packages
   libkrun and passt.
 - **[Chromium](https://www.chromium.org)**, **[Node.js](https://nodejs.org)** and

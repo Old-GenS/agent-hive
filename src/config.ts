@@ -87,6 +87,17 @@ export function resolveProvider(explicit?: string): string | undefined {
   return Object.keys(PROVIDERS).find((p) => providerKey(p));
 }
 
+/**
+ * The VM's network. "proxy" (the default) gives the VM only hive's egress proxy, which refuses
+ * this computer and the local network; "direct" is the old behaviour (pasta's own network:
+ * internet and local network, not this computer).
+ */
+function networkMode(): "proxy" | "direct" {
+  const raw = process.env.HIVE_NETWORK || "proxy";
+  if (raw !== "proxy" && raw !== "direct") throw new Error(`HIVE_NETWORK must be proxy or direct, got "${raw}"`);
+  return raw;
+}
+
 function gitProtocol(): "https" | "ssh" {
   const raw = process.env.HIVE_GIT_PROTOCOL || "https";
   if (raw !== "https" && raw !== "ssh") throw new Error(`HIVE_GIT_PROTOCOL must be https or ssh, got "${raw}"`);
@@ -113,6 +124,10 @@ export const config = {
   },
   sandbox: {
     runtime: process.env.HIVE_RUNTIME || "auto", // auto | libkrun
+    // proxy (default) = the VM reaches only hive's egress proxy, which refuses this computer and
+    // the local network; direct = the old behaviour (pasta's own network: internet and LAN, not
+    // this computer).
+    network: networkMode(),
     memory: process.env.HIVE_SANDBOX_MEMORY || "2048m",
     cpus: process.env.HIVE_SANDBOX_CPUS || "1",
     timeoutMin: int("HIVE_SANDBOX_TIMEOUT_MIN", 60),
