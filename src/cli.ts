@@ -1199,24 +1199,12 @@ function kvmState(): "ok" | "missing" | "no access" {
   }
 }
 
-/** Path of a command on PATH, or undefined. */
-function commandPath(bin: string): string | undefined {
-  try {
-    const path = execFileSync("sh", ["-c", `command -v ${bin}`], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return path || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 async function cmdDoctor(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { config, providerInfo } = await import("./config.js");
   const { libkrunAvailable } = await import("./sandbox.js");
   const { libkrunChoice, libkrunLabel } = await import("./libkrun.js");
+  const { pastaChoice, pastaLabel } = await import("./pasta.js");
   const { currentVersion } = await import("./release.js");
   const { fixFor, hostInfo } = await import("./fixes.js");
   type CheckId = Parameters<typeof fixFor>[0];
@@ -1243,14 +1231,14 @@ async function cmdDoctor(args: string[]): Promise<number> {
   });
   if (!libkrun.ok) allOk = false;
 
-  const pasta = commandPath("pasta");
+  const pasta = pastaChoice();
   checks.push({
-    ok: pasta !== undefined,
+    ok: pasta.ok,
     id: "pasta",
     label: "pasta",
-    detail: pasta ? `ok (${pasta})` : "not found — install passt (Fedora: sudo dnf install passt)",
+    detail: pasta.ok ? `ok (${pastaLabel(pasta)}: ${pasta.path})` : "not found",
   });
-  if (!pasta) allOk = false;
+  if (!pasta.ok) allOk = false;
 
   const launcherOk = existsSync(config.sandbox.vmBin);
   checks.push({

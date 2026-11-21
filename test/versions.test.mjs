@@ -27,6 +27,11 @@ test("versions.json has the expected pins", () => {
   assert.match(versions.buildImage, /@sha256:[0-9a-f]{64}$/);
   assert.match(versions.rust, /^\d+\.\d+\.\d+$/);
   assert.match(versions.node, /^\d+\.\d+\.\d+$/);
+
+  // The static pasta fallback is built from this source tarball.
+  assert.match(versions.passt.sha256, /^[0-9a-f]{64}$/);
+  assert.match(versions.passt.url, /^https:\/\/passt\.top\/passt\/snapshot\/passt-/);
+  assert.ok(versions.passt.url.includes(versions.passt.version), "passt.url matches its version");
 });
 
 test("the release build scripts parse", () => {

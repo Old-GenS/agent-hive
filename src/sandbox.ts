@@ -3,7 +3,7 @@
  * a pasta network namespace. The sandbox gets only the mounts and env vars passed in; the host's
  * SSH keys, gh login and .env never enter it.
  */
-import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import { sharedEgressProxy } from "./egress.js";
 import { followJsonl } from "./follow.js";
 import { fixFor, hostInfo } from "./fixes.js";
 import { libkrunChoice, libkrunLabel } from "./libkrun.js";
+import { pastaChoice, pastaLabel } from "./pasta.js";
 import type { CheckId, Fix } from "./fixes.js";
 
 export type Isolation = "microvm" | "unavailable";
@@ -20,15 +21,6 @@ export interface RuntimeInfo {
   runtime: "libkrun";
   isolation: Isolation;
   warning?: string;
-}
-
-function onPath(bin: string): boolean {
-  try {
-    execFileSync("sh", ["-c", `command -v ${bin}`], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function kvmUsable(): boolean {
@@ -62,12 +54,12 @@ let pastaHelpText: string | undefined;
 /**
  * Whether the installed pasta knows `option`. Distros ship pasta versions years apart (Ubuntu
  * 24.04's is from February 2024 and has no --dns-host), so optional flags are checked against
- * `pasta --help` once per process.
+ * `pasta --help` once per process. The binary probed is the one hive will actually run.
  */
 export function pastaSupports(option: string, help?: string): boolean {
   if (help === undefined) {
     if (pastaHelpText === undefined) {
-      const r = spawnSync("pasta", ["--help"], { encoding: "utf8", timeout: 5_000 });
+      const r = spawnSync(pastaChoice().path, ["--help"], { encoding: "utf8", timeout: 5_000 });
       pastaHelpText = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     }
     help = pastaHelpText;
@@ -89,7 +81,7 @@ export function libkrunAvailable(): boolean {
     if (!kvmUsable()) return false;
     if (!existsSync(config.sandbox.vmBin)) return false;
     if (!existsSync(join(realpathSync(config.sandbox.rootfs), "usr/local/bin/hive-vm-init"))) return false;
-    if (!onPath("pasta")) return false;
+    if (!pastaChoice().ok) return false;
     return libkrunChoice().ok;
   } catch {
     return false;
@@ -158,6 +150,8 @@ export function buildLibkrunCommand(
     timeoutSec: number;
     /** where the launcher sends its own stderr, including libkrun's log lines */
     stderrFile: string;
+    /** the pasta binary to run; the bare name keeps the system PATH lookup for tests and callers */
+    pastaBin?: string;
     /**
      * The port of hive's egress proxy, when the VM's only way out is that proxy. With it, pasta
      * runs without --config-net and forwards just this one port from the VM to the host's
@@ -187,7 +181,7 @@ export function buildLibkrunCommand(
   // With the proxy there is no DNS in the VM: names are resolved by the proxy, on the host.
   if (p.proxyPort === undefined) args.push("--dns", "169.254.1.53");
   args.push("--workdir", "/work", "--", ...opts.command);
-  return { file: "pasta", args };
+  return { file: p.pastaBin ?? "pasta", args };
 }
 
 function spawnLibkrun(opts: SandboxOptions, proxyPort?: number) {
@@ -202,6 +196,7 @@ function spawnLibkrun(opts: SandboxOptions, proxyPort?: number) {
     // A sibling of the io folder, never inside it: the VM can write io/, so it must not be able to
     // replace the log hive reads with a symlink.
     stderrFile: `${opts.ioDir}.launcher.log`,
+    pastaBin: pastaChoice().path,
     proxyPort,
   });
   // The launcher reads HIVE_LIBKRUN from its own env.
@@ -390,14 +385,16 @@ export function systemInfo(): {
     ok: libkrun.ok,
     detail: libkrun.ok ? `${libkrunLabel(libkrun)} (${libkrun.path})` : libkrun.path,
   });
+  const networkText =
+    config.sandbox.network === "proxy"
+      ? "VMs reach the internet through hive's proxy, not this computer or the local network"
+      : "VMs reach the internet and the local network, not this computer (HIVE_NETWORK=direct)";
+  const pasta = pastaChoice();
   checks.push({
     name: "pasta (network isolation)",
     id: "pasta",
-    ok: onPath("pasta"),
-    detail:
-      config.sandbox.network === "proxy"
-        ? "VMs reach the internet through hive's proxy, not this computer or the local network"
-        : "VMs reach the internet and the local network, not this computer (HIVE_NETWORK=direct)",
+    ok: pasta.ok,
+    detail: pasta.ok ? `${pastaLabel(pasta)} (${pasta.path}): ${networkText}` : networkText,
   });
   checks.push({ name: "VM launcher", id: "launcher", ok: launcher, detail: config.sandbox.vmBin });
   let rootfs = config.sandbox.rootfs;

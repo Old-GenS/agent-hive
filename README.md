@@ -30,9 +30,10 @@ hive push --pr     # or push a branch and open a pull request
 ## Requirements
 
 - **Linux** with KVM (`/dev/kvm`): a regular PC or a server with virtualization enabled.
-- **pasta**, from your distro's `passt` package: `sudo apt install passt` (Debian, Ubuntu, Mint),
-  `sudo dnf install passt` (Fedora, RHEL) or `sudo pacman -S passt` (Arch). Release installs need
-  only this and KVM: libkrun is bundled.
+- **pasta**, from your distro's `passt` package when it has one: `sudo apt install passt` (Debian,
+  Ubuntu, Mint), `sudo dnf install passt` (Fedora, RHEL) or `sudo pacman -S passt` (Arch). Release
+  installs prefer it but also bundle a static pasta fallback for distros without a package (Ubuntu
+  22.04, Debian 11, RHEL 8), so they need only KVM: libkrun is bundled too.
 - Building from source also needs the system **libkrun** (Fedora: `sudo dnf install libkrun`).
 - An API key for at least one model provider.
 

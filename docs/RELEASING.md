@@ -1,10 +1,10 @@
 # Releasing Agent Hive
 
 Releases are **signed**. `scripts/build-release.sh` produces an app bundle with a bundled
-Node.js, the hardened VM launcher, libkrun and libkrunfw, plus the VM rootfs as a separate
-download. Each release also uploads the GPL corresponding source of the kernel libkrunfw contains.
-`SHA256SUMS` covers all of it and is signed by an ed25519 key that lives only on the release
-machine.
+Node.js, the hardened VM launcher, libkrun, libkrunfw and a static pasta fallback, plus the VM
+rootfs as a separate download. Each release also uploads the GPL corresponding source of the
+kernel libkrunfw contains and of the passt sources the static pasta is built from. `SHA256SUMS`
+covers all of it and is signed by an ed25519 key that lives only on the release machine.
 
 ## One-time setup
 
@@ -26,15 +26,20 @@ The release build needs podman (it builds the VM image and packs the rootfs insi
 
 **Native pieces and pins.** `scripts/build-native.sh` builds libkrun and the hardened `hive-vm`
 launcher inside the pinned `manylinux_2_28` container (glibc 2.28, so they run on Ubuntu 20.04+,
-Debian 11+, RHEL/Alma/Rocky 8+, Mint, Fedora, Arch and WSL distros), and downloads upstream's
-prebuilt libkrunfw, checking it against a pinned SHA-256. It needs podman and network; the first
-build takes several minutes, and later runs reuse `build/native/` while `versions.json` and
-`vm/hive-vm.c` are unchanged (`bash scripts/build-native.sh --force` rebuilds anyway). The
-container refuses output that needs a newer glibc symbol or unexpected shared libraries.
+Debian 11+, RHEL/Alma/Rocky 8+, Mint, Fedora, Arch and WSL distros), downloads upstream's
+prebuilt libkrunfw, checking it against a pinned SHA-256, and builds a static `pasta` from the
+pinned passt source tarball (checked on the host before it enters the container). It needs podman
+and network; the first build takes several minutes, and later runs reuse `build/native/` while
+`versions.json` and `vm/hive-vm.c` are unchanged (`bash scripts/build-native.sh --force` rebuilds
+anyway). The container refuses output that needs a newer glibc symbol or unexpected shared
+libraries, and a pasta that isn't statically linked (no `NEEDED` entries, no `INTERP` program
+header); it also checks that `pasta --version` runs and warns if its version text doesn't mention
+the pin.
 
-Every pin — libkrun's tag and commit, libkrunfw's version, URL and SHA-256, the Rust toolchain, the
-manylinux build image digest and the bundled Node version — lives in `versions.json`. Bumping one is
-just editing that file; `scripts/build-native.sh` rebuilds when the file's hash changes.
+Every pin — libkrun's tag and commit, libkrunfw's version, URL and SHA-256, passt's version, URL
+and SHA-256, the Rust toolchain, the manylinux build image digest and the bundled Node version —
+lives in `versions.json`. Bumping one is just editing that file; `scripts/build-native.sh`
+rebuilds when the file's hash changes.
 
 **Test a real VM before shipping a libkrun or libkrunfw bump**, including DNS and HTTPS from inside
 it: build checks and unit tests can't see a guest-kernel regression. libkrunfw 5.6.4 (November
@@ -47,6 +52,7 @@ until a newer one passes that check.
 |-----|------------------|
 | `libkrun` (tag, commit) | Built from source in `scripts/build-native.sh`; the commit is verified after cloning |
 | `libkrunfw` (version, URL, SHA-256) | Upstream's prebuilt x86_64 tarball, downloaded and checked by `scripts/build-native.sh` |
+| `passt` (version, URL, SHA-256) | The source tarball `scripts/build-native.sh` builds the static `pasta` fallback from; its licenses ship in `share/licenses/passt/` |
 | `rust` | The toolchain `scripts/native-in-container.sh` installs with rustup |
 | `buildImage` | The `manylinux_2_28` image digest the native build runs in |
 | `node` | The Node.js version bundled in the app (`HIVE_NODE_VERSION` still overrides it) |
@@ -74,10 +80,12 @@ until a newer one passes that check.
    660 MB), so do it for Chromium or Fedora security fixes and at least monthly, not for every
    app-only release. Say in the release notes when the rootfs changed.
 
-   **GPL source:** libkrunfw contains the Linux kernel (GPL-2.0), so a release publishes the
-   corresponding source too: libkrunfw's source at the pinned tag and the kernel tarball its
-   `Makefile` builds from. `scripts/build-release.sh` downloads both into `release/<version>/`
-   and lists them in `SHA256SUMS`. Set `HIVE_RELEASE_SKIP_SOURCES=1` to skip both.
+   **GPL source:** libkrunfw contains the Linux kernel (GPL-2.0) and the bundled pasta is built
+   from the passt sources (GPL-2.0-or-later), so a release publishes the corresponding source too:
+   libkrunfw's source at the pinned tag, the kernel tarball its `Makefile` builds from, and the
+   passt source tarball the static pasta was built from. `scripts/build-release.sh` downloads the
+   first two and copies the host-verified passt tarball into `release/<version>/`, then lists all
+   of them in `SHA256SUMS`. Set `HIVE_RELEASE_SKIP_SOURCES=1` to skip these assets.
 3. Publish:
 
    ```bash
@@ -88,11 +96,12 @@ until a newer one passes that check.
 
 | File | What |
 |------|------|
-| `release/<version>/hive-<version>-linux-x86_64.tar.gz` | The app bundle: `bin/hive` (a `sh` wrapper), `lib/hive.mjs` (the CLI as one esbuild file), `lib/libkrun.so.1` and `lib/libkrunfw.so.5` (the old-glibc native pieces, with `RUNPATH=$ORIGIN`), `libexec/node` (bundled Node), `libexec/hive-vm` (hardened launcher), `share/licenses/` (libkrun, libkrunfw and hive's own MIT license), `VERSION`, `ROOTFS_VERSION`. |
+| `release/<version>/hive-<version>-linux-x86_64.tar.gz` | The app bundle: `bin/hive` (a `sh` wrapper), `lib/hive.mjs` (the CLI as one esbuild file), `lib/libkrun.so.1` and `lib/libkrunfw.so.5` (the old-glibc native pieces, with `RUNPATH=$ORIGIN`), `libexec/node` (bundled Node), `libexec/hive-vm` (hardened launcher), `libexec/pasta` (the static pasta fallback), `share/licenses/` (libkrun, libkrunfw, passt and hive's own MIT license), `VERSION`, `ROOTFS_VERSION`. |
 | `release/<version>/hive-rootfs-<rootfs-version>-linux-x86_64.tar.gz` | The VM root filesystem, extracted under `~/.local/share/agent-hive/rootfs/<rootfs-version>`. A new download is only needed when the rootfs version changes. |
 | `release/<version>/libkrunfw-<version>-source.tar.gz` | libkrunfw's source at the pinned tag (GPL/LGPL corresponding source). |
 | `release/<version>/kernel-source-<file>` | The kernel tarball libkrunfw's `Makefile` downloads (its `KERNEL_REMOTE`); with libkrunfw's source (config and patches) it is the GPL-2.0 corresponding source. |
-| `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and both source tarballs. |
+| `release/<version>/passt-<version>-source.tar.xz` | The passt source tarball (GPL-2.0-or-later / BSD-3-Clause corresponding source) the static `pasta` was built from. |
+| `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and the source tarballs. |
 | `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature over `SHA256SUMS`, verified by `hive update`. |
 
 `install-cli.sh` checks the download against `SHA256SUMS` over HTTPS but does not verify the

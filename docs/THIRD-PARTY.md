@@ -23,15 +23,15 @@ locally with `npm run build:image && npm run build:rootfs`.
 |---|---|---|
 | [libkrun](https://github.com/containers/libkrun) | Boots each microVM (loaded by `vm/hive-vm` at run time; the system's copy when it works, else the one bundled in releases and built from source at the pinned tag) | Apache 2.0 |
 | [libkrunfw](https://github.com/containers/libkrunfw) | The guest Linux kernel libkrun boots (bundled from upstream's prebuilt release; the corresponding source is attached to each release) | LGPL-2.1 (library), GPL-2.0 (kernel) |
-| [passt / pasta](https://passt.top) | The VM's isolated network (the distro's `passt` package, not bundled) | GPL-2.0-or-later and BSD 3-Clause |
+| [passt / pasta](https://passt.top) | The VM's isolated network: the system's `passt` package is preferred, with a static build bundled as a fallback (built from source at the pinned version; the corresponding source is attached to each release) | GPL-2.0-or-later and BSD 3-Clause |
 | [git](https://git-scm.com) | Host-side clone, patch apply and push | GPL-2.0, parts under other licenses |
 | [GitHub CLI](https://cli.github.com) (optional) | Repo lists, pull requests, issues, new repos | MIT |
 | [Node.js](https://nodejs.org) | Runs the CLI and server; bundled in releases | MIT and others |
 
-libkrun and libkrunfw are copied into release bundles as separate libraries (with their licenses
-in `share/licenses/`); passt and git are used as separate system programs, not copied into hive's
-source. Every release that bundles libkrunfw also publishes its corresponding source and the
-kernel source it was built from.
+libkrun, libkrunfw and the static pasta fallback are copied into release bundles as separate
+programs (with their licenses in `share/licenses/`); git is used as a separate system program, not
+copied into hive's source. Every release that bundles libkrunfw or pasta also publishes their
+corresponding source and, for libkrunfw, the kernel source it was built from.
 
 ## npm packages
 

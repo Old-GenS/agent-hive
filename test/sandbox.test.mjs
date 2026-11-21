@@ -98,6 +98,22 @@ test("runSandbox refuses more shared folders than libkrun supports", async () =>
   assert.equal(existsSync(ioDir), false, "the throw must happen before the io folder or a VM is created");
 });
 
+test("buildLibkrunCommand runs the pasta binary it is given", () => {
+  const cmd = buildLibkrunCommand(
+    { name: "t", mounts: [], env: {}, command: ["true"], ioDir: "/runs/io" },
+    {
+      vmBin: "/opt/hive-vm",
+      rootfs: "/r",
+      cpus: 1,
+      memoryMiB: 1024,
+      timeoutSec: 60,
+      stderrFile: "/runs/io.launcher.log",
+      pastaBin: "/b/libexec/pasta",
+    },
+  );
+  assert.equal(cmd.file, "/b/libexec/pasta");
+});
+
 test("buildLibkrunCommand leaves out --dns-host for a pasta without it", async () => {
   const cmd = buildLibkrunCommand(
     { name: "t", mounts: [], env: {}, command: ["true"], ioDir: "/runs/io" },

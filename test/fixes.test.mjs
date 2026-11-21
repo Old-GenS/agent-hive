@@ -102,6 +102,24 @@ test("fixFor pasta: one install command per package manager", () => {
   assert.match(other.text, /https:\/\/passt\.top/);
 });
 
+test("fixFor pasta: a release bundle says its bundled pasta couldn't run and points at the package", () => {
+  for (const [host, command] of [
+    [fedora, "sudo dnf install passt"],
+    [rocky, "sudo dnf install passt"],
+    [ubuntu, "sudo apt install passt"],
+    [arch, "sudo pacman -S passt"],
+  ]) {
+    const fix = fixFor("pasta", { ...host, bundle: true });
+    assert.match(fix.text, /bundled with hive couldn't run/);
+    assert.match(fix.text, /passt package/);
+    assert.equal(fix.command, command);
+  }
+  const other = fixFor("pasta", hostInfo({ osRelease: "ID=gentoo\n", procVersion: LINUX, bundle: true }));
+  assert.equal(other.command, undefined);
+  assert.match(other.text, /bundled with hive couldn't run/);
+  assert.match(other.text, /https:\/\/passt\.top/);
+});
+
 test("fixFor launcher: a bundle is reinstalled, a checkout is rebuilt", () => {
   const bundle = fixFor("launcher", { ...fedora, bundle: true });
   assert.match(bundle.command ?? "", /install-cli\.sh/);

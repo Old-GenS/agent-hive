@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Runs inside the pinned manylinux_2_28 container (as root) as part of scripts/build-native.sh.
-# Builds libkrun from source at the pinned tag and compiles the hardened hive-vm launcher, then
-# refuses output that needs a newer glibc or unexpected shared libraries. Writes only under /out.
+# Builds libkrun from source at the pinned tag, compiles the hardened hive-vm launcher, and builds
+# a static pasta from the passt source tarball the host verified, then refuses output that needs a
+# newer glibc or unexpected shared libraries. Writes only under /out.
 #
 # Environment: LIBKRUN_REPO, LIBKRUN_TAG, LIBKRUN_COMMIT and RUST_VERSION come from versions.json.
+# PASST_TARBALL is the read-only mount of the verified passt source tarball, PASST_VERSION its pin.
 set -euo pipefail
 
 : "${LIBKRUN_REPO:?LIBKRUN_REPO is required}"
 : "${LIBKRUN_TAG:?LIBKRUN_TAG is required}"
 : "${LIBKRUN_COMMIT:?LIBKRUN_COMMIT is required}"
 : "${RUST_VERSION:?RUST_VERSION is required}"
+: "${PASST_TARBALL:?PASST_TARBALL is required}"
+: "${PASST_VERSION:?PASST_VERSION is required}"
 
 fail() {
   echo "native-in-container: $*" >&2
@@ -36,8 +40,9 @@ if ! dnf -q list --available glibc-static >/dev/null 2>&1; then
     fi
   done
 fi
-# clang-devel: libkrun's build runs bindgen, which needs libclang.
-dnf install -y "${repo_args[@]}" glibc-static git patchelf binutils clang-devel
+# clang-devel: libkrun's build runs bindgen, which needs libclang. xz: tar unpacks the passt
+# source tarball.
+dnf install -y "${repo_args[@]}" glibc-static git patchelf binutils clang-devel xz
 
 # ---- Rust ---------------------------------------------------------------------------------
 if ! command -v rustup >/dev/null 2>&1; then
@@ -84,6 +89,28 @@ fi
 cc -std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE \
   -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now \
   -o /out/libexec/hive-vm /src/vm/hive-vm.c -ldl
+
+# ---- pasta --------------------------------------------------------------------------------
+# The passt tarball was downloaded and checked against its SHA-256 on the host. Make's `static`
+# target builds pasta and passt against the static libc, so the release's fallback pasta needs no
+# glibc (or anything else) on the user's distro.
+echo "native-in-container: building pasta $PASST_VERSION"
+rm -rf /tmp/passt
+mkdir -p /tmp/passt
+tar -xJf "$PASST_TARBALL" -C /tmp/passt --strip-components=1
+# The tarball has no git history, so the version passt prints comes from the pin.
+make -C /tmp/passt static VERSION="$PASST_VERSION"
+if [[ ! -f /tmp/passt/pasta ]]; then
+  fail "/tmp/passt/pasta was not built"
+fi
+cp /tmp/passt/pasta /out/libexec/pasta
+strip /out/libexec/pasta
+# passt also builds an AVX2 copy; pasta execs <itself>.avx2 when the CPU has AVX2 (faster, and
+# no "Can't run AVX2 build" warning), and falls back to the plain one otherwise.
+if [[ -f /tmp/passt/pasta.avx2 ]]; then
+  cp /tmp/passt/pasta.avx2 /out/libexec/pasta.avx2
+  strip /out/libexec/pasta.avx2
+fi
 
 # ---- checks -------------------------------------------------------------------------------
 # Highest versioned glibc symbol a file asks for, e.g. GLIBC_2.28.
@@ -140,11 +167,44 @@ check_launcher() {
   echo "check: $file: BIND_NOW (full RELRO) (ok)"
 }
 
+check_pasta_static() {
+  local file=/out/libexec/pasta
+  local needed interp
+  needed=$(readelf -d "$file" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+  if [[ -n "$needed" ]]; then
+    fail "$file: not statically linked (NEEDED entries: $(echo "$needed" | tr '\n' ' '))"
+  fi
+  echo "check: $file: no NEEDED entries (ok)"
+  interp=$(readelf -l "$file" | sed -n 's/.*\[Requesting program interpreter: \(.*\)\]/\1/p')
+  if [[ -n "$interp" ]]; then
+    fail "$file: not statically linked (INTERP program header: $interp)"
+  fi
+  echo "check: $file: no INTERP program header (ok)"
+}
+
+check_pasta_version() {
+  local file=/out/libexec/pasta
+  local output
+  if ! output=$("$file" --version 2>&1); then
+    fail "$file --version exited non-zero: $output"
+  fi
+  # The upstream version text is informative, not a build input: warn rather than fail when the
+  # tarball's version string doesn't appear exactly as pinned.
+  if [[ "$output" == *"$PASST_VERSION"* ]]; then
+    echo "check: $file --version mentions $PASST_VERSION (ok)"
+  else
+    echo "warning: $file --version does not mention the pinned $PASST_VERSION; got:" >&2
+    echo "$output" >&2
+  fi
+}
+
 for file in /out/lib/libkrun.so.1 /out/libexec/hive-vm; do
   highest_glibc "$file"
   check_needed "$file"
 done
 check_libkrun
 check_launcher
+check_pasta_static
+check_pasta_version
 
 echo "native-in-container: done"

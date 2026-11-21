@@ -100,6 +100,14 @@ function debianFamily(host: HostInfo): boolean {
   return hasId(host, "debian", "ubuntu");
 }
 
+/** The distro's own package command for passt, which provides pasta. */
+function pastaInstall(host: HostInfo): Fix {
+  if (dnfFamily(host)) return { text: "Install passt, which provides pasta.", command: "sudo dnf install passt" };
+  if (debianFamily(host)) return { text: "Install passt, which provides pasta.", command: "sudo apt install passt" };
+  if (hasId(host, "arch")) return { text: "Install passt, which provides pasta.", command: "sudo pacman -S passt" };
+  return { text: "Install passt from https://passt.top." };
+}
+
 /** The exact text and command that fix one failed check on this host. */
 export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
   switch (check) {
@@ -134,10 +142,16 @@ export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
       return { text: "Build or install libkrun from https://github.com/containers/libkrun." };
 
     case "pasta":
-      if (dnfFamily(host)) return { text: "Install passt, which provides pasta.", command: "sudo dnf install passt" };
-      if (debianFamily(host)) return { text: "Install passt, which provides pasta.", command: "sudo apt install passt" };
-      if (hasId(host, "arch")) return { text: "Install passt, which provides pasta.", command: "sudo pacman -S passt" };
-      return { text: "Install passt from https://passt.top." };
+      if (host.bundle) {
+        // A release ships a static pasta, so a failed probe means it couldn't run here; the
+        // distro's package takes over, which is where the network permission lives anyway.
+        const install = pastaInstall(host);
+        return {
+          text: `The pasta bundled with hive couldn't run; install the distro's passt package so pasta comes from the system instead. ${install.text}`,
+          command: install.command,
+        };
+      }
+      return pastaInstall(host);
 
     case "launcher":
       if (host.bundle) {

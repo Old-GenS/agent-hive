@@ -110,13 +110,15 @@ This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with an
   symbols or unexpected libraries.
 - **Hardened launcher:** built with `-fstack-protector-strong`, `_FORTIFY_SOURCE`, PIE and full
   RELRO, as distros build their packages.
-- **pasta stays a system package** (`apt install passt`, `dnf install passt`, `pacman -S passt`),
-  not bundled. Ubuntu 24.04+ (and Mint 22) only let pasta create its user namespace under the
-  AppArmor profile that Ubuntu's `passt` package installs; a bundled copy would be blocked. It
-  also keeps pasta on the distro's security updates.
-- **Bundle layout:** `lib/libkrun.so.1` and `lib/libkrunfw.so.5`. libkrun carries
-  `RUNPATH=$ORIGIN`, so it finds libkrunfw next to itself without `LD_LIBRARY_PATH`. Licenses go
-  in `share/licenses/`.
+- **pasta: the system package first.** `apt install passt`, `dnf install passt` or
+  `pacman -S passt` keeps pasta on the distro's security updates, and on Ubuntu 24.04+ (and Mint
+  22) the AppArmor profile that Ubuntu's `passt` package installs is what lets pasta create its
+  user namespace. Distros without a package (Ubuntu 22.04, Debian 11, RHEL 8) get a static pasta
+  bundled with the release instead; `src/pasta.ts` picks the system one when it runs, else the
+  bundled one.
+- **Bundle layout:** `lib/libkrun.so.1` and `lib/libkrunfw.so.5`; libkrun carries `RUNPATH=$ORIGIN`,
+  so it finds libkrunfw next to itself without `LD_LIBRARY_PATH`. `libexec/hive-vm` is the launcher
+  and `libexec/pasta` the static pasta fallback. Licenses go in `share/licenses/`.
 - **Backend scan, in this order:**
   1. `HIVE_LIBKRUN` if set;
   2. system libkrun, so distro security updates apply, but only if the launcher's `--check`
@@ -128,12 +130,13 @@ This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with an
 
   `hive doctor`, Settings › This computer and each run say which one was picked, e.g.
   `isolation: microvm (bundled libkrun)`.
-- **One pin file, `versions.json`:** libkrun (tag, commit), libkrunfw (version, URL, SHA-256), the
-  Rust toolchain, the build image digest and the bundled Node version. The release scripts read it,
-  and the weekly update check (below) bumps it.
-- **GPL source:** libkrunfw contains the Linux kernel (GPL-2.0), so each release that bundles it
-  also uploads the corresponding source: libkrunfw's source at that tag and the kernel tarball its
-  Makefile builds from.
+- **One pin file, `versions.json`:** libkrun (tag, commit), libkrunfw (version, URL, SHA-256),
+  passt (version, URL, SHA-256), the Rust toolchain, the build image digest and the bundled Node
+  version. The release scripts read it, and the weekly update check (below) bumps it.
+- **GPL source:** libkrunfw contains the Linux kernel (GPL-2.0) and pasta is built from the passt
+  sources, so each release also uploads the corresponding source: libkrunfw's source at that tag,
+  the kernel tarball its Makefile builds from, and the passt tarball the static pasta was built
+  from.
 - **Cost of this step:** whoever publishes releases has to rebuild them for libkrun security
   fixes, and the app download grows by about 15 MB (compressed). "Keeping it up to date" below
   automates that.
@@ -156,7 +159,7 @@ A release bundles or builds on pieces that each move on their own:
 |---|---|---|
 | libkrun | built from source (step 2) | security fixes, a few times a year |
 | libkrunfw (guest kernel) | upstream prebuilt | kernel fixes, more often |
-| pasta | the distro's `passt` package (not bundled) | distro updates |
+| pasta | built from source, bundled as a fallback (step 2); the system package is preferred | pasta releases, distro updates |
 | pi (in the VM image) | `PI_VERSION` in `image/Containerfile` | often |
 | Fedora base, Chromium, node in the VM | `dnf` when the rootfs is built | weekly security updates |
 | Bundled Node | release build | monthly |

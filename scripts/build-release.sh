@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build a signed Agent Hive release: an app bundle with Node, the bundled CLI and the VM
-# launcher, plus the VM rootfs as a separate download. Run from the repo root (or via
-# `npm run release`). Needs the release signing key; see docs/RELEASING.md.
+# Build a signed Agent Hive release: an app bundle with Node, the bundled CLI, the VM launcher,
+# the native pieces and a static pasta fallback, plus the VM rootfs as a separate download. Run
+# from the repo root (or via `npm run release`). Needs the release signing key; see
+# docs/RELEASING.md.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -24,12 +25,12 @@ trap 'rm -rf "$stage"' EXIT
 npm run build
 npm run build:ui
 
-# The old-glibc launcher, libkrun and libkrunfw come from build-native.sh, which builds inside the
-# pinned manylinux container and checks the result (see docs/RELEASING.md). Only its last output
-# line is the output dir; the earlier ones are progress and check messages.
+# The old-glibc launcher, libkrun, libkrunfw and the static pasta come from build-native.sh, which
+# builds inside the pinned manylinux container and checks the result (see docs/RELEASING.md). Only
+# its last output line is the output dir; the earlier ones are progress and check messages.
 native=$(bash scripts/build-native.sh | tail -n 1)
-if [[ -z "$native" || ! -f "$native/libexec/hive-vm" ]]; then
-  echo "build-release: scripts/build-native.sh did not produce libexec/hive-vm" >&2
+if [[ -z "$native" || ! -f "$native/libexec/hive-vm" || ! -f "$native/libexec/pasta" ]]; then
+  echo "build-release: scripts/build-native.sh did not produce libexec/hive-vm and libexec/pasta" >&2
   exit 1
 fi
 
@@ -59,11 +60,13 @@ fi
 app="$stage/hive-$version"
 mkdir -p "$app/bin" "$app/lib" "$app/libexec" "$app/ui" "$app/share/licenses/agent-hive"
 
-# libkrun, libkrunfw and the launcher built for old glibc; libkrun finds libkrunfw next to itself
-# through its RUNPATH=$ORIGIN. Licenses ship beside the libraries.
+# libkrun, libkrunfw, the launcher and the static pasta fallback built for old glibc; libkrun
+# finds libkrunfw next to itself through its RUNPATH=$ORIGIN. Licenses ship beside the binaries.
 cp "$native/lib/libkrun.so.1" "$app/lib/libkrun.so.1"
 cp "$native/lib/libkrunfw.so.5" "$app/lib/libkrunfw.so.5"
 cp "$native/libexec/hive-vm" "$app/libexec/hive-vm"
+cp "$native/libexec/pasta" "$app/libexec/pasta"
+if [[ -f "$native/libexec/pasta.avx2" ]]; then cp "$native/libexec/pasta.avx2" "$app/libexec/pasta.avx2"; fi
 cp -R "$native/share/licenses/." "$app/share/licenses/"
 cp LICENSE "$app/share/licenses/agent-hive/LICENSE"
 
@@ -95,9 +98,12 @@ echo "$rver" > "$app/ROOTFS_VERSION"
 tar -C "$stage" -czf "$out/hive-$version-linux-x86_64.tar.gz" "hive-$version"
 
 # libkrunfw contains the Linux kernel (GPL-2.0), so the release also publishes the corresponding
-# source: libkrunfw at the pinned tag, and the kernel tarball its Makefile builds from.
+# source: libkrunfw at the pinned tag, and the kernel tarball its Makefile builds from. The static
+# pasta fallback is built from the pinned passt source, so that tarball is published too.
 libkrunfw_version=$(node -p "require('./versions.json').libkrunfw.version")
 libkrunfw_source=$(node -p "require('./versions.json').libkrunfw.source")
+passt_version=$(node -p "require('./versions.json').passt.version")
+passt_sha256=$(node -p "require('./versions.json').passt.sha256")
 if [[ "${HIVE_RELEASE_SKIP_SOURCES:-}" == "1" ]]; then
   echo "build-release: skipping the GPL source assets (HIVE_RELEASE_SKIP_SOURCES=1)"
 else
@@ -120,11 +126,24 @@ else
   fi
   kernel_file=$(basename "$kernel_remote")
   curl -fsSL -o "$out/kernel-source-$kernel_file" "$kernel_remote"
+  # passt: build-native.sh kept the SHA-256 verified tarball it built pasta from; check it once
+  # more on the way out, then publish it as the corresponding source.
+  passt_source="$native/passt-$passt_version-source.tar.xz"
+  if [[ ! -f "$passt_source" ]]; then
+    echo "build-release: $passt_source is missing; rebuild with scripts/build-native.sh --force" >&2
+    exit 1
+  fi
+  actual=$(sha256sum "$passt_source" | cut -d' ' -f1)
+  if [[ "$actual" != "$passt_sha256" ]]; then
+    echo "build-release: passt source checksum mismatch: expected $passt_sha256, got $actual" >&2
+    exit 1
+  fi
+  cp "$passt_source" "$out/passt-$passt_version-source.tar.xz"
 fi
 
 (cd "$out" && sha256sum hive-*.tar.gz > SHA256SUMS)
 if [[ "${HIVE_RELEASE_SKIP_SOURCES:-}" != "1" ]]; then
-  (cd "$out" && sha256sum libkrunfw-*-source.tar.gz kernel-source-* >> SHA256SUMS)
+  (cd "$out" && sha256sum libkrunfw-*-source.tar.gz kernel-source-* passt-*-source.tar.xz >> SHA256SUMS)
 fi
 node scripts/sign.mjs "$key" "$out/SHA256SUMS"
 
