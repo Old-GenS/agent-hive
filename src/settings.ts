@@ -7,7 +7,9 @@
  * (`~/.config/agent-hive/env`) and updates `config` in place, so new runs use the new values
  * without a server restart. The web UI's Settings > Runs page is the only writer.
  */
+import { readFileSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
+import dotenv from "dotenv";
 import { config, shellEnv } from "./config.js";
 import { readKeysFile, setKeysFileValue } from "./keys.js";
 import { parseMemoryMiB } from "./sandbox.js";
@@ -16,7 +18,7 @@ import { setMaxConcurrent } from "./web-runs.js";
 export type SettingKey = "cpus" | "memoryMiB" | "maxConcurrent" | "timeoutMin" | "stallMin" | "diskMaxGb";
 
 /** Where a value comes from, in precedence order: this computer's environment, saved file, default. */
-export type SettingSource = "default" | "file" | "env";
+export type SettingSource = "default" | "file" | "dotenv" | "env";
 
 export interface HostInfo {
   cpus: number;
@@ -168,14 +170,33 @@ function gib(mib: number): string {
   return `${Number.isInteger(g) ? g : g.toFixed(1)} GiB`;
 }
 
+/**
+ * The `.env` file the server loaded at start (HIVE_DOTENV_PATH, else `.env` in the folder it was
+ * started from), parsed again: its values sit under the keys file, so Reset falls back to them.
+ */
+function dotenvValues(): Record<string, string> {
+  try {
+    return dotenv.parse(readFileSync(process.env.HIVE_DOTENV_PATH || ".env"));
+  } catch {
+    return {};
+  }
+}
+
 /** Every editable setting with its effective value, limits and where that value comes from. */
 export function readSettings(): SettingsMap {
   const fileValues = readKeysFile();
+  const dotenvFile = dotenvValues();
   const h = host();
   const out = {} as SettingsMap;
   for (const key of SETTING_KEYS) {
     const def = SETTINGS[key];
-    const source: SettingSource = shellEnv[def.env] ? "env" : fileValues[def.env] ? "file" : "default";
+    const source: SettingSource = shellEnv[def.env]
+      ? "env"
+      : fileValues[def.env]
+        ? "file"
+        : dotenvFile[def.env]
+          ? "dotenv"
+          : "default";
     out[key] = {
       value: def.current(),
       default: def.default,
@@ -278,7 +299,7 @@ export function applySettings(values: Partial<Record<SettingKey, number>>): void
   }
 }
 
-/** Remove a setting from the keys file and go back to its default. Refuses an environment value. */
+/** Remove a setting from the keys file and go back to its .env value or default. Refuses an environment value. */
 export function resetSetting(key: string): void {
   if (!isSettingKey(key)) throw new Error(`Unknown setting "${key}"`);
   const def = SETTINGS[key];
@@ -286,8 +307,16 @@ export function resetSetting(key: string): void {
     throw new Error(`${def.env} is set in the server's environment; change it there`);
   }
   setKeysFileValue(def.env, null);
-  delete process.env[def.env];
-  def.apply(def.default);
+  // Back to what the server started with under the keys file: its .env value, else the default.
+  const fromDotenv = dotenvValues()[def.env];
+  const parsed = fromDotenv === undefined ? NaN : key === "memoryMiB" ? parseMemoryMiB(fromDotenv) : Number.parseInt(fromDotenv, 10);
+  if (Number.isFinite(parsed)) {
+    process.env[def.env] = fromDotenv as string;
+    def.apply(parsed);
+  } else {
+    delete process.env[def.env];
+    def.apply(def.default);
+  }
 }
 
 /** The message for a setting this computer's environment sets, for the API's 409. */

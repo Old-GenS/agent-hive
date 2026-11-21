@@ -2222,7 +2222,7 @@ interface RunsSettingEntry {
   default: number;
   min: number;
   max: number;
-  source: "default" | "file" | "env";
+  source: "default" | "file" | "dotenv" | "env";
   env: string;
 }
 
@@ -2385,7 +2385,9 @@ function runsSettingsForm(
           meta,
           entry.source === "env"
             ? el("p", { class: "setting-hint" }, `Set by ${entry.env} in the server's environment`)
-            : null,
+            : entry.source === "dotenv"
+              ? el("p", { class: "setting-hint" }, `From ${entry.env} in the server's .env file; saving here overrides it`)
+              : null,
           errorSlot,
         ),
       ),
