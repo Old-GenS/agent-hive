@@ -10,7 +10,7 @@ const dir = mkdtempSync(join(tmpdir(), "hive-run-status-"));
 process.env.HIVE_DOTENV_PATH = join(dir, "missing.env");
 process.env.HIVE_KEYS_FILE = join(dir, "missing-keys");
 
-const { finalStatus } = await import("../dist/runs.js");
+const { finalStatus, isTransientModelError } = await import("../dist/runs.js");
 
 /** A clean, successful run; each test overrides just the field it is about. */
 const ok = {
@@ -102,4 +102,24 @@ test("stalled wins over timed out", () => {
     status: "failed",
     error: "stalled: nothing changed for 15 minutes",
   });
+});
+
+test("isTransientModelError spots a dropped connection, not a refusal", () => {
+  assert.equal(isTransientModelError("UND_ERR_SOCKET: other side closed"), true);
+  assert.equal(isTransientModelError("other side closed"), true);
+  assert.equal(isTransientModelError("401 Unauthorized"), false);
+  assert.equal(isTransientModelError("context length exceeded"), false);
+  assert.equal(isTransientModelError(undefined), false);
+});
+
+test("a transient model error says the connection dropped and suggests continuing", () => {
+  const result = finalStatus({ ...ok, stopReason: "error", modelError: "other side closed (UND_ERR_SOCKET)" });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /closed the connection/);
+  assert.match(result.error, /Continue the run/);
+});
+
+test("a 401 model error keeps the old wording", () => {
+  const result = finalStatus({ ...ok, stopReason: "error", modelError: "401 Unauthorized" });
+  assert.deepEqual(result, { status: "failed", error: "model error: 401 Unauthorized" });
 });

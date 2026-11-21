@@ -11,12 +11,13 @@ jobs:
   sync:
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     steps:
       - name: Open the sync pull request and enable auto-merge
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           url=$(gh pr list --base beta --head main --state open --json url --jq '.[0].url // ""')

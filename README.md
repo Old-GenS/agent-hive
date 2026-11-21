@@ -100,7 +100,7 @@ hive export --report     # a Markdown report: the prompt, the agent's report, th
 |---|---|
 | `hive run "<task>"` | Run the agent on the current repo (or `--repo owner/name`) |
 | `hive new <name> "<task>"` | Start a new project from an empty repo |
-| `hive continue "<task>"` | Follow up on the last run |
+| `hive continue [run] ["<task>"]` | Follow up on a finished run (the last one by default) |
 | `hive list` / `hive log` | Your runs / a run's events |
 | `hive diff` / `hive apply` | Review / take the changes |
 | `hive push [--pr]` | Push a branch, optionally open a pull request |

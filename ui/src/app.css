@@ -914,6 +914,12 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
+.banner-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 .empty-timeline {
   color: var(--text-3);
   font-size: 13px;

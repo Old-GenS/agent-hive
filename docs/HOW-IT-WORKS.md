@@ -57,6 +57,12 @@ set of patches you can read before anything touches your real repo or GitHub.
 Follow-ups (`hive continue`, or the message box in the web UI) start a fresh VM on the same
 `work/` and the same pi session, so the agent remembers what it did.
 
+A dropped model connection (the provider closing the socket mid-request, or a timeout) costs at
+most one retry: the step waits a minute and continues in the same session by itself, with a note
+in the log. If the retry fails too, the run ends failed with an error saying the provider closed
+the connection; the run header's **Continue** button (or `hive continue`) then picks up where it
+stopped, in the same session.
+
 ## What the VM can and can't reach
 
 | The VM can | The VM can't |

@@ -222,3 +222,26 @@ test("hive --version prints the version, from source marked as such", () => {
     assert.equal(r.stdout, `hive ${version} (from source)\n`);
   }
 });
+
+test("continue arguments: a run name, a prompt, or both", () => {
+  const cliUrl = new URL("../dist/cli.js", import.meta.url).href;
+  // cli.ts runs main() when imported; a child process swallows that usage text and prints the
+  // function's answer instead, so the test process never runs the CLI's main.
+  const probe = (positionals, runs) => {
+    const script = `
+const write = process.stdout.write.bind(process.stdout);
+process.stdout.write = () => true;
+const { resolveContinueArgs, DEFAULT_CONTINUE_PROMPT } = await import(${JSON.stringify(cliUrl)});
+process.stdout.write = write;
+const runs = new Set(${JSON.stringify(runs)});
+write(JSON.stringify(resolveContinueArgs(${JSON.stringify(positionals)}, (name) => runs.has(name))));
+`;
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+    return JSON.parse(out);
+  };
+  const prompt = "Continue the task from where you left off; don't redo finished work.";
+  assert.deepEqual(probe([], []), { prompt });
+  assert.deepEqual(probe(["r1"], ["r1"]), { run: "r1", prompt });
+  assert.deepEqual(probe(["r1", "do more"], ["r1"]), { run: "r1", prompt: "do more" });
+  assert.deepEqual(probe(["fix the bug"], ["r1"]), { prompt: "fix the bug" });
+});

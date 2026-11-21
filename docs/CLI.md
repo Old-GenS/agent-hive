@@ -24,7 +24,7 @@ errors, as before.
 |---------|--------------|
 | `hive run "<prompt>"` | Clone the repo into a new run, run the agent in a VM with live progress, and export its commits. Ctrl+C stops the run (its committed work is kept). |
 | `hive new <name> "<prompt>"` | Start a new project from an empty repository. When the agent has committed, `hive push <run>` creates the GitHub repository (private unless `--public`) and pushes to `main`. |
-| `hive continue [run] "<prompt>"` | Continue a finished run in the same pi session and on the same copy. Pushing is left to `hive push`. |
+| `hive continue [run] ["<prompt>"]` | Continue a finished run in the same pi session and on the same copy. The run defaults to the newest one; without a prompt it sends "Continue the task from where you left off; don't redo finished work." Works for runs started from the web UI (`hive serve`) too. Pushing is left to `hive push`. |
 
 Options for `run` and `new`:
 

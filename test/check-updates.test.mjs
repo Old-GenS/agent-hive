@@ -149,3 +149,11 @@ test("applyUpdate bumps PI_VERSION in the Containerfile", () => {
 test("applyUpdate rejects an unknown component", () => {
   assert.throws(() => applyUpdate("nope", files(), {}), /unknown component/);
 });
+
+test("skipReason: versions listed under skip are never offered", async () => {
+  const { skipReason } = await import("../scripts/check-updates.mjs");
+  const files = { "versions.json": JSON.stringify({ skip: { libkrunfw: { "5.6.4": "DNS broken" } } }) };
+  assert.equal(skipReason(files, "libkrunfw", "5.6.4"), "DNS broken");
+  assert.equal(skipReason(files, "libkrunfw", "5.6.5"), undefined);
+  assert.equal(skipReason({ "versions.json": "{}" }, "libkrunfw", "5.6.4"), undefined);
+});

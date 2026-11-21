@@ -35,7 +35,7 @@ const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [-
 hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
 hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] "<prompt>"
 hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] -f <prompt-file>
-hive continue [run] "<prompt>"
+hive continue [run] ["<prompt>"]
 hive log [run] [--json]
 hive diff [run] [--stat]
 hive apply [run] [--branch <name>]
@@ -509,6 +509,24 @@ async function cmdNew(args: string[]): Promise<number> {
   return 1;
 }
 
+/** The prompt `hive continue` sends when none is given. */
+export const DEFAULT_CONTINUE_PROMPT = "Continue the task from where you left off; don't redo finished work.";
+
+/**
+ * `hive continue`'s positionals: two mean <run> <prompt>; one means a run name when it resolves,
+ * otherwise the prompt for the newest run; none means the newest run with the default prompt.
+ */
+export function resolveContinueArgs(
+  positionals: string[],
+  isRun: (name: string) => boolean,
+): { run: string | undefined; prompt: string } {
+  if (positionals.length >= 2) return { run: positionals[0], prompt: positionals[1] };
+  const only = positionals[0];
+  if (only === undefined) return { run: undefined, prompt: DEFAULT_CONTINUE_PROMPT };
+  if (isRun(only)) return { run: only, prompt: DEFAULT_CONTINUE_PROMPT };
+  return { run: undefined, prompt: only };
+}
+
 async function cmdContinue(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
@@ -520,9 +538,14 @@ async function cmdContinue(args: string[]): Promise<number> {
   const progress = new RunProgress({ json: !!values.json });
   recoverRuns();
 
-  // `hive continue <prompt>` continues the newest run; with two positionals the first is the run.
-  const runArg = positionals.length >= 2 ? positionals[0] : undefined;
-  const prompt = positionals.length >= 2 ? positionals[1] : (positionals[0] ?? "");
+  const { run: runArg, prompt } = resolveContinueArgs(positionals, (name) => {
+    try {
+      resolveRun(name);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   if (!prompt.trim()) throw new Error("a prompt is required");
 
   if (!libkrunAvailable()) {

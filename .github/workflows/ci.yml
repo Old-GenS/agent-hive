@@ -77,7 +77,7 @@ jobs:
           tar -xzf "release/$version/hive-$version-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/bundle"
           rootfs_archive=$(ls "release/$version"/hive-rootfs-*-linux-x86_64.tar.gz)
           rver=$(basename "$rootfs_archive" | sed -E 's/^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$/\1/')
-          dest="$HOME/.local/share/agent-hive/rootfs/$rver"
+          dest="$RUNNER_TEMP/rootfs/$rver"  # fresh: the build exported its own copy under ~/.local/share
           mkdir -p "$dest"
           tar -xzf "$rootfs_archive" -C "$dest" --no-same-owner
           touch "$dest/.complete"

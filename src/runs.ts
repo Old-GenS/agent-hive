@@ -48,6 +48,20 @@ const MAX_STDERR_BYTES = 1024 * 1024;
 
 export type RunStatus = "queued" | "running" | "done" | "failed" | "aborted";
 
+/** How long a run waits before its one automatic retry after a dropped model connection. */
+export const TRANSIENT_RETRY_DELAY_MS = 60_000;
+
+/**
+ * True when a model error looks like a dropped connection rather than the provider refusing the
+ * request: a closed socket or an exhausted timeout, and nothing that names an HTTP client error,
+ * an auth/key problem, a quota or a context-length limit.
+ */
+export function isTransientModelError(error: string | undefined): boolean {
+  if (error === undefined) return false;
+  if (!/UND_ERR_SOCKET|other side closed|ECONNRESET|socket hang up|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|EAI_AGAIN|terminated|Connection error/i.test(error)) return false;
+  return !/40[0-4]|unauthori[sz]ed|invalid.{0,20}key|quota|insufficient|context length|too long/i.test(error);
+}
+
 /**
  * The run's outcome from how the sandbox ended and what pi's last assistant message said. The
  * order matters: an abort beats the disk watchdog, which beats a stall, which beats the time
@@ -71,7 +85,17 @@ export function finalStatus(r: {
   if (r.timedOut) return { status: "failed", error: `timed out after ${r.timeoutMin} minutes` };
   if (r.code !== 0) return { status: "failed", error: `agent exited ${r.code}: ` + r.stderr.slice(-2000) };
   if (r.stopReason === "error" || r.stopReason === "aborted") {
-    return { status: "failed", error: "model error: " + (r.modelError || r.stopReason) };
+    const original = r.modelError || r.stopReason;
+    if (isTransientModelError(r.modelError)) {
+      return {
+        status: "failed",
+        error:
+          `model error: ${original} — the provider closed the connection before answering (a busy API, or a long ` +
+          "wait for the first token; many images in the conversation make that more likely). Continue the run to " +
+          "pick up where it stopped.",
+      };
+    }
+    return { status: "failed", error: "model error: " + original };
   }
   return { status: "done" };
 }
@@ -1193,6 +1217,28 @@ interface RunStepsOptions {
   signal: AbortSignal;
   onEvent: (e: any) => void;
   onStatus?: (status: string, extra?: Record<string, unknown>) => void;
+  /** How long the one automatic retry waits after a dropped model connection; tests set 0. */
+  retryDelayMs?: number;
+  /** Test hook: the function that runs one agent step. */
+  agentStep?: typeof agentStep;
+}
+
+/** The prompt of a run's one automatic retry after the model connection dropped. */
+const TRANSIENT_RETRY_PROMPT =
+  "The last model request failed because the connection dropped. Continue the task from where you left off; don't redo finished work.";
+
+/** Wait for ms or until the signal aborts, whichever comes first. */
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -1207,7 +1253,7 @@ function markFailed(dir: string, meta: RunMeta, err: unknown): void {
   writeMeta(dir, meta);
 }
 
-async function runSteps(
+export async function runSteps(
   dir: string,
   meta: RunMeta,
   prompt: string,
@@ -1228,13 +1274,29 @@ async function runStepsInner(
   o: RunStepsOptions,
 ): Promise<{ dir: string; meta: RunMeta }> {
   o.onStatus?.("running");
-  const main = await agentStep(dir, meta, {
+  const step = o.agentStep ?? agentStep;
+  let main = await step(dir, meta, {
     prompt,
     model: meta.model,
     session: o.continueSession ? "continue" : "new",
     signal: o.signal,
     onEvent: o.onEvent,
   });
+  // A dropped model connection gets one automatic retry in the same pi session, so a long task
+  // survives a busy API. Review steps below never retry.
+  if (main.status === "failed" && isTransientModelError(main.error) && !o.signal.aborted) {
+    o.onEvent({ type: "hive_note", text: "The model connection dropped; trying again in 60 s in the same session." });
+    await abortableDelay(o.retryDelayMs ?? TRANSIENT_RETRY_DELAY_MS, o.signal);
+    main = o.signal.aborted
+      ? { status: "aborted", lastText: "" }
+      : await step(dir, meta, {
+          prompt: TRANSIENT_RETRY_PROMPT,
+          model: meta.model,
+          session: "continue",
+          signal: o.signal,
+          onEvent: o.onEvent,
+        });
+  }
   let status = main.status;
   let error = main.error;
   if (main.summary !== undefined) meta.summary = main.summary.slice(0, 60_000);
@@ -1251,7 +1313,7 @@ async function runStepsInner(
   if (shouldReview({ status, cycles, commits })) {
     for (let i = 1; i <= cycles; i++) {
       o.onStatus?.("reviewing", { cycle: i, of: cycles });
-      const review = await agentStep(dir, meta, {
+      const review = await step(dir, meta, {
         prompt: REVIEW_PROMPT(prompt, meta.base),
         model: meta.reviewModel || meta.model,
         session: "none",

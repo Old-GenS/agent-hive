@@ -58,6 +58,12 @@ const STATUS_PILL: Record<string, string> = {
 
 const BUSY_STATUS = new Set(["queued", "cloning", "running", "reviewing", "pushing"]);
 
+/** The prompt the Continue button sends: same as the CLI's default (`hive continue`). */
+const DEFAULT_CONTINUE_PROMPT = "Continue the task from where you left off; don't redo finished work.";
+/** The states Continue picks up from: finished but not done. */
+const CONTINUE_STATUSES = new Set<Status>(["failed", "aborted"]);
+const CONTINUE_HINT = "Continue picks up where it stopped, in the same session.";
+
 /** Same rule as the server's validateRepoName. */
 function validRepoName(name: string): boolean {
   const trimmed = name.trim();
@@ -433,6 +439,7 @@ function runTimeLabel(summary: RunSummary): string {
 
 interface RunUi {
   pill: HTMLElement;
+  continueBtn: HTMLButtonElement;
   stopBtn: HTMLButtonElement;
   newBtn: HTMLButtonElement;
   /** the run page's meta line: repo · provider · model · cost */
@@ -1394,6 +1401,10 @@ function fillItem(li: HTMLElement, item: RunItem): void {
         );
       }
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
+      // A run that failed or stopped can be picked up again with Continue.
+      if (item.final && (item.tone === "danger" || item.tone === "warn")) {
+        banner.append(el("p", { class: "banner-hint" }, CONTINUE_HINT));
+      }
       if (item.changes) banner.append(changesElement(item.changes));
       if (item.final) banner.append(exportElement(item));
       if (item.pr) banner.append(prElement(item));
@@ -1420,11 +1431,13 @@ function buildRunView(): HTMLElement {
   const state = run!;
   runUi?.bee.destroy();
   const pill = el("span", { class: "pill" });
+  const continueBtn = el("button", { class: "btn btn-primary", type: "button" }, "Continue");
+  continueBtn.onclick = () => void sendFollowUp(DEFAULT_CONTINUE_PROMPT);
   const stopBtn = el("button", { class: "btn btn-danger", type: "button" }, "Stop");
   stopBtn.onclick = () => void abortRun();
   const newBtn = el("button", { class: "btn", type: "button" }, "New run");
   newBtn.onclick = () => newRun();
-  const toolbar = el("div", { class: "run-toolbar" }, pill, el("span", { class: "spacer" }), stopBtn, newBtn);
+  const toolbar = el("div", { class: "run-toolbar" }, pill, continueBtn, el("span", { class: "spacer" }), stopBtn, newBtn);
 
   // github.com URLs read better as owner/name.
   const repoText = repoLabel(state.repo, state.newRepo);
@@ -1469,7 +1482,7 @@ function buildRunView(): HTMLElement {
   });
   const followUp = el("div", { class: "follow-up" }, followInput, followBtn);
 
-  runUi = { pill, stopBtn, newBtn, meta: metaEl, timeline, nodes, followInput, followBtn, empty, bee };
+  runUi = { pill, continueBtn, stopBtn, newBtn, meta: metaEl, timeline, nodes, followInput, followBtn, empty, bee };
   syncRunUi();
   return el("div", {}, head, timelineCard, followUp);
 }
@@ -1514,6 +1527,11 @@ function syncRunUi(): void {
   runUi.pill.textContent = STATUS_LABEL[run.status] ?? run.status;
   runUi.pill.className = `pill ${STATUS_PILL[run.status] ?? "pill-muted"}`;
   runUi.stopBtn.hidden = !run.busy;
+  const canContinue = CONTINUE_STATUSES.has(run.status) && !run.busy;
+  runUi.continueBtn.hidden = !canContinue;
+  runUi.followInput.placeholder = canContinue
+    ? "Send a follow-up, or Continue to pick up where it stopped"
+    : "Send a follow-up to the agent";
   runUi.followInput.disabled = run.busy;
   runUi.followBtn.disabled = run.busy;
   const beeState = BEE_STATE[run.status];
@@ -1768,11 +1786,11 @@ async function abortRun(): Promise<void> {
   } catch {}
 }
 
-async function sendFollowUp(): Promise<void> {
+async function sendFollowUp(message?: string): Promise<void> {
   if (!run || run.busy || !runUi) return;
-  const text = runUi.followInput.value.trim();
+  const text = (message ?? runUi.followInput.value).trim();
   if (!text) return;
-  runUi.followInput.value = "";
+  if (message === undefined) runUi.followInput.value = "";
   appendItem({ kind: "user", text });
   run.busy = true;
   syncRunUi();
