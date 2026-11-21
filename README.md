@@ -7,6 +7,8 @@ of your repo inside its own small virtual machine: it can install packages, run 
 open a headless browser and commit, but it can't touch the rest of your computer. Its commits come
 back as patches you review before anything reaches your repo or GitHub.
 
+![A finished run in the web UI: the task, the bee, and the agent's steps](docs/images/run.png)
+
 ```bash
 cd ~/code/my-app
 hive run "add input validation to the signup form"
@@ -113,6 +115,11 @@ hive service install        # or keep it running in the background
 Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups, open
 pull requests and download results, from the browser or your phone. Runs from the web UI and the
 terminal share one list. Details in [docs/SERVER.md](docs/SERVER.md).
+
+<p>
+  <img src="docs/images/new-run.png" alt="Starting a new run: task, repo or new project, provider, model, thinking and review" width="68%">
+  <img src="docs/images/mobile.png" alt="A run on a phone" width="28%">
+</p>
 
 ## How it works
 
