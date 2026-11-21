@@ -260,6 +260,15 @@ function exportElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement 
   bundleBtn.onclick = () => void downloadExport(item, "bundle");
   // The git bundle button is hidden for now (hive export --bundle still works); add bundleBtn back in box.append to show it.
   void bundleBtn;
+  if (item.link) {
+    const githubLink = el(
+      "a",
+      { class: "btn btn-primary btn-icon-label", id: "openGithubLink", href: item.link.href, target: "_blank", rel: "noopener noreferrer" },
+      externalLinkIcon(),
+      el("span", {}, item.link.label),
+    );
+    box.append(githubLink);
+  }
   if (hasCommits) {
     const zipBtn = el(
       "button",
@@ -1538,7 +1547,8 @@ function fillItem(li: HTMLElement, item: RunItem): void {
     case "banner": {
       const children: HTMLElement[] = [el("span", { class: "banner-title" }, item.title)];
       if (item.detail) children.push(el("span", { class: "banner-detail" }, item.detail));
-      if (item.link) {
+      // A final banner shows its GitHub link as the first button in the actions row (exportElement).
+      if (item.link && !item.final) {
         children.push(
           el(
             "a",
@@ -2680,7 +2690,13 @@ function runsSettingsForm(
     for (const spec of RUN_SETTING_SPECS) {
       // A value set by the server's environment cannot be changed or saved here.
       if (data.settings[spec.key].source === "env") continue;
-      payload[spec.key] = valueOf(spec.key);
+      // Only what changed: saving an untouched field would pin today's default in the file.
+      const value = valueOf(spec.key);
+      if (value !== data.settings[spec.key].value) payload[spec.key] = value;
+    }
+    if (Object.keys(payload).length === 0) {
+      status.textContent = "Nothing changed.";
+      return;
     }
     saveBtn.disabled = true;
     void (async () => {
@@ -3052,6 +3068,24 @@ function themeIcon(theme: Theme): SVGSVGElement {
       ? "M8 5.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5z M8 1.5v1.5 M8 13v1.5 M1.5 8H3 M13 8h1.5 M3.4 3.4l1 1 M11.6 11.6l1 1 M3.4 12.6l1-1 M11.6 4.4l1-1"
       : "M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z",
   );
+  svg.append(path);
+  return svg;
+}
+
+/** A box with an arrow leaving its corner: opens in a new tab. */
+function externalLinkIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.5");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("d", "M12.5 9v3.5a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1H7 M9.5 2.5h4v4 M13.5 2.5L7.5 8.5");
   svg.append(path);
   return svg;
 }
