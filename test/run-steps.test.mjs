@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,7 @@ process.env.DEEPSEEK_API_KEY = "sk-test";
 delete process.env.DEFAULT_PROVIDER;
 delete process.env.DEFAULT_MODEL;
 
-const { REVIEW_PROMPT, isLgtm, slimEvents, shouldReview, startRun, stepMounts, timeNote, usageWriteDue } =
+const { REVIEW_PROMPT, isLgtm, runSteps, slimEvents, shouldReview, startRun, stepMounts, timeNote, usageWriteDue } =
   await import("../dist/runs.js");
 const { cacheKey } = await import("../dist/vmcache.js");
 
@@ -142,4 +142,89 @@ test("startRun rejects review cycles outside 0-5", async () => {
     signal: signal(),
   });
   await assert.rejects(tooMany, /reviewCycles must be 0-5/);
+});
+
+/** A throwaway run folder and its meta; the agent step is faked, so no VM is booted. */
+function fakeRun() {
+  const dir = mkdtempSync(join(root, "run-"));
+  mkdirSync(join(dir, "io"), { recursive: true });
+  return {
+    dir,
+    meta: {
+      repo: root,
+      source: "local",
+      base: "abc123",
+      provider: "deepseek",
+      model: "test-model",
+      thinking: "low",
+      prompt: "do the task",
+      status: "running",
+      pid: 1,
+      commits: 0,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+      createdAt: Date.now(),
+    },
+  };
+}
+
+/** Run runSteps with a scripted list of agent-step results, collecting the calls and events. */
+async function runFake(results, o = {}) {
+  const { dir, meta } = fakeRun();
+  const calls = [];
+  const events = [];
+  const abort = new AbortController();
+  if (o.abortAfterMs !== undefined) setTimeout(() => abort.abort(), o.abortAfterMs);
+  const step = async (_dir, runMeta, opts) => {
+    calls.push(opts);
+    runMeta.steps = (runMeta.steps ?? 0) + 1;
+    const result = results.shift();
+    return { status: result.status, error: result.error, summary: result.summary, lastText: result.lastText ?? "" };
+  };
+  await runSteps(dir, meta, "do the task", {
+    continueSession: o.continueSession ?? false,
+    signal: abort.signal,
+    onEvent: (e) => events.push(e),
+    retryDelayMs: o.retryDelayMs ?? 0,
+    agentStep: step,
+  });
+  return { dir, meta, calls, events };
+}
+
+test("a dropped model connection is retried once in the same session", async () => {
+  const { meta, calls, events } = await runFake([
+    { status: "failed", error: "other side closed (UND_ERR_SOCKET)" },
+    { status: "done", lastText: "finished", summary: "finished" },
+  ]);
+  assert.equal(meta.status, "done");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].session, "new");
+  assert.equal(calls[1].session, "continue");
+  assert.equal(calls[1].model, "test-model");
+  assert.match(calls[1].prompt, /connection dropped/);
+  assert.ok(events.some((e) => e.type === "hive_note" && /trying again in 60 s/.test(e.text)));
+});
+
+test("a second dropped connection is not retried again", async () => {
+  const { meta, calls } = await runFake([
+    { status: "failed", error: "other side closed (UND_ERR_SOCKET)" },
+    { status: "failed", error: "socket hang up" },
+  ]);
+  assert.equal(meta.status, "failed");
+  assert.equal(calls.length, 2);
+});
+
+test("a 401 is not treated as a dropped connection", async () => {
+  const { meta, calls } = await runFake([{ status: "failed", error: "401 Unauthorized" }]);
+  assert.equal(meta.status, "failed");
+  assert.equal(calls.length, 1);
+});
+
+test("an abort during the retry wait ends the step as aborted", async () => {
+  const { meta, calls, events } = await runFake(
+    [{ status: "failed", error: "other side closed (UND_ERR_SOCKET)" }],
+    { retryDelayMs: 1000, abortAfterMs: 10 },
+  );
+  assert.equal(meta.status, "aborted");
+  assert.equal(calls.length, 1);
+  assert.ok(events.some((e) => e.type === "hive_note"));
 });
