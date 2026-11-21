@@ -12,6 +12,7 @@ import { issueTicket } from "./auth.js";
 import { config } from "./config.js";
 import { changeSummary, githubSlug, issueBody, normalizeRepo, openIssue, type ChangeSummary } from "./git.js";
 import { runtimeInfo } from "./sandbox.js";
+import { readVmFileOrEmpty } from "./vmfiles.js";
 import {
   cleanRun,
   continueRun,
@@ -606,7 +607,8 @@ export default async function webRunRoutes(app: FastifyInstance) {
     for (const name of [...stepFiles, "events.jsonl"]) {
       let text = "";
       try {
-        text = readFileSync(join(ioDir, name), "utf8");
+        // io/ is VM-writable: only read a regular file, never a planted symlink or FIFO.
+        text = readVmFileOrEmpty(join(ioDir, name));
       } catch {
         continue;
       }

@@ -13,10 +13,11 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { config, effectiveModel, PROVIDERS, providerKey, resolveProvider } from "./config.js";
+import { copyVmFileOut, readVmFile, readVmFileOrEmpty, writeVmFile } from "./vmfiles.js";
 import { runSandbox, type SandboxOptions } from "./sandbox.js";
 import {
   applyAndPush,
@@ -39,6 +40,9 @@ import { addUsage, emptyUsage, type Usage } from "./render.js";
 import { startStallWatch } from "./stall.js";
 
 const execFileAsync = promisify(execFile);
+
+/** Cap for the VM-written stderr.log the host reads for an error message. */
+const MAX_STDERR_BYTES = 1024 * 1024;
 
 export type RunStatus = "queued" | "running" | "done" | "failed" | "aborted";
 
@@ -291,14 +295,25 @@ export function cleanRun(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
 }
 
-/** Absolute paths of out/*.patch, sorted. */
+/**
+ * Absolute paths of out/*.patch, sorted. Only regular files count: out/ is VM-writable, so an
+ * entry can be a symlink the agent planted to make host git read a host file as a patch.
+ */
 export function patchFiles(dir: string): string[] {
   const out = join(dir, "out");
   if (!existsSync(out)) return [];
-  return readdirSync(out)
-    .filter((f) => f.endsWith(".patch"))
-    .sort()
-    .map((f) => join(out, f));
+  const files: string[] = [];
+  for (const name of readdirSync(out)) {
+    if (!name.endsWith(".patch")) continue;
+    const path = join(out, name);
+    try {
+      if (!lstatSync(path).isFile()) continue;
+    } catch {
+      continue;
+    }
+    files.push(path);
+  }
+  return files.sort();
 }
 
 /**
@@ -347,7 +362,7 @@ export async function diffRun(dir: string, stat: boolean): Promise<string> {
   const patches = patchFiles(dir);
   if (patches.length === 0) return "";
   if (stat) return await git(["apply", "--stat", ...patches], dir);
-  return patches.map((p) => readFileSync(p, "utf8")).join("");
+  return patches.map((p) => readVmFile(p)).join("");
 }
 
 /**
@@ -362,30 +377,42 @@ export async function applyRun(dir: string, repo: string, branch?: string): Prom
   if (realpathSync(repo) !== realpathSync(meta.repo)) throw new Error(`this run belongs to ${meta.repo}`);
   if (await isDirty(repo)) throw new Error("repo has uncommitted changes; commit or stash first");
   const patches = patchFiles(dir);
-
-  if (!branch) {
-    const head = await git(["rev-parse", "HEAD"], repo);
-    if (head !== meta.base) throw new Error("repo HEAD moved since the run; use --branch");
-    await git(["apply", ...patches], repo);
-    return await git(["status", "--short"], repo);
-  }
-
-  validateBranch(branch);
-  let exists = true;
+  // out/ is VM-writable: copy the patches to a host-only folder first, so host git never reads a
+  // path the agent could have replaced with a symlink to a host file.
+  const patchDir = mkdtempSync(join(tmpdir(), "hive-apply-"));
   try {
-    await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo);
-  } catch {
-    exists = false;
+    const copies = patches.map((patch) => {
+      const copy = join(patchDir, basename(patch));
+      copyVmFileOut(patch, copy);
+      return copy;
+    });
+
+    if (!branch) {
+      const head = await git(["rev-parse", "HEAD"], repo);
+      if (head !== meta.base) throw new Error("repo HEAD moved since the run; use --branch");
+      await git(["apply", ...copies], repo);
+      return await git(["status", "--short"], repo);
+    }
+
+    validateBranch(branch);
+    let exists = true;
+    try {
+      await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repo);
+    } catch {
+      exists = false;
+    }
+    if (exists) throw new Error(`branch ${branch} already exists`);
+    await git(["switch", "-q", "-c", branch, meta.base], repo);
+    try {
+      await git(["am", "-q", "--keep-cr", ...copies], repo, 120_000);
+    } catch (err) {
+      await git(["am", "--abort"], repo).catch(() => {});
+      throw err;
+    }
+    return `on branch ${branch}: ${meta.commits} commit(s)`;
+  } finally {
+    rmSync(patchDir, { recursive: true, force: true });
   }
-  if (exists) throw new Error(`branch ${branch} already exists`);
-  await git(["switch", "-q", "-c", branch, meta.base], repo);
-  try {
-    await git(["am", "-q", "--keep-cr", ...patches], repo, 120_000);
-  } catch (err) {
-    await git(["am", "--abort"], repo).catch(() => {});
-    throw err;
-  }
-  return `on branch ${branch}: ${meta.commits} commit(s)`;
 }
 
 /**
@@ -411,29 +438,39 @@ export async function exportRun(
   const runName = basename(dir);
   const tmp = mkdtempSync(join(tmpdir(), "hive-export-"));
   try {
-    await git(["clone", "-q", "--no-hardlinks", "--no-checkout", "--", source, tmp], undefined, 120_000);
+    // out/ is VM-writable: copy the patches into this host-only folder first, and let git read
+    // only the copies, never a path the agent could have replaced with a symlink.
+    const patchDir = join(tmp, "patches");
+    mkdirSync(patchDir);
+    const copies = patches.map((patch) => {
+      const copy = join(patchDir, basename(patch));
+      copyVmFileOut(patch, copy);
+      return copy;
+    });
+    const repo = join(tmp, "repo");
+    await git(["clone", "-q", "--no-hardlinks", "--no-checkout", "--", source, repo], undefined, 120_000);
     try {
-      await git(["cat-file", "-e", `${meta.base}^{commit}`], tmp);
+      await git(["cat-file", "-e", `${meta.base}^{commit}`], repo);
     } catch {
       throw new Error(`the run's base commit is no longer in ${source}`);
     }
-    await git(["checkout", "-q", "-B", "hive-export", meta.base], tmp);
+    await git(["checkout", "-q", "-B", "hive-export", meta.base], repo);
     const ident = ["-c", `user.name=${config.git.authorName}`, "-c", `user.email=${config.git.authorEmail}`];
     try {
-      await git([...ident, "am", "-q", "--keep-cr", ...patches], tmp, 120_000);
+      await git([...ident, "am", "-q", "--keep-cr", ...copies], repo, 120_000);
     } catch (err) {
-      await git(["am", "--abort"], tmp).catch(() => {});
+      await git(["am", "--abort"], repo).catch(() => {});
       throw new Error(`couldn't apply the run's commits: ${(err as Error).message}`);
     }
 
     if (format === "zip") {
       const repoName = runName.replace(/-\d{8}-\d{6}(-\d+)?$/, "") || "project";
-      await git(["archive", "--format=zip", `--prefix=${repoName}/`, "-o", outPath, "hive-export"], tmp);
+      await git(["archive", "--format=zip", `--prefix=${repoName}/`, "-o", outPath, "hive-export"], repo);
     } else {
       const branch = "hive/" + runName;
-      await git(["branch", "-M", branch], tmp);
+      await git(["branch", "-M", branch], repo);
       // HEAD rides along so a plain `git clone <file>.bundle` checks the branch out.
-      await git(["bundle", "create", outPath, branch, "HEAD"], tmp, 120_000);
+      await git(["bundle", "create", outPath, branch, "HEAD"], repo, 120_000);
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -675,7 +712,7 @@ export async function openPr(dir: string, o: { base?: string } = {}): Promise<st
   if (!slug) throw new Error(`pull requests need a github.com remote (pushed to ${meta.pushed.url})`);
 
   const first = patchFiles(dir)[0];
-  let title = first ? patchSubject(readFileSync(first, "utf8")) : "";
+  let title = first ? patchSubject(readVmFile(first)) : "";
   if (!title) title = meta.prompt.slice(0, 70);
   const body = meta.summary ?? title;
 
@@ -814,7 +851,9 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   meta.status = "running";
   writeMeta(dir, meta);
 
-  writeFileSync(join(dir, "io", "system-base.md"), o.systemPrompt || config.systemPrompt);
+  // Host-only: the run folder is not mounted into any VM, so an agent can't replace it with a
+  // symlink the next step would read.
+  writeFileSync(join(dir, "system-base.md"), o.systemPrompt || config.systemPrompt);
 
   const prefix = newRepo
     ? `/work is an empty git repository for a new project. Create the project there and commit your work with clear messages. You cannot push; when you finish, hive creates the GitHub repository ${newRepo.name} and pushes your commits to it.\n\n`
@@ -907,6 +946,38 @@ export function slimEvents(text: string): string {
   return text.endsWith("\n") && !kept.endsWith("\n") ? kept + "\n" : kept;
 }
 
+/**
+ * Drop streaming-only events from a step's saved event log (the live stream is over and a replay
+ * rebuilds assistant text from message_end). io/ is VM-writable, so the read and the write go
+ * through src/vmfiles.ts; on any refusal the log is left exactly as it is.
+ */
+export function slimStepLog(dir: string): void {
+  try {
+    const log = join(dir, "io", "events.jsonl");
+    writeVmFile(log, slimEvents(readVmFileOrEmpty(log)));
+  } catch {
+    // Leave the log alone: it is already inside io/, and it is only a replay aid.
+  }
+}
+
+/**
+ * Write a step's io/system.md (the base prompt plus this step's deadline) and io/prompt.md. Both
+ * names are VM-shared, so writeVmFile replaces any symlink the previous step planted. The base
+ * prompt itself is host-only (<run>/system-base.md): it is never read from io/.
+ */
+export function prepareStepFiles(dir: string, _meta: RunMeta, prompt: string): void {
+  let systemBase: string;
+  try {
+    systemBase = readFileSync(join(dir, "system-base.md"), "utf8");
+  } catch {
+    // An older run has no host-only base prompt: use the configured default. Never look in io/:
+    // the VM controls that folder and could have pointed it at a host file.
+    systemBase = config.systemPrompt;
+  }
+  writeVmFile(join(dir, "io", "system.md"), systemBase + "\n\n" + timeNote(config.sandbox.timeoutMin, new Date()));
+  writeVmFile(join(dir, "io", "prompt.md"), prompt);
+}
+
 /** One agent step's outcome. */
 interface AgentStepResult {
   status: RunStatus;
@@ -938,17 +1009,9 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   }
   meta.steps = steps + 1;
 
-  // The base prompt is written once, at startRun; each step appends its own deadline to a fresh
-  // io/system.md so the agent knows the clock (older runs only have io/system.md).
-  let systemBase: string;
-  try {
-    systemBase = readFileSync(join(dir, "io", "system-base.md"), "utf8");
-  } catch {
-    systemBase = config.systemPrompt;
-  }
-  writeFileSync(join(dir, "io", "system.md"), systemBase + "\n\n" + timeNote(config.sandbox.timeoutMin, new Date()));
-
-  writeFileSync(join(dir, "io", "prompt.md"), o.prompt);
+  // The base prompt is written once, at startRun, to the host-only run folder; each step appends
+  // its own deadline to a fresh io/system.md so the agent knows the clock.
+  prepareStepFiles(dir, meta, o.prompt);
 
   // pi's session lives on the io share now (a VM share costs an interrupt slot). Runs made before
   // this change keep their history in <run>/session: move it over once. If both exist, io wins.
@@ -962,7 +1025,9 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   // state files into its config folder, so each step gets a fresh writable copy in its io folder
   // (/io/pi-agent): whatever pi changes there is thrown away before the next step. It rides on the
   // io share rather than a share of its own: the VM doesn't boot with one more share than a
-  // normal run already uses.
+  // normal run already uses. rmSync removes a planted symlink with the old copy without following
+  // it, and the cpSync below runs before any VM exists for this step, so nothing is between the
+  // two that could swap the folder for a link.
   const agentDir = join(dir, "agent");
   const useAgentDir = meta.provider === "openrouter" && existsSync(agentDir);
   if (useAgentDir) {
@@ -1048,21 +1113,15 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
   o.signal.removeEventListener("abort", onAbort);
 
   // The VM has exited: drop streaming-only events from the saved log (the live stream is over and
-  // a replay rebuilds assistant text from message_end).
-  try {
-    const log = join(dir, "io", "events.jsonl");
-    const tmp = log + ".tmp";
-    writeFileSync(tmp, slimEvents(readFileSync(log, "utf8")));
-    renameSync(tmp, log);
-  } catch {
-    // no log to slim
-  }
+  // a replay rebuilds assistant text from message_end). io/ is VM-writable, so the read/write go
+  // through src/vmfiles.ts and a log it refuses is left as it is.
+  slimStepLog(dir);
 
   let stderrText = "";
   try {
-    stderrText = readFileSync(join(dir, "io", "stderr.log"), "utf8");
+    stderrText = readVmFileOrEmpty(join(dir, "io", "stderr.log"), MAX_STDERR_BYTES);
   } catch {
-    // no stderr.log: fall back to what the launcher kept
+    // unreadable or too large: fall back to what the launcher kept
   }
   if (!stderrText) stderrText = result.stderr;
   const outcome = finalStatus({

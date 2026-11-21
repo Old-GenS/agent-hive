@@ -16,14 +16,18 @@ export function followJsonl(
   const poll = () => {
     let fd: number;
     try {
-      // O_NOFOLLOW: the VM controls this folder; never follow a symlink it put there onto a host file.
-      fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      // O_NOFOLLOW: the VM controls this folder; never follow a symlink it put there onto a host
+      // file. O_NONBLOCK: a planted FIFO must not hang this poll.
+      fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     } catch {
       return; // not created yet
     }
     let chunk = Buffer.alloc(0);
     try {
-      const size = fs.fstatSync(fd).size;
+      const stat = fs.fstatSync(fd);
+      // Only a regular file is an event log; a FIFO or device the VM left is not.
+      if (!stat.isFile()) return;
+      const size = stat.size;
       const len = size - offset;
       if (len > 0) {
         chunk = Buffer.alloc(len);

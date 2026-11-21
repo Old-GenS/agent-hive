@@ -6,15 +6,24 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { config } from "./config.js";
+import { copyVmFileOut } from "./vmfiles.js";
 
 const execFileAsync = promisify(execFile);
 
 // Hooks and fsmonitor off for every host git call, belt and braces: the pristine clone never
 // receives a hook, but nothing here should ever execute repo-supplied code.
-const SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.file.allow=user"];
+// core.autocrlf=false: patches are applied byte for byte, whatever line-ending settings the user's
+// git has (Windows/WSL setups often have autocrlf=true).
+const SAFE = [
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "core.fsmonitor=false",
+  "-c", "protocol.file.allow=user",
+  "-c", "core.autocrlf=false",
+];
 
 export async function git(args: string[], cwd?: string, timeout = 60_000) {
   const { stdout } = await execFileAsync("git", [...SAFE, ...args], {
@@ -247,24 +256,47 @@ export async function applyAndPush(
 ): Promise<number> {
   const origin = join(dir, "origin");
   const out = join(dir, "out");
-  const patches = readdirSync(out).filter((f) => f.endsWith(".patch")).sort();
-  if (patches.length === 0) return 0;
-  if (patches.length > MAX_PATCHES) throw new Error(`Too many commits to apply (${patches.length})`);
-  const total = patches.reduce((n, f) => n + statSync(join(out, f)).size, 0);
-  if (total > MAX_PATCH_BYTES) throw new Error(`Changes too large to apply (${total} bytes)`);
+  const names = readdirSync(out)
+    .filter((f) => f.endsWith(".patch"))
+    .sort();
+  // out/ is VM-writable: an entry can be a symlink the agent planted to make host git read a host
+  // file as a patch. Only regular files count.
+  const regular = names.filter((name) => {
+    try {
+      return lstatSync(join(out, name)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (regular.length === 0) return 0;
+  if (regular.length > MAX_PATCHES) throw new Error(`Too many commits to apply (${regular.length})`);
 
-  const ident = ["-c", `user.name=${config.git.authorName}`, "-c", `user.email=${config.git.authorEmail}`];
-  await git(["checkout", "-q", "-B", resultBranch, base], origin);
+  // Copy the accepted patches into a host-only folder first, and let git read only the copies.
+  const patchDir = mkdtempSync(join(tmpdir(), "hive-patches-"));
   try {
-    await git([...ident, "am", "-q", "--keep-cr", ...patches.map((f) => join(out, f))], origin, 120_000);
-  } catch (err) {
-    await git(["am", "--abort"], origin).catch(() => {});
-    throw new Error(`Couldn't apply the agent's commits: ${(err as Error).message}`);
+    const patches = regular.map((name) => {
+      const copy = join(patchDir, name);
+      copyVmFileOut(join(out, name), copy);
+      return copy;
+    });
+    const total = patches.reduce((n, p) => n + statSync(p).size, 0);
+    if (total > MAX_PATCH_BYTES) throw new Error(`Changes too large to apply (${total} bytes)`);
+
+    const ident = ["-c", `user.name=${config.git.authorName}`, "-c", `user.email=${config.git.authorEmail}`];
+    await git(["checkout", "-q", "-B", resultBranch, base], origin);
+    try {
+      await git([...ident, "am", "-q", "--keep-cr", ...patches], origin, 120_000);
+    } catch (err) {
+      await git(["am", "--abort"], origin).catch(() => {});
+      throw new Error(`Couldn't apply the agent's commits: ${(err as Error).message}`);
+    }
+    // The branch belongs to this task, so a follow-up run may rewrite it.
+    const push = force ? ["push", "-q", "--force"] : ["push", "-q"];
+    await git([...push, "origin", `HEAD:refs/heads/${resultBranch}`], origin, 120_000);
+    return patches.length;
+  } finally {
+    rmSync(patchDir, { recursive: true, force: true });
   }
-  // The branch belongs to this task, so a follow-up run may rewrite it.
-  const push = force ? ["push", "-q", "--force"] : ["push", "-q"];
-  await git([...push, "origin", `HEAD:refs/heads/${resultBranch}`], origin, 120_000);
-  return patches.length;
 }
 
 export interface ChangeSummary {

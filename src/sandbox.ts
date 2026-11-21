@@ -284,16 +284,21 @@ export function runSandbox(opts: SandboxOptions): SandboxHandle {
   return { done, stop };
 }
 
-/** The last `max` bytes of a file the VM wrote, without following symlinks; "" if unreadable. */
+/**
+ * The last `max` bytes of a file the VM wrote, without following symlinks and only when it is a
+ * regular file; "" if unreadable. O_NONBLOCK keeps a planted FIFO from hanging the open.
+ */
 function readTail(path: string, max: number): string {
   let fd: number;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     return "";
   }
   try {
-    const size = fstatSync(fd).size;
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return "";
+    const size = stat.size;
     const len = Math.min(size, max);
     const buf = Buffer.alloc(len);
     const n = readSync(fd, buf, 0, len, size - len);

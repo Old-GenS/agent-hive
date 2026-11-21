@@ -72,10 +72,14 @@ backend also `npm run build:vm` and `npm run build:rootfs`. Run the tests with `
 7. **The CLI's host git runs only in the user's repo** (rev-parse, status, clone source, apply/am
    of exported patches), never in a run's `work/`. Text crosses into and out of the VM only as
    files in `io/` and patches in `out/`.
-8. **Files the VM writes are read without following symlinks.** The host reads `io/events.jsonl`
-   and `io/stderr.log` with `O_NOFOLLOW`, so the agent can't point the host at its own files. The
-   launcher log (`<run>/io.launcher.log`) sits outside the VM-writable `io/` folder for the same
-   reason.
+8. **Everything the VM can write is handled through `src/vmfiles.ts`.** The `io/`, `io-export/`
+   and `out/` folders are VM-writable, so the host reads them only through `readVmFile` /
+   `readVmFileOrEmpty` (`O_NOFOLLOW`, `O_NONBLOCK`, a regular file only, size-capped) and writes
+   them only through `writeVmFile` (delete the old name first, then create with `wx`); any other
+   access filters with `lstatSync`. Host-only data — the base system prompt
+   (`<run>/system-base.md`), `meta.json` — lives in the run folder, never in `io/`; patches are
+   copied out of `out/` into a host-only folder before git reads them. The launcher log
+   (`<run>/io.launcher.log`) sits outside the VM-writable `io/` folder for the same reason.
 9. **Nothing reaches GitHub on the agent's say-so.** Branch pushes and new repos happen in the host
    after the run; pull requests and issues only when the user asks (`POST /pr/:id`, `/issue/:id`). `gh` and `git` run with
    argument arrays, never a shell.
