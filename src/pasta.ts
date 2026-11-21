@@ -25,7 +25,7 @@ export interface PastaCandidate {
 }
 
 export interface PastaChoice extends PastaCandidate {
-  /** True when `pasta --version` exits 0. */
+  /** True when the pasta can start a user and network namespace. */
   ok: boolean;
 }
 
@@ -72,10 +72,18 @@ export function pickPasta(candidates: PastaCandidate[], works: (path: string) =>
   return { ...first, ok: false };
 }
 
-/** True when this pasta runs: its `--version` exits 0. */
+/**
+ * True when this pasta can really start a namespace: it runs `true` in a fresh user and network
+ * namespace without setting up the network. `--version` alone isn't enough: on Ubuntu 24.04+
+ * AppArmor can let a pasta binary start but refuse the user namespace it needs (only the distro
+ * package's pasta has the profile that allows it).
+ */
 function pastaWorks(path: string): boolean {
   try {
-    return spawnSync(path, ["--version"], { timeout: 5_000 }).status === 0;
+    return (
+      spawnSync(path, ["-q", "-T", "none", "-U", "none", "--", "/bin/true"], { timeout: 10_000, stdio: "ignore" })
+        .status === 0
+    );
   } catch {
     return false;
   }
