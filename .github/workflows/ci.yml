@@ -32,6 +32,7 @@ jobs:
           git config --global user.name ci
           git config --global user.email ci@example.invalid
       - run: npm ci
+      - run: npm run build:vm
       - run: npm test
       - run: npm run build:ui
       - name: Syntax-check every shell script
