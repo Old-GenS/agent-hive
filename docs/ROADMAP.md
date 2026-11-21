@@ -57,8 +57,8 @@ cd ~ && hive new wsl-test "a hello world web page in one HTML file"
 hive serve                           # then http://127.0.0.1:8080/ui/ in the Windows browser
 ```
 
-Projects belong in the Linux home folder, not `/mnt/c` (much slower). `hive serve --open` tries
-to open a browser inside WSL, so open the URL in Windows instead. `hive service install` needs
+Projects belong in the Linux home folder, not `/mnt/c` (much slower). `hive serve` opens the Windows
+browser (`wslview`, else `cmd.exe /c start`); untested so far. `hive service install` needs
 systemd in WSL; plain `hive serve` is enough for the test. Whatever breaks feeds the setup
 screens (`src/fixes.ts` already has WSL advice) and the installer.
 

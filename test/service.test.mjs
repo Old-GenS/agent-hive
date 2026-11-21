@@ -18,7 +18,7 @@ function tempDir(prefix) {
 }
 
 test("systemdUnit quotes each ExecStart argument and rejects hostile ones", () => {
-  const command = [process.execPath, cli, "serve", "--host", "0.0.0.0", "--port", "8080"];
+  const command = [process.execPath, cli, "serve", "--host", "0.0.0.0", "--port", "8080", "--no-open"];
   const unit = systemdUnit({ command, workdir: "/home/tester", path: "/usr/bin:/bin" });
   assert.ok(unit.includes(`ExecStart=${command.map((arg) => `"${arg}"`).join(" ")}`), unit);
   assert.match(unit, /^WorkingDirectory=\/home\/tester$/m);
@@ -92,7 +92,7 @@ test("hive service install --dry-run prints the unit and writes no service file"
   const expected =
     process.platform === "darwin"
       ? "<string>serve</string>"
-      : `ExecStart="${process.execPath}" "${cli}" "serve" "--host" "0.0.0.0" "--port" "8080"`;
+      : `ExecStart="${process.execPath}" "${cli}" "serve" "--host" "0.0.0.0" "--port" "8080" "--no-open"`;
   assert.ok(result.stdout.includes(expected), result.stdout);
 
   // --dry-run runs nothing and writes nothing into the service folder.

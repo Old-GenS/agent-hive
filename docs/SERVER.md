@@ -6,14 +6,17 @@ CLI. Use it from a browser on the same machine, or from a phone or another compu
 ## Starting it
 
 ```bash
-hive serve                       # http://127.0.0.1:8080/ui/
-hive serve --open                # also opens the browser, already logged in
+hive serve                       # http://127.0.0.1:8080/ui/, opened in your browser
+hive serve --no-open             # don't open a browser
 hive serve --host 0.0.0.0 --port 9000
 ```
 
 On first start it creates a login token, saves it in `~/.config/agent-hive/env` as `API_TOKEN`
-and tells you where it is (the token itself is never printed). `--open` hands it to the browser
-in the URL fragment, which the UI reads and removes from the address bar.
+and tells you where it is (the token itself is never printed). When there's a desktop (macOS, a
+Linux desktop session, or WSL, where the Windows browser opens) and you're not on SSH, `hive serve`
+opens the UI and hands the token to the browser in the URL fragment, which the UI reads and removes
+from the address bar. `--open` forces that, `--no-open` turns it off; the background service never
+opens a browser.
 
 It listens on `127.0.0.1` by default. To use it from other devices, put it behind a tunnel or a
 TLS reverse proxy. `HOST=0.0.0.0` also works on a trusted home network, but that's plain HTTP:

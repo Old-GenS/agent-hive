@@ -362,3 +362,19 @@ export async function ask(
     rl.close();
   }
 }
+
+/**
+ * Whether `hive serve` should open a browser: `--open` / `--no-open` decide; otherwise only from a
+ * terminal on a machine with a desktop (macOS, WSL, or a Linux DISPLAY / WAYLAND_DISPLAY), never
+ * over SSH. A service runs with `--no-open`.
+ */
+export function shouldOpenBrowser(
+  flags: { open?: boolean; "no-open"?: boolean },
+  env: NodeJS.ProcessEnv,
+  o: { tty: boolean; platform: NodeJS.Platform; wsl: boolean },
+): boolean {
+  if (flags["no-open"]) return false;
+  if (flags.open) return true;
+  if (!o.tty || env.SSH_CONNECTION || env.SSH_TTY || env.CI) return false;
+  return o.platform === "darwin" || o.wsl || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}

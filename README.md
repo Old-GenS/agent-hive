@@ -106,7 +106,7 @@ pass) are in the [CLI reference](docs/CLI.md).
 ## Web UI
 
 ```bash
-hive serve --open           # http://127.0.0.1:8080/ui/
+hive serve                  # opens http://127.0.0.1:8080/ui/ in your browser
 hive service install        # or keep it running in the background
 ```
 

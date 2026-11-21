@@ -29,6 +29,7 @@ export function serviceCommand(o: ServiceTarget): string[] {
     o.host,
     "--port",
     String(o.port),
+    "--no-open",
   ];
 }
 

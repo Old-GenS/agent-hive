@@ -86,7 +86,7 @@ credential helper or `gh` login; none of these ever enter the VM. Commits use yo
 
 | Command | What it does |
 |---------|--------------|
-| `hive serve` | Start the web UI and API (default `http://127.0.0.1:8080/ui/`). `--host`, `--port`, `--open` (opens the browser logged in). |
+| `hive serve` | Start the web UI and API (default `http://127.0.0.1:8080/ui/`) and open it in your browser, already logged in, when there is a desktop (not over SSH or from a script; on WSL, the Windows browser). `--open` / `--no-open` force it either way; `--host`, `--port`. |
 | `hive service install\|status\|restart\|logs\|uninstall` | Run `hive serve` in the background at login (systemd user unit on Linux, launchd agent on macOS). |
 
 See [SERVER.md](SERVER.md).

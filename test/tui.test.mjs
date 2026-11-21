@@ -182,3 +182,17 @@ test("select rejects with cancelled on Ctrl+C and still restores raw mode", asyn
   await assert.rejects(() => choice, /cancelled/);
   assert.deepEqual(rawModes, [true, false]);
 });
+
+test("shouldOpenBrowser: flags win, else only a terminal with a desktop and no SSH", async () => {
+  const { shouldOpenBrowser } = await import("../dist/tui.js");
+  const linux = { tty: true, platform: "linux", wsl: false };
+  assert.equal(shouldOpenBrowser({}, { DISPLAY: ":0" }, linux), true);
+  assert.equal(shouldOpenBrowser({}, { WAYLAND_DISPLAY: "wayland-0" }, linux), true);
+  assert.equal(shouldOpenBrowser({}, {}, linux), false);
+  assert.equal(shouldOpenBrowser({}, { DISPLAY: ":0", SSH_CONNECTION: "1 2 3 4" }, linux), false);
+  assert.equal(shouldOpenBrowser({}, { DISPLAY: ":0" }, { ...linux, tty: false }), false);
+  assert.equal(shouldOpenBrowser({}, {}, { ...linux, wsl: true }), true);
+  assert.equal(shouldOpenBrowser({}, {}, { tty: true, platform: "darwin", wsl: false }), true);
+  assert.equal(shouldOpenBrowser({ "no-open": true }, { DISPLAY: ":0" }, linux), false);
+  assert.equal(shouldOpenBrowser({ open: true }, {}, { ...linux, tty: false }), true);
+});

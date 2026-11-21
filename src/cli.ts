@@ -25,6 +25,7 @@ import {
   green,
   red,
   select,
+  shouldOpenBrowser,
   symbols,
   table,
   yellow,
@@ -47,7 +48,7 @@ hive keys add <provider> [--no-test]
 hive keys test [provider]
 hive keys remove <provider>
 hive keys default <provider>
-hive serve [--host <addr>] [--port <n>] [--open]
+hive serve [--host <addr>] [--port <n>] [--open | --no-open]
 hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>] [--dry-run]
 hive setup
 hive doctor
@@ -1035,16 +1036,35 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
   return false;
 }
 
-/** Open a URL in the user's browser; `onFailure` runs when no opener could be started. */
-function openBrowser(url: string, onFailure: () => void): void {
-  const command = process.platform === "darwin" ? "open" : "xdg-open";
+/** True under WSL: its kernel version names Microsoft. */
+function isWsl(): boolean {
   try {
-    const child = spawn(command, [url], { detached: true, stdio: "ignore" });
-    child.once("error", onFailure);
-    child.unref();
+    return /microsoft|wsl/i.test(readFileSync("/proc/version", "utf8"));
   } catch {
-    onFailure();
+    return false;
   }
+}
+
+/**
+ * Open a URL in the user's browser; `onFailure` runs when no opener could be started. Under WSL
+ * the Windows browser is used: `wslview` when installed, else `cmd.exe /c start`.
+ */
+function openBrowser(url: string, onFailure: () => void): void {
+  const tryOpen = (command: string, args: string[], next: () => void) => {
+    try {
+      const child = spawn(command, args, { detached: true, stdio: "ignore" });
+      child.once("error", next);
+      child.unref();
+    } catch {
+      next();
+    }
+  };
+  if (process.platform === "darwin") return tryOpen("open", [url], onFailure);
+  if (isWsl()) {
+    // The URL is ours (127.0.0.1 and a hex token), so nothing in it means anything to cmd.exe.
+    return tryOpen("wslview", [url], () => tryOpen("cmd.exe", ["/c", "start", "", url], onFailure));
+  }
+  tryOpen("xdg-open", [url], onFailure);
 }
 
 async function cmdServe(args: string[]): Promise<number> {
@@ -1055,6 +1075,7 @@ async function cmdServe(args: string[]): Promise<number> {
       host: { type: "string" },
       port: { type: "string" },
       open: { type: "boolean" },
+      "no-open": { type: "boolean" },
     },
   });
   const { host, port } = serveTarget(values);
@@ -1090,7 +1111,7 @@ async function cmdServe(args: string[]): Promise<number> {
   }
   process.stdout.write(`${hint}\n`);
 
-  if (values.open) {
+  if (shouldOpenBrowser(values, process.env, { tty: Boolean(process.stdout.isTTY), platform: process.platform, wsl: isWsl() })) {
     const base = `http://127.0.0.1:${port}/ui/`;
     const url = token === undefined ? base : `${base}#token=${token}`;
     openBrowser(url, () => {
