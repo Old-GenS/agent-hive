@@ -157,7 +157,12 @@ How they stay current:
 
 ## Step 3 — gVisor fallback when there is no KVM
 
-For VPSs without `/dev/kvm`, and WSL without nested virtualization.
+For VPSs without `/dev/kvm`, WSL without nested virtualization, some CI runners and PCs with
+virtualization off in the firmware.
+
+- **First, a spike:** rootless `runsc` inside pasta's network namespace (so the agent still
+  reaches the internet but not the host or the LAN). The rest of this step depends on that
+  combination working; if it doesn't, rethink before building the backend.
 
 - `runsc` is one static Go binary, published upstream, so it's easy to bundle.
 - It's a user-space kernel, not a VM, but still a strong boundary.
@@ -212,13 +217,31 @@ Roughly in order of value (from `docs/RESEARCH.md`):
 
 ## Isolation backends considered
 
-| Option | Bundling | Shared folders | Rootless networking | Platforms | Verdict |
-|---|---|---|---|---|---|
-| libkrun | build from source | built in (virtiofs) | with pasta | Linux, macOS, WSL2 | main backend |
-| gVisor (`runsc`) | one static file | yes | yes | Linux, no KVM needed | fallback (step 3) |
-| Firecracker | one static file | no (disk images only) | needs TAP/root | Linux | would need a redesign |
-| Cloud Hypervisor | static files | needs virtiofsd | TAP or extras | Linux | more moving parts |
-| QEMU | large | via virtiofsd | built in | Linux, macOS, Windows | only if Windows without WSL is required |
+When libkrun isn't available there are two different cases:
+
+1. **KVM is there, libkrun isn't packaged** (Mint, Ubuntu, Debian, Ubuntu in WSL). The common case;
+   step 2's bundled libkrun covers it completely. It isn't a backend question.
+2. **No KVM at all.** Firecracker, Cloud Hypervisor and QEMU need KVM too (QEMU without it emulates
+   the CPU and is far too slow for builds), which leaves gVisor or a plain container.
+
+| Option | Needs KVM | Boundary | Bundling | Shared folders | Rootless networking | Platforms | Verdict |
+|---|---|---|---|---|---|---|---|
+| libkrun | yes (HVF on macOS) | hardware VM, own kernel | build from source | built in (virtiofs) | with pasta | Linux, macOS, WSL2 | main backend |
+| gVisor (`runsc`) | no | user-space kernel: the agent's system calls never reach the host kernel directly | one static file | yes (bind mounts) | untested with pasta (step 3 spike) | Linux | fallback without KVM (step 3) |
+| Container only (bubblewrap, rootless podman) | no | namespaces only: shares the host kernel, so one kernel bug is an escape | tiny / usually installed | yes | with pasta | Linux | at most an opt-in "reduced isolation" mode, never automatic |
+| Firecracker | yes | hardware VM | one static file | no (disk images only) | needs TAP/root | Linux | would need a redesign |
+| Cloud Hypervisor | yes | hardware VM | static files | needs virtiofsd | TAP or extras | Linux | more moving parts |
+| QEMU | yes (unusably slow without) | hardware VM | large | via virtiofsd | built in | Linux, macOS, Windows | only if Windows without WSL is required |
+| Cloud sandboxes (E2B, Modal, …) | — | provider's VMs | — | — | — | any | out of scope: code and key leave the machine, not a local app |
+
+**Container-only mode:** Codex CLI and Claude Code's own sandbox use this model on Linux, and it's
+available almost everywhere. But hive's promise is a real VM, so if it's ever added it's opt-in,
+and `hive doctor`, the run output and the web UI always say "reduced isolation".
+
+**macOS:** libkrun runs on Apple's Hypervisor.framework (Podman uses it there), so the same backend
+carries over with a Mac launcher, an arm64 rootfs and a network setup without pasta. Apple's
+`container` tool (one small VM per container on Virtualization.framework) is worth watching as an
+alternative. **Windows without WSL** would mean QEMU or Hyper-V; not worth it while WSL exists.
 
 Networking: libkrun's built-in TSI networking gives the guest the host's network as it is, with
 nothing blocked. A TAP device needs root plus firewall rules. pasta gives the guest the internet
