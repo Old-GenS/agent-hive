@@ -132,7 +132,7 @@ export type EgressLookup = (host: string) => Promise<string[]>;
 export interface EgressProxy {
   /** The ephemeral port the proxy listens on, on 127.0.0.1. */
   port: number;
-  /** The URL to hand to tools, with the token in it. */
+  /** The URL to hand to tools (http://127.0.0.1:<port>). */
   url: string;
   /** The standard proxy variables for the VM's environment. */
   env: Record<string, string>;
@@ -184,9 +184,23 @@ function parseAuthority(authority: string): { host: string; port: number } | und
 }
 
 /**
- * Start the egress proxy on an ephemeral 127.0.0.1 port. Every request must carry the random
- * token in Proxy-Authorization (the VM gets it only through the proxy variables), so nothing on
- * the host's loopback can use it as an open relay without the token.
+ * A `lookup` for net/http that answers only with addresses already vetted: Node then tries them in
+ * turn (autoSelectFamily, "happy eyeballs"), so a host with broken IPv6 falls back to IPv4, and it
+ * can never connect anywhere the check didn't approve.
+ */
+function vettedLookup(addresses: string[]) {
+  const entries = addresses.map((address) => ({ address, family: isIP(address) }));
+  return (_host: string, options: { all?: boolean }, cb: (...args: any[]) => void): void => {
+    if (options?.all) cb(null, entries);
+    else cb(null, entries[0].address, entries[0].family);
+  };
+}
+
+/**
+ * Start the egress proxy on an ephemeral 127.0.0.1 port. It takes no password: headless Chromium
+ * can't send proxy credentials, and the proxy only reaches public internet addresses, which any
+ * local program can reach directly anyway, so it gives nothing on this computer new reach. (A web
+ * page can't use it either: browsers send no absolute-form or CONNECT requests from page script.)
  */
 export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<EgressProxy> {
   const lookup: EgressLookup = o.lookup ?? (async (host) => (await new Promise<string[]>((resolve, reject) => {
@@ -198,8 +212,6 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
   const allow = o.allow ?? isPublicAddress;
   const log = o.log ?? (() => undefined);
 
-  const token = randomBytes(24).toString("hex");
-  const expectedAuth = `Basic ${Buffer.from(`hive:${token}`, "utf8").toString("base64")}`;
   const sockets = new Set<Duplex>();
 
   const track = (socket: Duplex) => {
@@ -208,12 +220,6 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
     socket.on("error", () => socket.destroy());
   };
 
-  const authorized = (req: IncomingMessage): boolean => req.headers["proxy-authorization"] === expectedAuth;
-
-  const reject407 = (res: ServerResponse) => {
-    res.writeHead(407, { "Proxy-Authenticate": 'Basic realm="hive"', "Content-Length": "0" });
-    res.end();
-  };
 
   const status = (res: ServerResponse, code: number) => {
     res.writeHead(code, { "Content-Length": "0" });
@@ -245,10 +251,6 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
   // Plain HTTP: absolute-form request targets only. https and everything else goes through
   // CONNECT, so a non-absolute request is a client bug, answered with 400.
   server.on("request", (req, res) => {
-    if (!authorized(req)) {
-      reject407(res);
-      return;
-    }
     let target: URL;
     try {
       target = new URL(req.url ?? "");
@@ -281,8 +283,10 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
       headers.host = target.host;
       const upstream = httpRequest(
         {
-          host: addresses[0],
+          host: target.host,
           port,
+          // Node 20+ tries each address the lookup returns (autoSelectFamily is on by default).
+          lookup: vettedLookup(addresses) as any,
           method: req.method,
           path: `${target.pathname || "/"}${target.search}`,
           headers,
@@ -308,10 +312,6 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
   // CONNECT host:port (HTTPS, and any other TLS): open a raw tunnel to the vetted address.
   server.on("connect", (req, clientSocket, head) => {
     track(clientSocket);
-    if (!authorized(req)) {
-      writeSocketStatus(clientSocket, "407 Proxy Authentication Required", 'Proxy-Authenticate: Basic realm="hive"\r\n');
-      return;
-    }
     const target = parseAuthority(req.url ?? "");
     if (!target) {
       writeSocketStatus(clientSocket, "400 Bad Request");
@@ -329,7 +329,12 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
         writeSocketStatus(clientSocket, "403 Forbidden");
         return;
       }
-      const upstream = connect({ host: addresses[0], port: target.port });
+      const upstream = connect({
+        host: target.host,
+        port: target.port,
+        lookup: vettedLookup(addresses) as any,
+        autoSelectFamily: true,
+      });
       track(upstream);
       upstream.once("error", () => {
         upstream.destroy();
@@ -365,7 +370,7 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
   server.unref();
 
   const { port } = server.address() as AddressInfo;
-  const url = `http://hive:${token}@127.0.0.1:${port}`;
+  const url = `http://127.0.0.1:${port}`;
   const noProxy = "localhost,127.0.0.1,::1";
   const env: Record<string, string> = {
     HTTP_PROXY: url,
@@ -376,11 +381,6 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
     no_proxy: noProxy,
     // Node 24's fetch and http honour the proxy variables only with this set; pi runs on Node 24.
     NODE_USE_ENV_PROXY: "1",
-    // git (libcurl) otherwise sends CONNECT without credentials first and expects to retry on the
-    // same connection after the 407; send Basic up front instead.
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "http.proxyAuthMethod",
-    GIT_CONFIG_VALUE_0: "basic",
   };
 
   let closing: Promise<void> | undefined;
@@ -401,7 +401,7 @@ let shared: Promise<EgressProxy> | undefined;
 
 /**
  * The process-wide proxy, started on first use. One proxy serves every VM: it is reached through
- * pasta over the host's loopback, and each run gets the same token only through its own env.
+ * pasta over the host's loopback.
  */
 export function sharedEgressProxy(): Promise<EgressProxy> {
   if (shared === undefined) {

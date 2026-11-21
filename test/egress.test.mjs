@@ -118,7 +118,7 @@ test("isPublicAddress allows public addresses and refuses everything else", () =
   }
 });
 
-test("proxy: auth, CONNECT tunnels and plain HTTP forwarding", async (t) => {
+test("proxy: no password, CONNECT tunnels and plain HTTP forwarding", async (t) => {
   const target = await startTarget("hello from the origin");
   const echo = await startEcho();
   const proxy = await startProxy({
@@ -131,7 +131,7 @@ test("proxy: auth, CONNECT tunnels and plain HTTP forwarding", async (t) => {
     echo.close();
   });
 
-  // No Proxy-Authorization: 407 with the Basic challenge.
+  // No password: a request without Proxy-Authorization is served (headless Chromium can't send one).
   const unauth = await new Promise((resolve, reject) => {
     const req = httpRequest(
       { host: "127.0.0.1", port: proxy.port, path: `http://example.test:${portOf(target)}/x` },
@@ -140,8 +140,7 @@ test("proxy: auth, CONNECT tunnels and plain HTTP forwarding", async (t) => {
     req.on("error", reject);
     req.end();
   });
-  assert.equal(unauth.statusCode, 407);
-  assert.equal(unauth.headers["proxy-authenticate"], 'Basic realm="hive"');
+  assert.equal(unauth.statusCode, 200);
   unauth.resume();
 
   // CONNECT through the proxy: 200, then raw bytes echo back.
@@ -211,9 +210,6 @@ test("proxy: env has the standard proxy variables", async (t) => {
   const proxy = await startProxy({ lookup: async () => [], allow: () => true });
   t.after(() => proxy.close());
   assert.deepEqual(Object.keys(proxy.env).sort(), [
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_KEY_0",
-    "GIT_CONFIG_VALUE_0",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NODE_USE_ENV_PROXY",
@@ -228,7 +224,19 @@ test("proxy: env has the standard proxy variables", async (t) => {
   assert.equal(proxy.env.NO_PROXY, "localhost,127.0.0.1,::1");
   assert.equal(proxy.env.no_proxy, "localhost,127.0.0.1,::1");
   assert.equal(proxy.env.NODE_USE_ENV_PROXY, "1");
-  assert.equal(proxy.env.GIT_CONFIG_KEY_0, "http.proxyAuthMethod");
-  assert.equal(proxy.env.GIT_CONFIG_VALUE_0, "basic");
-  assert.equal(proxy.url, `http://hive:${new URL(proxy.url).password}@127.0.0.1:${proxy.port}`);
+  assert.equal(proxy.url, `http://127.0.0.1:${proxy.port}`);
+});
+
+test("proxy: falls back to the next vetted address when the first doesn't answer", async (t) => {
+  const echo = await startEcho(); // listens on 127.0.0.1 only, so ::1 is refused
+  const proxy = await startProxy({ allow: () => true, lookup: async () => ["::1", "127.0.0.1"] });
+  t.after(async () => {
+    await proxy.close();
+    echo.close();
+  });
+  const tunnel = await connectThrough(proxy, `dual.test:${portOf(echo)}`);
+  assert.equal(tunnel.status, 200);
+  tunnel.socket.write("fell back");
+  assert.equal(await nextChunk(tunnel.socket), "fell back");
+  tunnel.socket.destroy();
 });
