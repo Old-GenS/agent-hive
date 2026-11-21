@@ -96,10 +96,7 @@ function gitProtocol(): "https" | "ssh" {
 export const config = {
   port: int("PORT", 8080),
   host: process.env.HOST || "127.0.0.1",
-  workspace: resolve(process.env.WORKSPACE || "/tmp/hive-workspace"),
   maxConcurrent: int("MAX_CONCURRENT_SESSIONS", 2),
-  maxQueued: int("MAX_QUEUED_SESSIONS", 10),
-  idleTimeoutMs: int("SESSION_IDLE_TIMEOUT_MS", 30 * 60_000),
   defaultModel: process.env.DEFAULT_MODEL || "",
   defaultThinking: process.env.DEFAULT_THINKING || "low",
   systemPrompt:

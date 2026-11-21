@@ -9,7 +9,7 @@ import { join } from "node:path";
 const scratch = mkdtempSync(join(tmpdir(), "hive-usage-"));
 process.env.HIVE_DOTENV_PATH = join(scratch, "missing.env");
 process.env.HIVE_KEYS_FILE = join(scratch, "missing-keys");
-process.env.WORKSPACE = join(scratch, "workspace");
+process.env.HIVE_RUNS_DIR = join(scratch, "runs");
 
 const { usageNow } = await import("../dist/usage.js");
 

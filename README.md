@@ -1,403 +1,151 @@
-# Agent Hive
+# Agent Hive 🐝
 
-**Run a coding agent on your repo inside a throwaway microVM.** Give `hive` a task. The agent
-([pi](https://pi.dev), with any model you choose) works on a copy of the repo in a VM that can't
-reach the rest of your machine. Its commits come back as patches, which you can review, apply, or
-push as a branch or pull request.
+**Run a coding agent on your repo inside a throwaway microVM.**
 
+Give `hive` a task. A coding agent ([pi](https://pi.dev), on the model you choose) works on a copy
+of your repo inside its own small virtual machine: it can install packages, run builds and tests,
+open a headless browser and commit, but it can't touch the rest of your computer. Its commits come
+back as patches you review before anything reaches your repo or GitHub.
+
+```bash
+cd ~/code/my-app
+hive run "add input validation to the signup form"
+hive diff          # review what it did
+hive apply         # take the changes into your working tree
+hive push --pr     # or push a branch and open a pull request
 ```
-hive run "fix the off-by-one in the pager"
-  host: clone the repo (no hardlinks, no remote)  → work/
-  VM:   pi works in /work and commits               (sees work/, the prompt and one LLM key)
-  host: follow the agent's event log live           ← io/events.jsonl
-  VM:   git format-patch                            → out/
-hive diff        # review
-hive apply       # into your working tree
-hive push --pr   # or as a branch + GitHub pull request
-```
 
-Text crosses into and out of the VM only as files: the prompt goes in as a file, the agent's
-events come out as a log file, and the results come back as patches. The host never runs git
-inside the agent's copy, so hooks or config the agent writes into `.git` can't run on your
-machine.
-
----
+- **Isolated:** every run boots its own microVM ([libkrun](https://github.com/containers/libkrun))
+  with its own kernel, and a network that reaches the internet but not your machine or your LAN.
+- **Nothing secret goes in:** the VM gets the repo copy and one LLM API key. Your SSH keys, GitHub
+  login and other files stay outside.
+- **You stay in control:** results come back as patches. Nothing is pushed or opened on GitHub
+  until you say so.
+- **Terminal or browser:** the `hive` CLI, or a web UI you can also use from your phone.
+- **Any model:** DeepSeek, Z.AI, OpenRouter, Anthropic or OpenAI.
 
 ## Requirements
 
-- Linux with `/dev/kvm`, **libkrun**, **pasta** (from the `passt` package), **Node.js 20+** and
-  **git**
-- **podman**, once, to build the sandbox image that the VM's root filesystem is exported from
-- A C compiler for the small VM launcher (if there isn't one, `npm run build:vm` builds it in a
-  container)
-- An API key for at least one provider: DeepSeek, Z.AI, OpenRouter, Anthropic or OpenAI
+- **Linux** with KVM (`/dev/kvm`): a regular PC or a server with virtualization enabled.
+- **libkrun** and **pasta**. On Fedora: `sudo dnf install libkrun passt`. Other distros will be
+  covered by a bundled libkrun (see the [roadmap](docs/ROADMAP.md)).
+- An API key for at least one model provider.
 
-macOS support is planned. libkrun runs on Apple silicon, but the launcher's build and network
-isolation still need porting.
+macOS and Windows (WSL2) are on the [roadmap](docs/ROADMAP.md).
 
 ## Install
 
-### From a release
+**From a release** (once the first release is published; until then, install from source):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
 ```
 
-This needs `/dev/kvm`, and the system's libkrun and pasta for now (Fedora:
-`sudo dnf install libkrun passt`).
+The release brings its own Node.js and downloads the VM filesystem. `hive update` installs newer
+releases after checking their signature.
 
-### From source
+**From source** (also needs Node.js 20+, git and podman):
 
 ```bash
 git clone https://github.com/ogsapps/agent-hive.git && cd agent-hive
-npm ci && npm run build && npm run build:image && npm run build:vm && npm run build:rootfs
+npm ci && npm run build && npm run build:ui
+npm run build:image && npm run build:vm && npm run build:rootfs
 npm link            # puts `hive` on your PATH
 ```
 
-Put your key(s) in `~/.config/agent-hive/env`:
-
-```
-OPENROUTER_API_KEY=sk-or-...
-```
-
-## Usage
+Then check everything is in place and add a key:
 
 ```bash
-cd ~/code/some-repo
-hive run "add input validation to the signup form"
-hive diff --stat
-hive apply                       # as uncommitted changes in your working tree
-hive export                      # or a zip of the project files, --bundle for a git bundle
-hive export --report             # or a Markdown report of the run (prompts, report, commits)
-# or
-hive push --pr                   # new branch hive/<run> + a GitHub pull request
+hive doctor
+hive keys add openrouter      # or deepseek, zai, anthropic, openai
 ```
 
-Without `--repo`, `hive` works on the current repo's `HEAD`, so uncommitted changes aren't
-included. With `--repo owner/name` (or any git URL), it clones the remote and you don't need a
-checkout:
+## Using it
 
 ```bash
-hive run --repo owner/name --ref main "update the README for the new flags"
-hive push --pr --base main
+cd ~/code/my-app
+hive run "fix the off-by-one in the pager"       # live progress in the terminal
+hive continue "also add a test for it"           # follow up in the same session
+hive diff                                        # review
+hive apply                                       # into your working tree, uncommitted
+hive push --pr                                   # or a hive/<run> branch + pull request
 ```
 
-| Command | What it does |
-|---------|--------------|
-| `hive run "<prompt>"` | Clone the repo into a new run, run the agent in a VM, show its progress live, export its commits. Options: `-m model`, `-p provider`, `-t thinking`, `--review <n>` (up to 5 review cycles after the agent finishes), `--review-model <model>`, `--json`, `-f <prompt-file>`, `--repo <owner/name\|url>`, `--ref <branch>`. Ctrl+C stops the run. |
-| `hive new <name> "<prompt>"` | Start a new project from an empty repository. Options as for `hive run` (`-m`, `-p`, `-t`, `--review`, `--review-model`, `-f`), plus `--public` for a public GitHub repo (the default is private). When the agent has committed, `hive push <run>` creates the GitHub repository and pushes the commits to `main`. |
-| `hive continue [run] "<prompt>"` | Continue a finished run in the same pi session and on the same work copy, showing its progress live. `[run]` defaults to the newest run. Pushing is left to `hive push`. |
-| `hive log [run]` | Replay a run's event log. It follows the log live while the run is going. `--json` prints raw events. |
-| `hive diff [run]` | Show the run's changes. `--stat` gives a summary. |
-| `hive apply [run]` | Apply the run's patches to the current repo as uncommitted changes (the repo must be clean and at the run's base), or use `--branch <name>` to put them on a new branch. Local runs only. |
-| `hive export [run]` | Download the run's result: a zip of the project files (default), with `--bundle` a git bundle of its commits, or with `--report` a Markdown report (the prompts, the agent's report, the error and the commits). `-o <path>` picks the output file (default `<run name>.zip` / `.bundle` / `.md` in the current directory), `--force` overwrites an existing file. Zip and bundle are built on your machine from the run's patches in a fresh clone of the trusted source, never from the run's `work/` copy; the report is built from the run's saved data. |
-| `hive push [run]` | Put the run's commits on a new branch and push it with your own git credentials. `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for the PR's base. Never forced. |
-| `hive list` | List runs, newest first. |
-| `hive clean <run>` | Delete a run. `--all` deletes every finished run. |
-| `hive keys [list]` | List each provider's key masked, where it comes from (`saved`, `environment` or `.env`) and its default model. `add <provider>` reads the key from stdin or prompts with echo off and tests it first (`--no-test` skips the test); `test [provider]` checks one key or every saved one; `remove <provider>` deletes a saved key; `default <provider>` makes a provider the default. |
-| `hive setup` | Download the VM filesystem (rootfs) the installed release needs. |
-| `hive serve` | Start the server and web UI from the CLI. `--host` / `--port` (default `127.0.0.1:8080`, or `HOST` / `PORT`), `--open` opens the browser already logged in. Creates and saves a login token if none is configured; Ctrl+C stops it. |
-| `hive service <install\|status\|restart\|logs\|uninstall>` | Run `hive serve` as a background service that starts at login/boot: a systemd user unit on Linux, a launchd agent on macOS. `install` takes `--host` / `--port`; `--dry-run` prints the file and runs nothing. |
-| `hive doctor` | Show what's available: `/dev/kvm`, libkrun, pasta, the launcher and the rootfs. |
-| `hive update [--check \| --rollback]` | Verify and install the latest release (`--check` only reports), or go back to the previous version (`--rollback`). |
-
-`[run]` defaults to the newest run.
-
-`--repo` accepts `owner/name` (meaning github.com), an `https://` or `ssh://` URL, or
-`git@host:owner/name.git`. Pushing works with any git host. `--pr` needs a github.com remote and
-the [GitHub CLI](https://cli.github.com) (`gh auth login`).
-
-`hive push` and `--pr` run on your machine as you, so they use your own SSH key, git credential
-helper or `gh` login. None of these ever enter the VM. Commits use your git `user.name` and
-`user.email` unless `GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` are set.
-
-### Settings
-
-All optional. Put them in `~/.config/agent-hive/env` or export them. `hive keys` and the web UI
-save provider keys and `DEFAULT_PROVIDER` in that file, readable only by you (mode 600). The
-precedence is: an exported environment variable beats the keys file, and the keys file beats the
-server's `.env`.
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `DEEPSEEK_API_KEY`, `ZAI_API_KEY` (or `ZAI_CODE`), `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | — | Provider keys; only the selected one enters the VM |
-| `DEFAULT_PROVIDER` | first provider with a key | Provider used when `-p` is omitted |
-| `DEFAULT_MODEL` | per-provider default | Model used when `-m` is omitted |
-| `DEFAULT_THINKING` | `low` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | your git `user.name` / `user.email` | Commit identity |
-| `HIVE_BRANCH_PREFIX` | `hive/` | Prefix for the branch `hive push` creates |
-| `HIVE_PUSH_REMOTE` | `origin` | Remote `hive push` uses for local runs |
-| `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where runs are kept |
-| `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this many days are deleted; `0` keeps them forever |
-| `HIVE_OPENROUTER_ROUTING` | `{"quantizations":["fp16","bf16","fp8"]}` | OpenRouter provider routing, as JSON (see [Provider and model](#provider-and-model)) |
-| `HIVE_SANDBOX_MEMORY` / `HIVE_SANDBOX_CPUS` | `2048m` / `1` | VM size (2 GB and 1 CPU; the VM's writable space lives in RAM, up to half of this) |
-| `HIVE_SANDBOX_TIMEOUT_MIN` | `60` | The run is stopped after this many minutes |
-| `HIVE_STALL_MIN` | `15` | Stop the run when nothing in `work/` changed and no agent event arrived for this many minutes; `0` turns it off |
-| `HIVE_VM_CACHE` | `~/.cache/agent-hive/vm-cache` | `~/.cache` in the VM (Playwright browsers, npm, pip, corepack), shared between runs; empty disables it |
-| `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
-| `HIVE_NO_UPDATE_CHECK` | — | Set to `1` to stop the once-a-day "new version available" notice |
-| `HIVE_RELEASE_REPO` | `ogsapps/agent-hive` | GitHub repo releases are looked up in |
-| `GH_TOKEN` / `GITHUB_TOKEN` | — | Used for release lookups when set |
-
-When a run times out, stalls, fails or is stopped, hive still exports the commits the agent made,
-so `hive diff` and `hive apply` keep the work. Only uncommitted changes are lost.
-
-Each agent step's system prompt ends with its deadline: the run's time limit and the UTC time it
-will be stopped, so the agent commits as it goes. Once a step's VM exits, its saved event log
-(`io/events.jsonl`) drops the streaming-only `message_update` and `tool_execution_update` events;
-live progress is unchanged, and `hive log` and the web UI's replay stay small.
-
-A run still marked running or queued when hive starts again (after a crash or a reboot) was
-interrupted: hive stops the leftover VM if there still is one and marks the run failed with
-`interrupted (hive stopped)`. Finished runs older than `HIVE_RUN_RETENTION_DAYS` (14) days are
-deleted from the runs dir at startup and every 6 hours; `hive clean` deletes any run earlier.
-
-### Provider and model
-
-The provider is `-p` if given, else `DEFAULT_PROVIDER`, else the first provider in this order that
-has a key: DeepSeek, Z.AI, OpenRouter, Anthropic, OpenAI. The model is `-m` if given, else
-`DEFAULT_MODEL`, else the provider's default:
-
-| Provider | Default model |
-|----------|---------------|
-| DeepSeek | `deepseek-flash` |
-| Z.AI | `glm-5.3` |
-| OpenRouter | `xiaomi/mimo-v2.6-flash` |
-| Anthropic | none — `-m` or `DEFAULT_MODEL` is required |
-| OpenAI | none — `-m` or `DEFAULT_MODEL` is required |
-
-`DEFAULT_MODEL` applies whichever provider is picked, so set it only together with
-`DEFAULT_PROVIDER`. With both `DEEPSEEK_API_KEY` and `OPENROUTER_API_KEY` set, DeepSeek is used
-unless `DEFAULT_PROVIDER=openrouter`. `hive doctor` prints what will be used. The web UI shows the
-resolved defaults (Settings, API keys) and lists only providers that have a key.
-
-For OpenRouter, each run writes pi's `models.json` for the chosen model (context window, price,
-input modalities, reasoning) and `settings.json` into the run's `agent/` folder, which every step
-copies into the run's `io/` folder for each step (`/io/pi-agent`, a fresh copy every step). It also ranks the model's provider endpoints and asks OpenRouter
-for the best one first: the model maker's own endpoint, then higher uptime, then lower price,
-keeping only endpoints that are up, support tools and have cache pricing. `HIVE_OPENROUTER_ROUTING`
-sets the routing as a JSON object (default `{"quantizations":["fp16","bf16","fp8"]}`); an `order` or
-`only` in it is used as written. If no endpoint supports the allowed quantizations, hive allows any
-for that run and prints a note. `hive run` and `hive new` print the chosen provider order.
-
-### Run directories
-
-```
-~/.cache/agent-hive/runs/<repo>-<YYYYMMDD-HHMMSS>/
-  work/      the agent's copy (mounted at /work)
-  io/        prompt.md, system.md, system-base.md, session/ (pi's session), events.jsonl,
-             stderr.log (mounted at /io)
-  agent/     OpenRouter runs: pi's models.json and settings.json (copied to io/pi-agent for each step)
-  out/       exported patches
-  origin/    clean clone used for pushing (remote runs, and local runs once pushed)
-  meta.json  repo, base, model, status, commits, cost, the agent's summary, push/PR info
-```
-
-The launcher's own stderr (including libkrun's log lines) goes to `io.launcher.log` next to the
-`io/` folder, so a failed boot's message reaches the run's error; it is outside `io/` on purpose,
-since the VM can write `io/`.
-
-## Isolation
-
-Each run boots its own microVM with `vm/hive-vm`, a small launcher that loads libkrun at run time:
-
-- **Own guest kernel:** escaping needs a KVM or libkrun bug.
-- **Read-only shared root filesystem** with an in-RAM writable layer, so nothing carries over from
-  one run to the next.
-- **Its own network namespace via pasta:** the internet and DNS work, so the agent can reach the
-  LLM API and package registries, but the host's loopback, gateway and LAN addresses are blocked.
-- **Mounts:** only the run's `work/` and `io/`, plus the shared VM cache (`HIVE_VM_CACHE`; npm's
-  cache lives inside it at `/root/.cache/npm`) and, for an OpenRouter run, a fresh copy of its
-  `agent/` at `/io/pi-agent`. The selected provider's key is passed in the VM's environment, never
-  on a command line.
-- **At most 5 shared folders per VM:** libkrun runs out of interrupt slots above that, and the VM
-  then never boots. hive refuses a VM with more than 5 shares with a clear error instead.
-
-After changing the image (`npm run build:image`), re-run `npm run build:rootfs`. To move to a newer
-pi release, bump `PI_VERSION` in `image/Containerfile` and rebuild both.
-
-## Server (optional)
-
-The same core can also run as an HTTP server with a web UI and REST API, for a VPS or for
-using it from a phone or another computer. The server runs each task in the libkrun microVM above;
-`HIVE_RUNTIME=auto` uses it when it is available and `libkrun` requires it. Machines need `/dev/kvm`
-(a gVisor fallback for machines without it is on the roadmap, see `docs/ROADMAP.md`). The separate
-[hive-mcp](https://github.com/stansz/hive-mcp) package no longer works with this server; a built-in
-`hive mcp` is planned. The server clones and pushes over HTTPS with the server's own `gh` login
-by default, or with per-repo SSH deploy keys (`HIVE_GIT_PROTOCOL=ssh`, handy across several
-VPSes), and pushes each run's commits to a `hive/<id>` branch. It also supports new projects,
-pull requests on click, review cycles and follow-up messages. `hive serve` runs the server and web
-UI from the CLI core, on a laptop or a headless box.
+Work on a GitHub repo without a local checkout, or start a new project:
 
 ```bash
-npm ci && npm run build && npm run build:ui && npm run build:image
-hive serve                # http://127.0.0.1:8080/ui/ (creates a login token on first run)
+hive run --repo owner/name "update the README for the new flags"
+hive new my-game "a bee-themed falling-block game in one HTML file"
 ```
 
-The server listens on `127.0.0.1`. To reach it from other devices, put it behind a tunnel or a
-TLS reverse proxy. On a trusted home network `HOST=0.0.0.0` also works, but that's plain HTTP, so
-the token crosses the network unencrypted. GitHub access and deploy keys are covered in
-[AGENTS.md](AGENTS.md).
-
-The server keeps runs in memory, so **restarting it stops any run in progress** and forgets
-finished ones.
-
-### Run it as a service
-
-`hive serve` runs the server and web UI in the foreground:
+Save the result instead of pushing it:
 
 ```bash
-hive serve                     # http://127.0.0.1:8080/ui/
-hive serve --open              # also opens the browser, already logged in
-hive serve --host 0.0.0.0 --port 9000
+hive export              # a zip of the project files
+hive export --report     # a Markdown report: the prompt, the agent's report, the commits
 ```
 
-If no login token exists yet (neither `API_TOKEN` nor `API_TOKENS` in the shell, the keys file or
-`.env`), `hive serve` creates one, saves it in the keys file and prints where it is.
-`--open` hands the token to the web UI in the URL fragment, which the UI reads and strips from the
-address bar. Ctrl+C stops the server.
+| Command | |
+|---|---|
+| `hive run "<task>"` | Run the agent on the current repo (or `--repo owner/name`) |
+| `hive new <name> "<task>"` | Start a new project from an empty repo |
+| `hive continue "<task>"` | Follow up on the last run |
+| `hive list` / `hive log` | Your runs / a run's events |
+| `hive diff` / `hive apply` | Review / take the changes |
+| `hive push [--pr]` | Push a branch, optionally open a pull request |
+| `hive export [--report]` | Save a zip or a report |
+| `hive keys` | Manage provider keys |
+| `hive serve` | Start the web UI |
+| `hive doctor` | Check the setup |
 
-To keep it running in the background and start it at login/boot:
+Options like `-m <model>`, `-p <provider>` and `--review <n>` (review cycles by a second agent
+pass) are in the [CLI reference](docs/CLI.md).
+
+## Web UI
 
 ```bash
-hive service install      # systemd user unit on Linux, launchd agent on macOS
-hive service status
-hive service restart
-hive service logs         # follows the journal (Linux) or the log file (macOS)
-hive service uninstall
+hive serve --open           # http://127.0.0.1:8080/ui/
+hive service install        # or keep it running in the background
 ```
 
-`install` uses your home folder as the working directory and the current `PATH`, and takes
-`--host` / `--port`. `--dry-run` prints the unit or plist and runs nothing. On a headless Linux
-box, also run the `sudo loginctl enable-linger <user>` line that `install` prints, or the service
-stops when you log out.
+Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups, open
+pull requests and download results, from the browser or your phone. Runs from the web UI and the
+terminal share one list. Details in [docs/SERVER.md](docs/SERVER.md).
 
-The background service does not inherit your shell, so provider keys must be in the keys file
-(`hive keys add`), not only in the environment; `hive service install` warns about keys it can only
-see in the shell. The login token also lives in the keys file as `API_TOKEN` — it is never printed.
+## How it works
 
-`node dist/index.js` still works on its own (with `API_TOKEN` in `.env`).
+```
+your repo ──clone──► work/ ──► microVM: pi edits, runs, commits ──► patches ──► you: diff · apply · push
+                               (sees only work/, the prompt, one key)
+```
 
-### Web UI
+hive copies your repo into a run folder and boots a microVM that sees only that copy. Inside, the
+agent has free rein. Text crosses the boundary only as files: the prompt goes in, an event log and
+patches come out. The host never runs git inside the agent's copy, so nothing the agent puts in
+`.git` can run on your machine. A time limit, a stall watchdog and a deadline note keep runs from
+running away, and committed work is kept even if a run fails.
 
-The UI at `/ui/` follows the design in [docs/GUI.md](docs/GUI.md). `npm run build:ui` builds it
-into `ui/dist`, and the running server serves the new files without a restart.
+The full picture is in **[How it works](docs/HOW-IT-WORKS.md)**.
 
-The web UI uses the same run engine and run folders as `hive run`, so `hive list` shows web runs
-and the web run list shows CLI runs. Follow-ups, review cycles and new projects work from the web
-UI too, all through the CLI engine. When `MAX_CONCURRENT_SESSIONS` runs are already going, new runs
-wait in a FIFO queue and the run list shows them as queued.
+## Docs
 
-**Runs**
-- **Several runs at once:** the Runs page keeps a run list next to the current view (on a phone it
-  sits above it, showing the newest five with a **Show all (N)** toggle). It lists every run the
-  server knows about since it last started, newest first, each with its title, repo, model, status,
-  and either the elapsed time for a run still going or how long ago it finished. The header bee
-  shows while any run is busy. **New run** stays available, so another run can start while others
-  keep going, and switching between runs only switches the view.
-- **Reopening a run:** every run has its own URL, `/ui/#runs/<sessionId>`, so a link or a page
-  reload reopens it with its title, status, timeline and result (the server replays the latest
-  prompt's events). If the server has restarted since, the run is gone and the UI says so.
-- **New run:** the task; **Existing repo** (a repository list from `gh`, and once a repo is picked,
-  its branches with the default shown) or **New project**; provider (only those with a key); a model
-  box with a per-provider list you can pick from or type into; thinking level; review cycles.
-- **While it runs:** a bee circles a honeycomb cell while the microVM works (it rests when queued,
-  lands when done, greys out on failure), with an elapsed timer. The timeline shows the agent's
-  messages and each tool step; finished steps get a check. The agent's messages render a safe
-  subset of Markdown (headings, lists, tables, code and links), and the run's meta line shows its
-  cost as it grows. **Stop** ends the run, and follow-up messages continue the same session.
-- **When it's done:** the agent's last message is its answer or summary. The result box lists the
-  commits and every file changed with lines added and removed, links to the diff on GitHub, and
-  has an **Open pull request** button (nothing is opened until you click). The PR description is
-  the agent's write-up followed by the commit and file lists from git. When the run has commits,
-  **Download zip** and **Download git bundle** save the result: like a push, both are built on
-  the host from the run's patches, never from the agent's `work/` copy. Every finished run also has
-  a **Download report** button that saves its Markdown report (the prompts, the agent's final
-  report, the error if any, and the commits) built from the run's saved data.
-
-Every repo run is set up to change code: the agent commits in the VM and hive pushes its commits to
-a `hive/<id>` branch (never `main`), even for a review. For a review without changes, say "don't
-edit or commit" in the task; its findings are the last message, and when nothing changed the
-result has a **Post review as an issue** button that puts them into a GitHub issue. When a run
-made no commits, its review cycles are skipped instead of rebuilding the project for nothing.
-
-**New project** starts from an empty repo: give it a name and, when the run finishes with
-commits, the host creates that repository under the `gh` account (private by default) and pushes
-the agent's work to its `main` branch. No commits, no repository.
-
-**Settings**
-- **API keys:** each provider's key masked, where it comes from (`saved`, `environment` or the
-  server's `.env`), the default model and the default provider. **Add key** tests the key before
-  saving it; each saved key can be **Test**ed, made the **Default** or **Remove**d (with an inline
-  confirmation). Keys are written to the private keys file, which the CLI also reads; only
-  providers with a key can be used for a run. The same thing is on the command line as
-  `hive keys`.
-- **This computer:** how runs are isolated (microVM via libkrun) with a short explanation, the
-  checks behind it, a live **Resources** section (CPU use, memory, disk space for runs, CPU
-  temperature when reported, and runs in progress, refreshed every 5 seconds), the GitHub
-  connection (the `gh` login and how runs clone and push), and the limits (VM size, time limit,
-  runs at once).
-
-The header has a light/dark toggle (it follows the device until you pick) and Log out, whose
-tooltip shows the current user.
-
-### API
-
-All endpoints except `/health` need `Authorization: Bearer <token>`.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/prompt` | Start a task (`prompt`, `repo`, `branch`, `newRepo` (`{name, private}`), `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`), or follow up with `sessionId` |
-| GET | `/status/:id` | Status, `resultBranch`, `commitsPushed`, `changes` (commits and files), `prUrl`, `newRepo` / `createdRepo`, usage, `stepStartedAt` / `finishedAt`, `error` |
-| GET | `/runs` | Every run the server knows about, newest first, each with `sessionId`, `title`, `status`, repo and model, plus the current `capacity` |
-| POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
-| POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue. Returns `{url}` |
-| GET | `/export/:id?format=zip\|bundle\|report` | Download the run's result: a zip of the project files, a git bundle of its commits (built on the host from the run's patches), or a Markdown report built from the run's saved data (404 unknown run, 409 still running, 400 no commits) |
-| POST | `/abort/:id` | Stop the running sandbox |
-| DELETE | `/session/:id` | Delete the session and its files |
-| POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |
-| WS | `/events/:id?ticket=…` | pi's JSON events plus `hive_status` / `hive_done` (`hive_done` carries `stepStartedAt`, `finishedAt`, `changes`, `resultBranch`, `repoSlug`, `createdRepo` and usage) |
-| GET | `/capacity` | Running / queued sandboxes |
-| GET | `/api/system` | Sandbox setup (microVM via libkrun), its checks, the `gh` login, VM size, capacity and git transport |
-| GET | `/api/system/usage` | What this computer is doing right now: CPU, memory, disk space for runs, CPU temperature when reported, and runs in progress |
-| GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key (never the keys) |
-| GET | `/api/models?provider=` | Models to offer for a provider (OpenRouter's live list, a fixed list for the others) |
-| GET | `/api/keys` | Each provider's key status (masked, and whether it comes from the environment, the keys file or `.env`), default model, the keys file path and the default provider. Never a full key |
-| POST | `/api/keys` | Add and test a key (`provider`, `key`); a refused key is not saved, a key set in the server's environment is refused |
-| POST | `/api/keys/:provider/test` | Test a provider's current key |
-| DELETE | `/api/keys/:provider` | Remove a saved key (and the default provider if it pointed at it) |
-| PUT | `/api/keys/default` | Make a provider the default (`provider`) |
-| GET | `/api/github/repos` | Repo list (via `gh`) |
-| GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first (via `gh`) |
-| GET | `/health` | Health check (no auth) |
-
-### Server configuration
-
-In addition to the provider and sandbox settings above:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `API_TOKEN` | — | Bearer token (min 16 chars). Or `API_TOKENS` as JSON `{"token": {"name": "…"}}`. |
-| `PORT` / `HOST` | `8080` / `127.0.0.1` | Listen address |
-| `MAX_CONCURRENT_SESSIONS` / `MAX_QUEUED_SESSIONS` | `2` / `10` | Sandboxes at once / runs wait in a FIFO queue behind them (`MAX_QUEUED_SESSIONS` is no longer used as a limit) |
-| `SESSION_IDLE_TIMEOUT_MS` | `1800000` | Idle sessions and their files are deleted after this |
-| `HIVE_RUNTIME` | `auto` | `auto` or `libkrun`; `auto` uses libkrun when it is available |
-| `WORKSPACE` | `/tmp/hive-workspace` | Task directories |
-| `HIVE_GIT_PROTOCOL` | `https` | How the server clones and pushes `owner/name` repos: `https` uses the host's git credentials (e.g. `gh auth login`), `ssh` uses the host's SSH keys (per-repo deploy keys, handy across several VPSes) |
-| `HIVE_KEYS_FILE` | `~/.config/agent-hive/env` | The private file (mode 600) where the CLI and the server keep provider keys and `DEFAULT_PROVIDER` |
+- [How it works](docs/HOW-IT-WORKS.md): the design, the isolation, and what happens during a run
+- [CLI reference](docs/CLI.md): every command and option
+- [Configuration](docs/CONFIGURATION.md): settings, providers and models, OpenRouter routing
+- [Web UI and server](docs/SERVER.md): `hive serve`, running it as a service, the API
+- [Roadmap](docs/ROADMAP.md): what's next (releases, more platforms)
+- [AGENTS.md](AGENTS.md): code layout and the security rules, for contributors and coding agents
 
 ## Development
 
-`npm test` builds and runs the test suite in a throwaway `TMPDIR` that is deleted afterwards. The
-web UI has a browser check that fakes a run, so it never starts an agent or spends credits:
-
 ```bash
-npm run build && npm run build:ui
-npm i --no-save playwright-core@1.49.1 && node scripts/ui-smoke.mjs   # needs Chromium
+npm test                     # builds and runs the tests in a throwaway temp folder
+npm run build:ui             # rebuild the web UI
 ```
 
-The code layout and the security rules the code relies on are in [AGENTS.md](AGENTS.md).
+The code layout and the security invariants the code relies on are in [AGENTS.md](AGENTS.md).
 
 ## License
 
-Powered by [pi](https://pi.dev) (BSD 3-Clause).
+[MIT](LICENSE). Built on [pi](https://pi.dev) (BSD 3-Clause) and
+[libkrun](https://github.com/containers/libkrun) (Apache 2.0).

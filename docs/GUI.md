@@ -8,7 +8,7 @@ The web UI (`ui/`) uses the mockup's look: light and dark themes, the hexagon lo
 Settings in the header.
 
 - **Runs** (not in the mockup): the new-run form, the bee run indicator, the timeline and the result
-  with commits, files changed and Open pull request. See the README's "Web UI" section.
+  with commits, files changed and Open pull request. See [SERVER.md](SERVER.md#the-web-ui).
 - **Settings › API keys:** the table from screen 2, built: each provider's key masked, where it
   comes from, its status and default model, and which provider is the default. **Add key** tests
   the key before saving it; **Test**, **Make default** and **Remove** (with an inline
