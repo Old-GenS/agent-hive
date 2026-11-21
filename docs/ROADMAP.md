@@ -89,31 +89,57 @@ only check its syntax). The README then gets a Windows install line.
 inside would be one download with no package installs, but it is another large file to rebuild
 for every security update, so only once the script has proven itself.
 
-## Step 2 — Bundle libkrun, libkrunfw and pasta
+## Step 2 — Bundle libkrun and libkrunfw *(in progress)*
 
-This is what makes `hive` work beyond Fedora (Ubuntu, Debian, WSL2 with nested virtualization).
+This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with any distro).
 
 - **Fedora's libkrun can't be copied into a bundle.** It links pipewire, virglrenderer, libepoxy
-  and libdrm (GPU and sound features), and needs glibc 2.44.
-- **libkrun has to be built from source,** with no GPU or sound features, inside an Ubuntu 22.04
-  container (glibc 2.35, which runs on most distros from the last few years). It's Rust and takes
-  about 5–10 minutes per build. Upstream publishes no libkrun binaries.
-- **libkrunfw (the guest kernel):** download upstream's prebuilt `libkrunfw-x86_64.tgz` from
-  github.com/containers/libkrunfw releases. It's about 24 MB.
-- **pasta:** build it statically from passt.top (simple C, `make static`), or use upstream's
-  builds.
-- The bundle gets `lib/` (libkrun and libkrunfw) and `libexec/pasta`. The launcher already loads
-  libkrun from `HIVE_LIBKRUN`, and libkrun finds libkrunfw via `LD_LIBRARY_PATH=<bundle>/lib`.
+  and libdrm (GPU and sound features), and needs a new glibc.
+- **libkrun is built from source** at a pinned tag and commit, with no GPU or sound features (the
+  default build links only libc and libgcc). Upstream publishes no libkrun binaries.
+- **libkrunfw (the guest kernel):** upstream's prebuilt `libkrunfw-x86_64.tgz` from
+  github.com/containers/libkrunfw releases, checked against a pinned SHA-256. It's about 24 MB and
+  depends on nothing, not even glibc.
+- **Old-glibc builds, the manylinux way.** Native code built on a new distro refuses to load on an
+  older one; even today's launcher, built on Fedora, needs glibc 2.38. So the launcher and libkrun
+  are compiled in the `manylinux_2_28` container (glibc 2.28, pinned by digest), with a current GCC
+  and a pinned Rust: they run on Ubuntu 20.04+, Debian 11+, RHEL/Alma/Rocky 8+, Mint, Fedora, Arch
+  and WSL distros. This only sets the oldest glibc they ask for; at run time they use the user's
+  own glibc, so its security fixes still come from the distro. The bundled Node.js uses the same
+  baseline. `scripts/build-native.sh` does the build and refuses output that needs newer glibc
+  symbols or unexpected libraries.
+- **Hardened launcher:** built with `-fstack-protector-strong`, `_FORTIFY_SOURCE`, PIE and full
+  RELRO, as distros build their packages.
+- **pasta stays a system package** (`apt install passt`, `dnf install passt`, `pacman -S passt`),
+  not bundled. Ubuntu 24.04+ (and Mint 22) only let pasta create its user namespace under the
+  AppArmor profile that Ubuntu's `passt` package installs; a bundled copy would be blocked. It
+  also keeps pasta on the distro's security updates.
+- **Bundle layout:** `lib/libkrun.so.1` and `lib/libkrunfw.so.5`. libkrun carries
+  `RUNPATH=$ORIGIN`, so it finds libkrunfw next to itself without `LD_LIBRARY_PATH`. Licenses go
+  in `share/licenses/`.
 - **Backend scan, in this order:**
-  1. system libkrun, so distro security updates apply;
-  2. bundled libkrun;
-  3. (step 3) gVisor;
-  4. otherwise stop with a clear message. Never fall back silently to plain containers.
-  
-  Each run prints which one it picked, e.g. `isolation: microvm (system libkrun)`, and
-  `hive doctor` explains why.
+  1. `HIVE_LIBKRUN` if set;
+  2. system libkrun, so distro security updates apply, but only if the launcher's `--check`
+     passes (every libkrun function hive uses is there and a context can be created), so an old
+     distro libkrun falls through instead of breaking runs;
+  3. bundled libkrun;
+  4. (step 3) gVisor;
+  5. otherwise stop with a clear message. Never fall back silently to plain containers.
+
+  `hive doctor`, Settings › This computer and each run say which one was picked, e.g.
+  `isolation: microvm (bundled libkrun)`.
+- **One pin file, `versions.json`:** libkrun (tag, commit), libkrunfw (version, URL, SHA-256), the
+  Rust toolchain, the build image digest and the bundled Node version. The release scripts read it,
+  and the weekly update check (below) bumps it.
+- **GPL source:** libkrunfw contains the Linux kernel (GPL-2.0), so each release that bundles it
+  also uploads the corresponding source: libkrunfw's source at that tag and the kernel tarball its
+  Makefile builds from.
 - **Cost of this step:** whoever publishes releases has to rebuild them for libkrun security
-  fixes, and the download grows by about 30 MB. "Keeping it up to date" below automates that.
+  fixes, and the app download grows by about 15 MB (compressed). "Keeping it up to date" below
+  automates that.
+- **Testing:** the old-glibc build checks; a real run on Fedora with the system libkrun hidden;
+  a real run inside an Ubuntu 24.04 container with Ubuntu's pasta and `/dev/kvm` (Mint 22's
+  userland); then a real Mint machine. Ships as v0.5.0.
 
 ## Keeping it up to date
 
@@ -123,7 +149,7 @@ A release bundles or builds on pieces that each move on their own:
 |---|---|---|
 | libkrun | built from source (step 2) | security fixes, a few times a year |
 | libkrunfw (guest kernel) | upstream prebuilt | kernel fixes, more often |
-| pasta | built from passt.top | occasionally |
+| pasta | the distro's `passt` package (not bundled) | distro updates |
 | pi (in the VM image) | `PI_VERSION` in `image/Containerfile` | often |
 | Fedora base, Chromium, node in the VM | `dnf` when the rootfs is built | weekly security updates |
 | Bundled Node | release build | monthly |
