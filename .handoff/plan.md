@@ -1,126 +1,143 @@
 ## Goal
 
-A **report download** for every finished run (done, failed or stopped; with or without commits): a
-Markdown file with the run's facts, every prompt, the agent's final report, the error if any, and
-the commit list. Built on the host from the run's saved data (`meta.json`); nothing new crosses
-out of the VM. Surfaces: a **Download report** button in the web UI and `hive export --report` in
-the CLI.
+Two pieces of work, done in order:
+
+1. **The web UI in the release bundle.** `scripts/build-release.sh` packs the CLI into one file
+   (`lib/hive.mjs`) with its own Node and the launcher, but not the web UI's files, so `hive serve`
+   from an installed release has no pages. Ship `ui/dist` in the bundle and prove `hive serve`
+   from a built bundle serves the UI.
+2. **A polished terminal interface for the `hive` CLI**, in the style of `gh`, `npm` or `cargo`:
+   colour, a live status line during runs (spinner, step, elapsed time, cost), tidy tool-call lines,
+   the agent's Markdown rendered for the terminal, aligned tables, and interactive pickers when an
+   argument is missing. Plain output stays exactly as it is today whenever stdout/stderr isn't a
+   terminal, with `NO_COLOR`, or with `--json`.
 
 ## Files to touch
 
-- `src/runs.ts`
-- `src/web-runs.ts`
+- `scripts/build-release.sh`
+- `src/index.ts`
+- `src/release.ts`
+- `test/release.test.mjs`
+- `src/tui.ts` (new)
+- `src/render.ts`
 - `src/cli.ts`
-- `ui/src/main.ts`
-- `test/export.test.mjs`
-- `test/web-runs.test.mjs`
+- `test/tui.test.mjs` (new)
+- `test/cli.test.mjs`
 - `README.md`
+- `docs/CLI.md`
 - `.handoff/report.md`
 
 ## Steps
 
 1. Run `npm ci`, then `npm run build:vm`.
 
-2. `src/runs.ts`, keep every prompt:
-   - Add `prompts?: { text: string; at: number }[]` to `RunMeta` (full prompt text, not cut).
-   - `startRun` sets `meta.prompts = [{ text: o.prompt, at: Date.now() }]` (the user's prompt,
-     without the new-project prefix); `continueRun` appends `{ text: o.prompt, at: Date.now() }`.
-     Written with the meta writes that already happen there. `meta.prompt` (first 200 characters)
-     stays as it is.
+### Part 1: web UI in the bundle
 
-3. `src/runs.ts`: `export function reportMarkdown(name: string, meta: RunMeta): string`, a pure
-   function returning:
+2. `scripts/build-release.sh`: run `npm run build:ui` before bundling (fail the release if it
+   fails), then copy `ui/dist` to `"$app/ui/dist"` (so the bundle has `bin/`, `lib/`, `libexec/`,
+   `ui/dist/`). Keep everything else as it is.
 
-   ```
-   # <title: first non-empty line of the first prompt, max 120 characters>
+3. `src/index.ts`: find the UI folder in this order and use the first that exists:
+   `process.env.HIVE_UI_DIR`; `join(process.env.HIVE_BUNDLE_ROOT, "ui", "dist")` when
+   `HIVE_BUNDLE_ROOT` is set; `join(here, "..", "ui", "dist")` (today's rule, for source
+   checkouts). Export a pure `export function uiDistCandidates(env: NodeJS.ProcessEnv, here: string):
+   string[]` from a small module **`src/release.ts`** (it already deals with bundles) returning
+   that ordered list, and use it in `index.ts`. Keep the existing warning when none exists.
 
-   | | |
-   |---|---|
-   | Run | <name> |
-   | Repository | <meta.createdRepo ?? meta.repo, or "new project <newRepo.name>"> |
-   | Status | <done | failed | stopped (for "aborted") | running> |
-   | Model | <provider> · <model> · thinking <thinking> |
-   | Started | <createdAt as ISO, UTC, no milliseconds> |
-   | Finished | <finishedAt as ISO, or "—"> |
-   | Duration | <"12 min 3 s" from createdAt to finishedAt, or "—"> |
-   | Cost | $<usage.cost with 4 decimals> (<input> in / <output> out tokens) |
-   | Commits | <commits> |
-   | Branch | <pushed.branch> (only when pushed) |
-   | Pull request | <prUrl> (only when set) |
+4. `test/release.test.mjs`: test `uiDistCandidates` (order, with and without the two env vars).
 
-   ## Prompt            (or "## Prompts" with "### 1 — <ISO time>" per prompt when more than one)
+### Part 2: polished CLI output
 
-   <prompt text>
+5. `src/tui.ts` (new), no new dependencies (use ANSI codes directly or `node:util`'s
+   `styleText`):
+   - `export function colorEnabled(stream: { isTTY?: boolean }, env = process.env): boolean`:
+     false when `NO_COLOR` is set (any value), true when `FORCE_COLOR` is set to anything but `0`,
+     otherwise `stream.isTTY === true`.
+   - Style helpers taking an `enabled` flag (so tests can force it): `bold`, `dim`, `red`, `green`,
+     `yellow`, `cyan`, `magenta`; each returns the text unchanged when disabled.
+   - Symbols: `✓` done, `✗` failed, `■` stopped, `▸` tool, `●` running; with colour disabled they
+     are still used only in TTY mode (plain mode keeps today's text).
+   - `export function formatDuration(ms: number): string` (`4s`, `3m 12s`, `1h 02m`) and
+     `export function formatCost(usd: number): string` (`$0.0123`).
+   - `export function table(rows: string[][], o?: { header?: boolean; enabled?: boolean }): string`:
+     aligned columns padded by visible width (strip ANSI codes when measuring), two spaces between
+     columns, the header row bold and followed by nothing else.
+   - `export class StatusLine` for stderr: `start(text)`, `update(text)`, `stop()`, and
+     `print(line)` which clears the status line, writes the line, then redraws the status. It
+     animates a braille spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, every 100 ms, timer `unref()`ed) only when the
+     stream is a TTY; otherwise every method except `print` does nothing and `print` just writes.
+     Truncate the status to the terminal width (`stream.columns`, default 80).
+   - `export function renderMarkdownTerminal(text: string, enabled: boolean): string`: headings
+     bold (and cyan for `#`/`##`), `**bold**` bold, `` `code` `` cyan, fenced code blocks dim and
+     indented by two spaces, `- ` / `* ` bullets as `  • `, numbered lists kept, tables kept as
+     text, links `[text](url)` as `text (url)`. With `enabled` false it returns the text unchanged.
+   - `export async function select<T>(question: string, choices: { label: string; value: T;
+     hint?: string }[], o?: { input?: NodeJS.ReadStream; output?: NodeJS.WriteStream }): Promise<T>`:
+     an arrow-key picker (↑/↓ or k/j to move, Enter to choose, Ctrl+C or Esc to cancel, which
+     throws `new Error("cancelled")`), drawn on the output stream with raw mode on the input and
+     restored afterwards (also on error). Throws `"not a terminal"` when input isn't a TTY.
+   - `export async function ask(question: string, o?: { input; output }): Promise<string>`: one
+     line of text with readline. Throws `"not a terminal"` when input isn't a TTY.
 
-   ## Report
+6. `src/render.ts` and `src/cli.ts`, in TTY mode (colour enabled per `colorEnabled(process.stderr)`
+   for the run views and `colorEnabled(process.stdout)` for tables):
+   - **`hive run`, `hive new`, `hive continue`:** a `StatusLine` on stderr showing
+     `<spinner> <step> · <elapsed> · <cost> · <n> tools`, where step is `Cloning`, `Waiting for a
+     slot`, `Agent working`, `Reviewing (1/2)`, `Exporting`. Each finished step prints a line like
+     `✓ Cloned owner/repo` / `✓ Agent finished` (via `StatusLine.print`). Tool calls print as
+     `  ▸ bash  <command, first line, dimmed, truncated to the width>`; a failed tool as
+     `  ✗ <tool>  …` in red. The agent's messages print with `renderMarkdownTerminal`. The final
+     summary is one line: `✓ Done · 1 commit · 3m 12s · $0.0123` (green), `✗ Failed · <error first
+     line>` (red), or `■ Stopped` (yellow), followed by the next-step hints that are printed today
+     (`hive diff <run>`, `hive push <run>`), dimmed. The OpenRouter provider order and hive notes
+     print as dim lines.
+   - **`hive list`:** a `table` with columns `RUN`, `STATUS` (coloured: done green, failed red,
+     aborted/stopped yellow, running cyan with `●`), `COMMITS`, `COST`, `AGE` (e.g. `2h ago`,
+     `running 3m`), `REPO`.
+   - **`hive doctor`:** each check as `✓ label  detail` (green ✓) or `✗ label  detail` plus the
+     fix hint it prints today (red ✗).
+   - **`hive keys list`:** a `table` (`PROVIDER`, `KEY`, `SOURCE`, `DEFAULT MODEL`, marking the
+     default provider with `●`).
+   - **Pickers (TTY input only):** `hive keys add` with no provider → `select` over providers;
+     `hive keys default` with no provider → `select` over providers that have a key; `hive clean`
+     with no run and no `--all` → `select` over finished runs (newest first, label = run name,
+     hint = status and age); `hive run` / `hive new` with no prompt and no `-f` → `ask("What should
+     the agent do?")`. Without a TTY these keep today's behaviour (usage error).
+   - **Plain mode is unchanged:** when the relevant stream isn't a TTY, or `NO_COLOR` is set, or
+     `--json` is given, every command prints exactly what it prints today (same text, same
+     streams). Existing tests must pass without changing their expected output.
 
-   <meta.summary, or "_The agent left no report._">
+7. Tests:
+   - `test/tui.test.mjs` (new): `colorEnabled` (NO_COLOR wins, FORCE_COLOR, TTY flag);
+     `formatDuration`; `formatCost`; `table` alignment with and without colour (ANSI codes don't
+     break the alignment); `renderMarkdownTerminal` with `enabled` false returns the input
+     unchanged and with `enabled` true bolds a heading and bullets a list; `StatusLine` on a fake
+     non-TTY stream writes only what `print` gets; `select` and `ask` reject with `not a terminal`
+     on a non-TTY input; `select` on a fake TTY input (an object with `isTTY: true`, `setRawMode`,
+     and emitted `keypress`/data events) returns the second choice after a down-arrow and Enter, and
+     restores raw mode.
+   - `test/cli.test.mjs`: one case that runs `hive list` with `FORCE_COLOR=1` on a temp
+     `HIVE_RUNS_DIR` with one fake finished run and checks the output contains the `RUN` header and
+     an ANSI escape; and one with `NO_COLOR=1` (or piped) that checks there's no ANSI escape.
 
-   ## Error             (only when meta.error is set)
-
-   ```text
-   <meta.error>
-   ```
-
-   ## Commits           (only when meta.changes has commits)
-
-   - <subject>
-   ...
-   ## Files changed     (only when meta.changes has files)
-
-   - `path` (+added −removed, or "binary")
-   ```
-
-   For old runs without `meta.prompts`, use `meta.prompt` as the single prompt. Table cell values
-   replace `|` with `\|` and newlines with spaces. Fenced blocks use a fence longer than any run of
-   backticks inside the content.
-
-4. `src/runs.ts`: `export function exportReport(dir: string, outPath: string): { path: string }`:
-   refuse with `"run is still going"` when `isLive(meta)`; otherwise write
-   `reportMarkdown(basename(dir), meta)` to `outPath`.
-
-5. `src/cli.ts`: `hive export` gains `--report` (exactly one of `--zip`, `--bundle`, `--report`;
-   default still `--zip`). Default output `<cwd>/<run name>.md`; refuses to overwrite without
-   `--force`, like the other formats. Update the usage text.
-
-6. `src/web-runs.ts`: `GET /export/:sessionId?format=report` → 200 with `reportMarkdown(id, meta)`,
-   `Content-Type: text/markdown; charset=utf-8`, `Content-Disposition: attachment;
-   filename="<id>.md"`; 409 when the run is live (as for the other formats). The format check
-   accepts `zip`, `bundle` and `report`; its error becomes `format must be zip, bundle or report`.
-
-7. `ui/src/main.ts`:
-   - Mark the banners made by `finishRun` (done, stopped, failed) with a new `final: true` field on
-     the banner item, so other banners (like "Couldn't send") are unaffected.
-   - Render `exportElement(item)` for every banner with `final: true`. Inside it, show **Download
-     zip** only when the run has commits (the current condition), and always show a **Download
-     report** button (`id="downloadReportBtn"`) that downloads `format=report` the same way as the
-     zip (Blob + temporary `<a download>`; filename from `Content-Disposition`, else `<run id>.md`;
-     `Preparing…` while waiting; errors shown like the zip's). The hint line reads `Built from the
-     run's commits on this computer.` when the zip button shows, and `The prompt, the agent's
-     report and the run's details, as Markdown.` when only the report button shows. Keep the git
-     bundle button hidden as it is now.
-
-8. Tests:
-   - `test/export.test.mjs`: `reportMarkdown` for (a) a done run with two prompts, a summary,
-     changes with one commit and one file, a pushed branch and a PR url: contains the title,
-     `## Prompts`, both prompts, `## Report`, `## Commits`, the commit subject, the file line, the
-     branch and the PR url, and no `## Error`; (b) an aborted run with an error containing a
-     triple-backtick run and a `|` in the model name: shows `stopped`, `## Error` with a longer
-     fence than the error's backticks, the escaped `\|` in the table, no `## Commits`; (c) an old
-     run without `prompts`: uses `meta.prompt`. `exportReport` on a live run rejects with
-     `run is still going` and on a finished one writes the file.
-   - `test/web-runs.test.mjs`: `GET /export/<id>?format=report` on the file's fake run returns
-     200, `text/markdown`, an attachment filename ending `.md`, and a body containing the run's
-     prompt; `format=tar` → 400 with the new message.
-
-9. `README.md`: `hive export --report` and the web UI's Download report button.
+8. Docs: `docs/CLI.md` — a short "Output" section: colours and the live status line in a terminal,
+   plain text when piped or with `NO_COLOR`, `--json` for raw events, and the interactive pickers.
+   `README.md` — nothing beyond what the CLI docs link already covers (leave it unless a command
+   example becomes wrong).
 
 ## Acceptance
 
 - `npm run build` exits 0.
-- `npm run build:ui` exits 0.
 - `npm test` exits 0.
-- `node --test test/export.test.mjs test/web-runs.test.mjs` exits 0 (after `npm run build`).
+- `node --test test/tui.test.mjs test/release.test.mjs test/cli.test.mjs` exits 0 (after
+  `npm run build`).
+- Bundle check (Part 1), all from the repo root:
+  `node scripts/keygen.mjs /tmp/k.pem > /tmp/k.pub && HIVE_SIGNING_KEY=/tmp/k.pem HIVE_RELEASE_SKIP_ROOTFS=1 npm run release`
+  exits 0; then extract `release/*/hive-*-linux-x86_64.tar.gz` into a temp dir, check it contains
+  `hive-<version>/ui/dist/index.html`, start
+  `API_TOKEN=0123456789abcdef0123 HIVE_KEYS_FILE=/tmp/nokeys PORT=18080 <dir>/hive-<version>/bin/hive serve`
+  in the background, and `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/ui/`
+  prints `200`. Stop the server afterwards and delete the temp files and `release/`.
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -134,16 +151,16 @@ None — do it sequentially.
   throwaway VM and is discarded), but every such file must appear in the report under "outside
   the plan", one line each saying why. Installing dependencies and temporary files outside the repo
   are fine.
-- The only checks to run are the **Acceptance** commands. Never boot a VM, start `hive run`, start
-  the server or call GitHub/OpenRouter. If something outside Acceptance fails, note it in the
-  report and finish.
-- The report is built only from `meta.json`. Don't read files from `work/` or `io/` for it. Never
-  run host git in `work/`. No new dependencies. Don't change `vm/`, `image/`, `src/sandbox.ts`.
+- The only checks to run are the **Acceptance** commands; the bundle check is the one server this
+  plan sets up. Never boot a hive VM, start `hive run`, or call GitHub/OpenRouter. If something
+  outside Acceptance fails, note it in the report and finish.
+- No new npm dependencies. Don't change `vm/`, `image/`, `src/sandbox.ts`, `src/runs.ts` run logic
+  or `ui/`. `--json` output must stay byte-for-byte as it is.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Including the full event timeline (tool calls) in the report; reports for runs still going.
+- A full-screen dashboard, a pager for `hive diff`, colour in the web UI, Windows terminals.
 
 ## If blocked
 
