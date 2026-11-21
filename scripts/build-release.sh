@@ -33,7 +33,9 @@ else
   npm run build:rootfs
   rootfs=$(realpath "${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs/current")
   rver=$(basename "$rootfs")
-  tar -C "$rootfs" --exclude=./.complete -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
+  # /run's contents are left out: the VM's init mounts a fresh tmpfs over /run at boot, and the
+  # export can leave unreadable mount points there (e.g. systemd's dissect-root).
+  tar -C "$rootfs" --exclude=./.complete --exclude='./run/*' -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
 fi
 
 app="$stage/hive-$version"
