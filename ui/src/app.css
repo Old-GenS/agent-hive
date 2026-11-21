@@ -914,6 +914,13 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
+.btn-icon-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+}
+
 .banner-hint {
   margin: 0;
   font-size: 12px;
@@ -2529,9 +2536,17 @@ a.btn {
 }
 
 .dialog-choice input {
+  /* Not the full-width text-field style every input gets. */
   flex: none;
+  width: auto;
   min-height: 0;
+  padding: 0;
   margin: 3px 0 0;
+}
+
+.dialog-choice span {
+  flex: 1;
+  min-width: 0;
 }
 
 .dialog-count {
