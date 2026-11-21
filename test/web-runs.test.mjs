@@ -273,3 +273,104 @@ test("runToJSON returns the old Task.toJSON fields", () => {
   assert.equal(newProject.createdRepo, "me/demo");
   assert.equal(newProject.repoSlug, "me/demo");
 });
+
+// ── run management: stars and Clear ──
+
+const { existsSync, readFileSync, rmSync } = await import("node:fs");
+
+/** Another run folder under the same runs dir, with the shared meta as its base. */
+function makeRun(name, overrides) {
+  const dir = join(root, name);
+  mkdirSync(join(dir, "io"), { recursive: true });
+  writeFileSync(join(dir, "meta.json"), JSON.stringify({ ...meta, ...overrides }, null, 2) + "\n");
+  return dir;
+}
+
+test("PUT /session/:id/kept stars a run, unstars it, and rejects a bad body or unknown run", async () => {
+  const starred = await app.inject({ method: "PUT", url: `/session/${ID}/kept`, payload: { kept: true } });
+  assert.equal(starred.statusCode, 200);
+  assert.deepEqual(starred.json(), { sessionId: ID, kept: true });
+  assert.equal(JSON.parse(readFileSync(join(RUN_DIR, "meta.json"), "utf8")).kept, true);
+  assert.equal((await app.inject({ method: "GET", url: `/status/${ID}` })).json().kept, true);
+
+  const unstarred = await app.inject({ method: "PUT", url: `/session/${ID}/kept`, payload: { kept: false } });
+  assert.equal(unstarred.statusCode, 200);
+  assert.deepEqual(unstarred.json(), { sessionId: ID, kept: false });
+  assert.equal(JSON.parse(readFileSync(join(RUN_DIR, "meta.json"), "utf8")).kept, undefined);
+
+  const unknown = await app.inject({ method: "PUT", url: "/session/nope/kept", payload: { kept: true } });
+  assert.equal(unknown.statusCode, 404);
+  assert.deepEqual(unknown.json(), { error: "Session not found" });
+
+  for (const payload of [{ kept: "yes" }, {}]) {
+    const bad = await app.inject({ method: "PUT", url: `/session/${ID}/kept`, payload });
+    assert.equal(bad.statusCode, 400, JSON.stringify(payload));
+  }
+});
+
+test("runToJSON reports kept and the unpushed commits a delete would lose", () => {
+  const kept = runToJSON(ID, { ...meta, kept: true }, false);
+  assert.equal(kept.kept, true);
+
+  const plain = runToJSON(ID, meta, false);
+  assert.equal(plain.kept, false);
+  assert.equal(plain.unpushedCommits, 0);
+
+  const unpushed = runToJSON(ID, { ...meta, commits: 3 }, false);
+  assert.equal(unpushed.unpushedCommits, 3);
+
+  const pushed = runToJSON(
+    ID,
+    { ...meta, commits: 3, pushed: { branch: "hive/x", url: "https://github.com/me/demo.git", at: 1 } },
+    false,
+  );
+  assert.equal(pushed.unpushedCommits, 0);
+});
+
+test("POST /sessions/clear deletes done runs, then every finished one, and keeps starred and live runs", async () => {
+  const doneDir = makeRun("clear-done", { status: "done", pid: 2147483646, finishedAt: Date.now() });
+  const failedDir = makeRun("clear-failed", { status: "failed", pid: 2147483646, finishedAt: Date.now() });
+  const abortedDir = makeRun("clear-aborted", { status: "aborted", pid: 2147483646, finishedAt: Date.now() });
+  const keptDir = makeRun("clear-kept", { status: "done", pid: 2147483646, finishedAt: Date.now(), kept: true });
+  // A run still marked running whose owner is gone: "interrupted", finished all the same.
+  const interruptedDir = makeRun("clear-interrupted", { status: "running", pid: 2147483646 });
+  // A run this process is really running: never deleted.
+  const liveDir = makeRun("clear-live", { status: "running", pid: process.pid });
+
+  // "done" is the default: only finished-successfully runs, and not the starred or live ones.
+  const done = await app.inject({ method: "POST", url: "/sessions/clear", payload: {} });
+  assert.equal(done.statusCode, 200, done.body);
+  assert.deepEqual(new Set(done.json().deleted), new Set([ID, "clear-done"]));
+  assert.deepEqual(done.json().skipped, []);
+  assert.equal(existsSync(RUN_DIR), false);
+  assert.equal(existsSync(doneDir), false);
+  assert.equal(existsSync(failedDir), true);
+  assert.equal(existsSync(abortedDir), true);
+  assert.equal(existsSync(keptDir), true);
+  assert.equal(existsSync(interruptedDir), true);
+  assert.equal(existsSync(liveDir), true);
+
+  // "finished" also takes failed, stopped and interrupted runs.
+  const finished = await app.inject({
+    method: "POST",
+    url: "/sessions/clear",
+    payload: { include: "finished" },
+  });
+  assert.equal(finished.statusCode, 200, finished.body);
+  const body = finished.json();
+  assert.ok(Array.isArray(body.deleted));
+  assert.deepEqual(new Set(body.deleted), new Set(["clear-failed", "clear-aborted", "clear-interrupted"]));
+  assert.deepEqual(body.skipped, []);
+  assert.equal(existsSync(failedDir), false);
+  assert.equal(existsSync(abortedDir), false);
+  assert.equal(existsSync(interruptedDir), false);
+  assert.equal(existsSync(keptDir), true);
+  assert.equal(existsSync(liveDir), true);
+
+  // A bad include value is rejected.
+  const bad = await app.inject({ method: "POST", url: "/sessions/clear", payload: { include: "everything" } });
+  assert.equal(bad.statusCode, 400);
+
+  rmSync(keptDir, { recursive: true, force: true });
+  rmSync(liveDir, { recursive: true, force: true });
+});

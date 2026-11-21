@@ -120,8 +120,8 @@ hive service install        # or keep it running in the background
 ```
 
 Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups or
-**Continue** a run that stopped, open pull requests and download results, from the browser or your
-phone. **Settings › Runs** sets the VM size, how many runs go at once and the time limits. Runs
+**Continue** a run that stopped, open pull requests, download results, delete runs and star the
+ones to keep, from the browser or your phone. **Settings › Runs** sets the VM size, how many runs go at once and the time limits. Runs
 from the web UI and the terminal share one list. Details in [docs/SERVER.md](docs/SERVER.md).
 
 <p>

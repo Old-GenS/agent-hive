@@ -2447,3 +2447,106 @@ a.btn {
   display: block;
   margin: 2px auto 0;
 }
+
+/* ── run management: stars, Clear…, dialogs ── */
+
+.btn-star {
+  padding: 0 12px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--honey);
+}
+
+.btn-star[aria-pressed="true"] {
+  background: var(--honey-soft);
+  border-color: var(--honey);
+}
+
+.run-item-star {
+  flex: none;
+  color: var(--honey);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.runs-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.runs-list-actions #newRunBtn {
+  width: auto;
+  flex: 1;
+}
+
+.runs-list-clear {
+  white-space: nowrap;
+}
+
+.runs-list-notice {
+  color: var(--text-2);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.hive-dialog {
+  width: calc(100% - 32px);
+  max-width: 440px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.hive-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog-title {
+  font-family: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.dialog-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.dialog-choice input {
+  flex: none;
+  min-height: 0;
+  margin: 3px 0 0;
+}
+
+.dialog-count {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.dialog-note {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}

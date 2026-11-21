@@ -66,13 +66,14 @@ itself (`order` or `only`) is used as written; `{}` lets OpenRouter choose freel
 | `HIVE_RUN_DISK_MAX_GB` | `20` | Stop an agent step when the run folder plus its cache bucket uses more than this many GB; `0` turns it off |
 | `HIVE_MIN_FREE_DISK_GB` | `2` | Stop an agent step when less than this many GB are free on the disk holding the runs; `0` turns it off |
 | `HIVE_RUNS_DIR` | `~/.cache/agent-hive/runs` | Where run folders live |
-| `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this are deleted; `0` keeps them forever |
+| `HIVE_RUN_RETENTION_DAYS` | `14` | Finished runs older than this are deleted, except starred ones; `0` keeps them forever. Also under Settings › Runs |
 | `HIVE_ROOTFS` | `~/.local/share/agent-hive/rootfs/current` | The VM filesystem |
 | `HIVE_LIBKRUN` | system `libkrun.so.1` if it works, else the bundled one | The libkrun library the launcher loads. Setting it forces that library (`libkrun from HIVE_LIBKRUN` in doctor) and disables the fallback scan. |
 | `HIVE_NETWORK` | `proxy` | `proxy`: the VM's only way out is hive's egress proxy, which allows public internet addresses only (not this computer or the local network). `direct`: pasta's own network (internet and local network, still not this computer). |
 
 `HIVE_SANDBOX_MEMORY`, `HIVE_SANDBOX_CPUS`, `HIVE_SANDBOX_TIMEOUT_MIN`, `HIVE_STALL_MIN`,
-`HIVE_RUN_DISK_MAX_GB` and `MAX_CONCURRENT_SESSIONS` can also be changed in the web UI under
+`HIVE_RUN_DISK_MAX_GB`, `HIVE_RUN_RETENTION_DAYS` and `MAX_CONCURRENT_SESSIONS` can also be
+changed in the web UI under
 **Settings › Runs**, which writes the same keys file (`HIVE_KEYS_FILE`) and applies to new runs
 without a restart; the CLI reads the file when it starts. A value set in the server's environment
 wins over the file and is shown read-only there.

@@ -20,7 +20,7 @@ delete process.env.HIVE_RUN_RETENTION_DAYS;
 process.env.DEEPSEEK_API_KEY = "sk-test";
 
 const { config } = await import("../dist/config.js");
-const { readMeta, recoverRuns, pruneRuns } = await import("../dist/runs.js");
+const { readMeta, recoverRuns, pruneRuns, setKept } = await import("../dist/runs.js");
 
 const DAY = 86_400_000;
 
@@ -104,4 +104,29 @@ test("pruneRuns keeps everything when HIVE_RUN_RETENTION_DAYS is 0", () => {
   }
   assert.equal(existsSync(oldDir), true);
   assert.equal(JSON.parse(readFileSync(join(oldDir, "meta.json"), "utf8")).status, "done");
+});
+
+test("pruneRuns skips a starred run past retention but still deletes an unstarred one", () => {
+  const now = Date.now();
+  const starredDir = makeRun("starred-old", baseMeta({ status: "done", finishedAt: now - 15 * DAY, kept: true }));
+  const plainDir = makeRun("plain-old", baseMeta({ status: "done", finishedAt: now - 15 * DAY }));
+
+  assert.ok(pruneRuns(now).includes("plain-old"));
+  assert.equal(existsSync(starredDir), true);
+  assert.equal(existsSync(plainDir), false);
+});
+
+test("setKept stars and unstars a run, round-tripping through meta.json", () => {
+  const dir = makeRun("star-me", baseMeta({ status: "done", finishedAt: Date.now() }));
+
+  const starred = setKept(dir, true);
+  assert.equal(starred.kept, true);
+  assert.equal(readMeta(dir).kept, true);
+
+  const unstarred = setKept(dir, false);
+  assert.equal(unstarred.kept, undefined);
+  assert.equal(readMeta(dir).kept, undefined);
+
+  // The rest of the meta is untouched.
+  assert.equal(readMeta(dir).status, "done");
 });

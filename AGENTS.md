@@ -22,8 +22,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/config.ts` | All env-var config (the run limits also come from the settings file, Settings › Runs), provider table (`PROVIDERS`) |
 | `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
-| `src/settings.ts` | The editable run settings (VM CPUs and memory, runs at once, time limit, stall time, disk limit): the table with defaults and limits, `readSettings`, `validateSettings` against this computer, `applySettings`/`resetSetting` writing the keys file and updating `config` in place |
-| `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session`, `/pr`, `/issue`, `/export` (a run's result as a zip or git bundle), `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
+| `src/settings.ts` | The editable run settings (VM CPUs and memory, runs at once, time limit, stall time, disk limit, finished-run retention): the table with defaults and limits, `readSettings`, `validateSettings` against this computer, `applySettings`/`resetSetting` writing the keys file and updating `config` in place |
+| `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session` (delete), `/session/:id/kept` (star), `/sessions/clear` (delete finished runs in one go), `/pr`, `/issue`, `/export` (a run's result as a zip or git bundle), `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
 | `src/stall.ts` | Stall watchdog: stop a run when nothing in `work/` changed and no event arrived for `HIVE_STALL_MIN` minutes |
 | `src/diskwatch.ts` | Disk watchdog: `du`-based size measurement and free-space checks that stop an agent step past `HIVE_RUN_DISK_MAX_GB` / below `HIVE_MIN_FREE_DISK_GB` |
 | `src/vmcache.ts` | Per-repo VM cache buckets: the repo identity key, the bucket a run mounts at `/root/.cache`, the `.used` markers and pruning of old buckets |
@@ -34,9 +34,9 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/pasta.ts` | Which pasta each VM runs under: the system one when `pasta --version` works, else the static copy bundled in a release; the label every network-isolation report uses |
 | `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, URL, SHA-256, source), passt (version, URL, SHA-256), Rust, the manylinux build image digest and the bundled Node version |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
-| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keys/serve/service); sets the commit identity from the user's git config |
+| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keep/keys/serve/service); sets the commit identity from the user's git config |
 | `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
-| `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; downloadable results (`exportRun`: a zip of the files or a git bundle of the commits); push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
+| `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; downloadable results (`exportRun`: a zip of the files or a git bundle of the commits); push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; starred runs (`setKept`, skipped by retention and Clear); startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
 | `src/routes/github.ts` | `gh`-backed repo list and branches for the UI |
@@ -183,10 +183,12 @@ forced; updates the run's own branch after a follow-up), `push --pr`, `list`, `c
 run list shows CLI runs too. The new design (light and dark): Runs (new-run form with repo and
 branch lists, per-provider model lists, review cycles, New project; the bee indicator, a timeline
 with step check-offs, the result with commits, files, Open pull request and Post review as an
-issue; follow-ups and a Continue button on failed or stopped runs) and Settings (API keys: Add,
-Test, Make default, Remove; Runs: VM CPUs and memory, runs at once, time limit, stall time and disk
-limit, saved to the keys file and applied without a restart; This computer, with the checks,
-GitHub, a live Resources section and limits). First-run onboarding (`#setup`). Checked by
+issue; follow-ups and a Continue button on failed or stopped runs; run management: star runs to
+keep them, delete a finished run after a warning about unpushed commits, and Clear… finished runs
+in one go) and Settings (API keys: Add, Test, Make default, Remove; Runs: VM CPUs and memory, runs
+at once, time limit, stall time, disk limit and finished-run retention, saved to the keys file and
+applied without a restart; This computer, with the checks, GitHub, a live Resources section and
+limits). First-run onboarding (`#setup`). Checked by
 `scripts/ui-smoke.mjs`.
 
 **Done, releases and updates:** signed releases with bundled libkrun, libkrunfw, the hardened
