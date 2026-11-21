@@ -79,7 +79,7 @@ or `gh` directly.
 - **Events:** the core turns agent events into hive's own small set and appends them to the run's
   `events.jsonl`: `status`, `message` (text, streaming deltas while live), `tool` (name, detail),
   `tool_failed`, `usage`, `done` (result, changes, links, error). The UI, the CLI's renderer and any
-  future agent adapter (dsh) only deal with these. Live subscribers get them as they happen; a late
+  future agent adapter only deal with these. Live subscribers get them as they happen; a late
   or reconnecting subscriber replays the file first.
 
 ## The layers on top

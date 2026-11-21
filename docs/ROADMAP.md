@@ -89,7 +89,7 @@ only check its syntax). The README then gets a Windows install line.
 inside would be one download with no package installs, but it is another large file to rebuild
 for every security update, so only once the script has proven itself.
 
-## Step 2 — Bundle libkrun and libkrunfw *(in progress)*
+## Step 2 — Bundle libkrun and libkrunfw *(done: v0.5.0)*
 
 This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with any distro).
 
@@ -149,7 +149,8 @@ This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with an
   launcher 2.17); on Fedora the bundled libkrun loads the bundled libkrunfw through `$ORIGIN` and
   boots a VM with working DNS and HTTPS; in an Ubuntu 24.04 container (Mint 22's userland, no system
   libkrun, Ubuntu's own pasta) `hive doctor` picks the bundled libkrun and a real run reaches the
-  model API. Left: a real Mint machine. Ships as v0.5.0.
+  model API. Shipped in v0.5.0 and confirmed on a real Linux Mint 22.1 machine; CI now boots the
+  bundle on GitHub's Ubuntu 24.04 runners for every change.
 
 ## Keeping it up to date
 
@@ -225,21 +226,21 @@ virtualization off in the firmware.
   - code signing with the hypervisor entitlement: an ad-hoc signature (free) is enough to run it on
     your own Mac; a notarized download for other people needs an Apple Developer account (US$99/year).
 - **Packages:** `.rpm` and `.deb` for system updates; a signed `.pkg` or Homebrew on macOS.
-- **Agent adapters (pi and dsh):** one adapter per harness. Each starts its agent in the VM
-  (pi: `pi --mode json`; dsh: `dsh --profile headless --json - < /io/prompt.md`) and turns its
-  events into common ones (text, tool started or failed, usage, done) for `render.ts` and the
-  cost totals. dsh's `--session-id` makes `hive continue` work for it too. The rootfs ships both.
+- **Agent adapters:** one adapter per coding agent. Each starts its agent in the VM (pi today:
+  `pi --mode json`) and turns its events into common ones (text, tool started or failed, usage,
+  done) for `render.ts` and the cost totals, with session resume so `hive continue` works for it
+  too.
 - **Web search for the agent:** a search key passed like the LLM key (Tavily or Exa free tiers),
   or a keyless fallback; pi supports search through plug-in packages.
-- **GUI onboarding:** the first-run screens (welcome, the `hive doctor` checks with a rootfs
-  download, adding a model key, GitHub), following the clickable mockup. Design and progress in
-  `docs/GUI.md`.
+- **GUI onboarding** *(done)*: the first-run screens (welcome, the `hive doctor` checks with a
+  rootfs download, adding a model key, GitHub). Design in `docs/GUI.md`.
 - **Server restarts without stopping runs:** finished runs already survive restarts (they're run
   folders on disk), but a restart stops runs in progress (they're marked "interrupted"). Refuse to
   restart, or wait for them to finish.
-- **VM size in Settings:** `HIVE_SANDBOX_MEMORY` and `HIVE_SANDBOX_CPUS` are env settings only;
-  an editor under Settings › This computer, maybe a size per run.
-- **Split `ui/src/main.ts`** (about 2,200 lines) into modules.
+- **Run settings in the web UI** *(done)*: Settings › Runs edits VM CPUs and memory, runs at
+  once, the time limit, stall time and disk limit, checked against the computer and applied to new
+  runs without a restart. Still open: a size per run.
+- **Split `ui/src/main.ts`** (about 2,500 lines) into modules.
 - **`hive serve` front end:** follow opencode's split (the agent as a local server, every UI a
   client over HTTP and server-sent events) and borrow OpenHands' UI patterns (action timeline,
   interrupt button, file-changes view). Notes and licenses in `docs/RESEARCH.md`.

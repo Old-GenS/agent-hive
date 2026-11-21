@@ -167,7 +167,8 @@ Commits made in the sandbox use `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` from `.en
 ## Status
 
 **Done, run engine (CLI and server alike):** runs on your checkout, a `--repo` URL or a new empty
-repo; follow-ups in the same pi session (`hive continue`); review cycles with an optional second
+repo; follow-ups in the same pi session (`hive continue`, also with no prompt: "continue where you
+left off"); one automatic retry in the same session after a dropped model connection; review cycles with an optional second
 model (`--review`, `--review-model`); a queue (`MAX_CONCURRENT_SESSIONS`); the stall watchdog, the
 time limit and a deadline note to the agent; committed work kept on a timeout, stall, failure or
 stop; success read from pi's last message (`stopReason`); startup cleanup of leftover VMs; finished
@@ -182,14 +183,23 @@ forced; updates the run's own branch after a follow-up), `push --pr`, `list`, `c
 run list shows CLI runs too. The new design (light and dark): Runs (new-run form with repo and
 branch lists, per-provider model lists, review cycles, New project; the bee indicator, a timeline
 with step check-offs, the result with commits, files, Open pull request and Post review as an
-issue; follow-ups) and Settings (API keys: Add, Test, Make default, Remove; This computer, with the
-checks, GitHub, a live Resources section and limits). Checked by `scripts/ui-smoke.mjs`.
+issue; follow-ups and a Continue button on failed or stopped runs) and Settings (API keys: Add,
+Test, Make default, Remove; Runs: VM CPUs and memory, runs at once, time limit, stall time and disk
+limit, saved to the keys file and applied without a restart; This computer, with the checks,
+GitHub, a live Resources section and limits). First-run onboarding (`#setup`). Checked by
+`scripts/ui-smoke.mjs`.
+
+**Done, releases and updates:** signed releases with bundled libkrun, libkrunfw, the hardened
+launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, RHEL 8+, Mint, WSL);
+`hive update` with rollback; a beta channel signed by a separate CI key; CI that boots a real VM
+for every change; a daily check that opens tested pin-bump PRs; Dependabot; a daily beta
+prerelease (`.github/workflows/`, `docs/RELEASING.md`).
 
 **Not built yet:**
-- web UI: the first-run onboarding from `docs/GUI.md`
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
-- releases: the first signed release, bundled libkrun (step 2), the beta channel and the weekly
-  update check (`docs/ROADMAP.md`)
+- Windows: an `install.ps1` that sets up WSL2 and installs hive inside it (`docs/ROADMAP.md`
+  step 1b)
+- a VM size per run
 - macOS: the launcher build for Apple silicon, and network isolation without pasta
 - a per-run network allowlist
