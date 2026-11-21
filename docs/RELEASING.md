@@ -14,6 +14,14 @@ Paste the printed public key into `src/release-key.ts` as `RELEASE_PUBLIC_KEY` a
 `hive update` refuses to install a release whose `SHA256SUMS` isn't signed by that key. Never
 commit the private key.
 
+**Back up the private key** (for example in a password manager, or offline). Installed copies only
+accept updates signed by it: if it's lost, a new key means everyone has to reinstall by hand with
+`install-cli.sh`. If it leaks, publish a release with a new key straight away and say so in the
+release notes.
+
+The release build needs podman (it builds the VM image and packs the rootfs inside
+`podman unshare`, since the image has files only root may read).
+
 ## Cut a release
 
 1. Bump `version` in `package.json`.
