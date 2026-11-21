@@ -4,10 +4,13 @@ Decisions and next steps for the `hive` CLI. Each step ships on its own, tested 
 `main` is stable; `beta` carries the newest dependencies before they're fully tested (see
 "Keeping it up to date").
 
-## Step 1 — Releases, `hive update`, system libkrun *(code done; first release not published)*
+## Step 1 — Releases, `hive update`, system libkrun *(done: v0.4.0)*
 
-Built and tested (`test/release.test.mjs`). To ship: generate the signing key, paste its public key
-into `src/release-key.ts`, then publish the first release as `docs/RELEASING.md` describes.
+The first signed release, v0.4.0, is published and was tested end to end on a fresh home folder:
+`install-cli.sh`, `hive setup`, `hive doctor`, a real run, `hive update --check` and `hive serve`.
+The release key's private half lives only on the release machine
+(`~/.config/agent-hive/release-signing-key.pem`); `docs/RELEASING.md` has the steps for the next
+release.
 
 - **Release build** (`scripts/build-release.sh`): an app bundle containing `bin/hive`, a bundled
   Node, the `hive-vm` launcher and the CLI as one bundled file. The VM filesystem (rootfs) ships as

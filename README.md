@@ -35,7 +35,7 @@ macOS and Windows (WSL2) are on the [roadmap](docs/ROADMAP.md).
 
 ## Install
 
-**From a release** (once the first release is published; until then, install from source):
+**From a release** (Linux x86_64):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
