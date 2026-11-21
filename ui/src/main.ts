@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 /**
  * hive UI: Runs (new-run form with a per-provider model list, live run timeline, Stop and
- * follow-ups) and Settings (API key status and defaults, read-only for now).
+ * follow-ups) and Settings (API keys, run limits, this computer).
  *
  * Everything from the server, GitHub or the agent is rendered as text, except the output of
  * renderMarkdown(), which escapes first and only then adds a fixed set of formatting tags.
@@ -833,7 +833,9 @@ function route(): void {
       runsViewTarget = null;
     }
     // Rebuilt each time: the sub-page follows the hash and "This computer" reloads its checks.
-    settingsEl = buildSettings(location.hash === "#settings/computer" ? "computer" : "keys");
+    const settingsPage =
+      location.hash === "#settings/computer" ? "computer" : location.hash === "#settings/runs" ? "runs" : "keys";
+    settingsEl = buildSettings(settingsPage);
     mainEl.replaceChildren(settingsEl);
     syncHeaderBee();
     return;
@@ -2213,19 +2215,257 @@ function buildKeysPage(): HTMLElement {
   return content;
 }
 
-function buildSettings(page: "keys" | "computer"): HTMLElement {
+// ── Settings › Runs: the run settings the server saves in its keys file ──
+
+interface RunsSettingEntry {
+  value: number;
+  default: number;
+  min: number;
+  max: number;
+  source: "default" | "file" | "env";
+  env: string;
+}
+
+type RunsSettingKey = "cpus" | "memoryMiB" | "maxConcurrent" | "timeoutMin" | "stallMin" | "diskMaxGb";
+
+interface RunsSettingsResponse {
+  settings: Record<RunsSettingKey, RunsSettingEntry>;
+  host: { cpus: number; memoryMiB: number };
+  warnings?: string[];
+}
+
+interface RunsSettingSpec {
+  key: RunsSettingKey;
+  label: string;
+  help: string;
+  unit: string;
+}
+
+const RUN_SETTING_SPECS: RunsSettingSpec[] = [
+  { key: "cpus", label: "CPUs per run", help: "Virtual CPUs each run's VM gets.", unit: "CPUs" },
+  {
+    key: "memoryMiB",
+    label: "Memory per run",
+    help: "RAM each run's VM gets. Browsers and builds need 2 GiB or more.",
+    unit: "MiB",
+  },
+  { key: "maxConcurrent", label: "Runs at once", help: "More runs wait in a queue.", unit: "runs" },
+  {
+    key: "timeoutMin",
+    label: "Time limit",
+    help: "A run is stopped after this long; committed work is kept.",
+    unit: "minutes",
+  },
+  { key: "stallMin", label: "Stall time", help: "Stop a run when nothing changed for this long. 0 turns it off.", unit: "minutes" },
+  { key: "diskMaxGb", label: "Disk per run", help: "Stop a run whose files grow past this. 0 turns it off.", unit: "GB" },
+];
+
+/** A MiB amount in GiB, one decimal at most: "2", "0.5", "15.5". */
+function formatGiB(mib: number): string {
+  const g = mib / 1024;
+  return Number.isInteger(g) ? String(g) : g.toFixed(1);
+}
+
+function buildRunsSettingsPage(): HTMLElement {
+  const slot = el("div", {}, el("p", { class: "cell-muted" }, "Loading run settings…"));
+  const content = el(
+    "section",
+    { class: "settings-content", "aria-labelledby": "settings-title" },
+    el("h1", { id: "settings-title" }, "Runs"),
+    el(
+      "p",
+      { class: "settings-lead" },
+      "How much each run's VM gets, and when a run is stopped. Saved values apply to new runs right away.",
+    ),
+    slot,
+  );
+  const render = (data: RunsSettingsResponse, saved = false): void => {
+    slot.replaceChildren(runsSettingsForm(data, render, saved));
+  };
+  void (async () => {
+    try {
+      const res = await api("/api/settings");
+      if (!res.ok) throw new Error(String(res.status));
+      render((await res.json()) as RunsSettingsResponse);
+    } catch {
+      slot.replaceChildren(el("p", { class: "alert alert-danger" }, "Couldn't load the run settings."));
+    }
+  })();
+  return content;
+}
+
+function runsSettingsForm(
+  data: RunsSettingsResponse,
+  render: (data: RunsSettingsResponse, saved?: boolean) => void,
+  saved = false,
+): HTMLElement {
+  const inputs = new Map<RunsSettingKey, HTMLInputElement>();
+  const errorSlots = new Map<RunsSettingKey, HTMLElement>();
+  const giHint = el("span", { class: "setting-hint" });
+  const errorNote = el("div", { role: "alert" });
+  const live = el("p", { class: "settings-live", id: "runsSettingsLive", "aria-live": "polite" });
+
+  /** The number the user typed, or the saved value while the field is empty or not a number. */
+  const valueOf = (key: RunsSettingKey): number => {
+    const raw = inputs.get(key)!.value.trim();
+    const n = Number(raw);
+    return raw === "" || !Number.isFinite(n) ? data.settings[key].value : Math.trunc(n);
+  };
+
+  const updateLive = (): void => {
+    const runs = valueOf("maxConcurrent");
+    const cpus = valueOf("cpus");
+    const memoryMiB = valueOf("memoryMiB");
+    live.textContent =
+      `Up to ${runs} runs × ${cpus} CPUs × ${formatGiB(memoryMiB)} GiB = ${runs * cpus} CPUs and ` +
+      `${formatGiB(runs * memoryMiB)} GiB of this computer's ${data.host.cpus} CPUs and ` +
+      `${formatGiB(data.host.memoryMiB)} GiB`;
+    giHint.textContent = `≈ ${formatGiB(memoryMiB)} GiB`;
+  };
+
+  const rows = el("div", { class: "form-rows settings-rows" });
+  for (const spec of RUN_SETTING_SPECS) {
+    const entry = data.settings[spec.key];
+    const inputId = `setting-${spec.key}`;
+    const helpId = `${inputId}-help`;
+    const errorSlot = el("p", { class: "field-error" });
+    errorSlots.set(spec.key, errorSlot);
+    const input = el("input", {
+      id: inputId,
+      type: "number",
+      step: "1",
+      inputmode: "numeric",
+      min: String(entry.min),
+      max: String(entry.max),
+      "aria-describedby": helpId,
+      disabled: entry.source === "env" ? "" : null,
+    });
+    input.value = String(entry.value);
+    input.addEventListener("input", updateLive);
+    inputs.set(spec.key, input);
+
+    const inputLine = el("div", { class: "setting-input-line" }, input, el("span", { class: "setting-unit" }, spec.unit));
+    // A memory size in MiB is hard to judge: show the same value in GiB next to it.
+    if (spec.key === "memoryMiB") inputLine.append(giHint);
+
+    const meta = el("p", { class: "setting-hint" }, `default: ${entry.default}`);
+    if (entry.source === "file") {
+      const resetBtn = el("button", { class: "text-btn setting-reset", type: "button" }, "Reset");
+      resetBtn.onclick = () => {
+        resetBtn.disabled = true;
+        void (async () => {
+          try {
+            const res = await api(`/api/settings/${encodeURIComponent(spec.key)}`, { method: "DELETE" });
+            const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+            if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+            render(body as unknown as RunsSettingsResponse);
+          } catch (err) {
+            errorNote.replaceChildren(el("p", { class: "alert alert-danger" }, err instanceof Error ? err.message : String(err)));
+            resetBtn.disabled = false;
+          }
+        })();
+      };
+      meta.append(" · ", resetBtn);
+    }
+
+    rows.append(
+      el(
+        "div",
+        { class: "setting-row" },
+        el(
+          "div",
+          { class: "setting-label" },
+          el("label", { for: inputId }, spec.label),
+          el("p", { id: helpId, class: "field-hint" }, spec.help),
+        ),
+        el(
+          "div",
+          { class: "setting-control" },
+          inputLine,
+          meta,
+          entry.source === "env"
+            ? el("p", { class: "setting-hint" }, `Set by ${entry.env} in the server's environment`)
+            : null,
+          errorSlot,
+        ),
+      ),
+    );
+  }
+
+  const saveBtn = el("button", { id: "saveRunsSettings", class: "btn btn-primary", type: "submit" }, "Save");
+  const status = el("p", { class: "setting-hint", role: "status" }, saved ? "Saved. New runs use these settings." : "");
+  const warnings = el("div");
+  if (data.warnings && data.warnings.length > 0) warnings.append(el("p", { class: "setting-hint" }, data.warnings.join(" ")));
+
+  const form = el(
+    "form",
+    { id: "runsSettingsForm", class: "card runs-settings-form", novalidate: "" },
+    el("h2", {}, "VM and run limits"),
+    rows,
+    live,
+    errorNote,
+    warnings,
+    el("div", { class: "form-actions" }, saveBtn, status),
+  );
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    errorNote.replaceChildren();
+    warnings.replaceChildren();
+    status.textContent = "";
+    for (const slot of errorSlots.values()) slot.textContent = "";
+    const payload: Record<string, number> = {};
+    for (const spec of RUN_SETTING_SPECS) {
+      // A value set by the server's environment cannot be changed or saved here.
+      if (data.settings[spec.key].source === "env") continue;
+      payload[spec.key] = valueOf(spec.key);
+    }
+    saveBtn.disabled = true;
+    void (async () => {
+      try {
+        const res = await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+        const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (res.status === 400) {
+          for (const [key, message] of Object.entries((body.errors ?? {}) as Record<string, string>)) {
+            errorSlots.get(key as RunsSettingKey)?.replaceChildren(message);
+          }
+          if (Array.isArray(body.warnings) && body.warnings.length > 0) {
+            warnings.replaceChildren(el("p", { class: "setting-hint" }, (body.warnings as string[]).join(" ")));
+          }
+          saveBtn.disabled = false;
+          return;
+        }
+        if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+        render(body as unknown as RunsSettingsResponse, true);
+      } catch (err) {
+        errorNote.replaceChildren(el("p", { class: "alert alert-danger" }, err instanceof Error ? err.message : String(err)));
+        saveBtn.disabled = false;
+      }
+    })();
+  });
+
+  updateLive();
+  return form;
+}
+
+function buildSettings(page: "keys" | "runs" | "computer"): HTMLElement {
   const apiKeysBtn = el("button", { class: "settings-nav-btn", type: "button" }, "API keys");
   const computerBtn = el("button", { id: "settings-computer", class: "settings-nav-btn", type: "button" }, "This computer");
-  (page === "keys" ? apiKeysBtn : computerBtn).setAttribute("aria-current", "page");
+  const runsBtn = el("button", { id: "settings-runs", class: "settings-nav-btn", type: "button" }, "Runs");
+  (page === "keys" ? apiKeysBtn : page === "runs" ? runsBtn : computerBtn).setAttribute("aria-current", "page");
   apiKeysBtn.onclick = () => {
     location.hash = "#settings";
   };
   computerBtn.onclick = () => {
     location.hash = "#settings/computer";
   };
+  runsBtn.onclick = () => {
+    location.hash = "#settings/runs";
+  };
   const setupAgain = el("a", { id: "runSetupAgain", class: "settings-nav-btn", href: "#setup" }, "Run setup again");
-  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn, computerBtn, setupAgain);
+  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn, computerBtn, runsBtn, setupAgain);
   if (page === "computer") return el("div", { class: "settings-layout" }, nav, buildComputerPage());
+  if (page === "runs") return el("div", { class: "settings-layout" }, nav, buildRunsSettingsPage());
   return el("div", { class: "settings-layout" }, nav, buildKeysPage());
 }
 
@@ -2484,7 +2724,25 @@ function computerSections(info: SystemInfo): HTMLElement[] {
     ),
   );
 
-  return [summary, el("h2", { class: "section-title" }, "GitHub"), ghCard, el("h2", { class: "section-title" }, "Checks"), el("div", { class: "table-wrap" }, table), usageSection(), el("h2", { class: "section-title" }, "Limits"), el("div", { class: "card" }, list)];
+  return [
+    summary,
+    el("h2", { class: "section-title" }, "GitHub"),
+    ghCard,
+    el("h2", { class: "section-title" }, "Checks"),
+    el("div", { class: "table-wrap" }, table),
+    usageSection(),
+    el("h2", { class: "section-title" }, "Limits"),
+    el(
+      "div",
+      { class: "card" },
+      list,
+      el(
+        "p",
+        { class: "cell-muted", id: "changeRunsSettings" },
+        el("a", { href: "#settings/runs" }, "Change in Settings › Runs"),
+      ),
+    ),
+  ];
 }
 
 // ── theme ──

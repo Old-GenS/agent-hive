@@ -19,9 +19,10 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | Path | What |
 |------|------|
 | `src/index.ts` | Fastify setup: public routes (the `/` and `/docs` redirects to `/ui/`, `/ui/`, `/health`) and the authenticated API scope |
-| `src/config.ts` | All env-var config, provider table (`PROVIDERS`) |
+| `src/config.ts` | All env-var config (the run limits also come from the settings file, Settings › Runs), provider table (`PROVIDERS`) |
 | `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
+| `src/settings.ts` | The editable run settings (VM CPUs and memory, runs at once, time limit, stall time, disk limit): the table with defaults and limits, `readSettings`, `validateSettings` against this computer, `applySettings`/`resetSetting` writing the keys file and updating `config` in place |
 | `src/web-runs.ts` | The web UI's run routes over `src/runs.ts`: `/prompt` (new runs and follow-ups), `/runs`, `/status`, `/abort`, `/session`, `/pr`, `/issue`, `/export` (a run's result as a zip or git bundle), `/events` (WebSocket with replay); the run queue (`createSlots`); auto-push of a finished run's branch |
 | `src/stall.ts` | Stall watchdog: stop a run when nothing in `work/` changed and no event arrived for `HIVE_STALL_MIN` minutes |
 | `src/diskwatch.ts` | Disk watchdog: `du`-based size measurement and free-space checks that stop an agent step past `HIVE_RUN_DISK_MAX_GB` / below `HIVE_MIN_FREE_DISK_GB` |
@@ -43,10 +44,11 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/routes/system.ts` | `/api/system` (sandbox setup and checks) and `/api/system/usage` (live CPU, memory, disk, temperature, runs) for Settings › This computer |
 | `src/usage.ts` | `usageNow()`: the live numbers behind the UI's Resources section, reading `/proc` and `/sys` under a configurable root |
 | `src/routes/keys.ts` | `/api/keys`: list (masked), add (tested first), test, remove and make-default provider keys for Settings › API keys |
+| `src/routes/settings.ts` | `/api/settings`: read the run settings and this computer, save a patch (400 field errors, 409 for env values), reset one setting to its default, for Settings › Runs |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
-| `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
+| `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
 | `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one auto-merging PR per component), `beta.yml` (daily signed beta prerelease, reusing the tested rootfs when it is current), `sync-beta.yml` (auto PR from `main` to `beta`), `dependabot-automerge.yml`; `.github/dependabot.yml` groups npm and Actions updates onto `beta` |
 | `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for releases) and `native-in-container.sh` (its manylinux_2_28 half), release build and signing |
 | `scripts/check-updates.mjs` | The daily bump check: newest upstream version of every pin in `versions.json` and `image/Containerfile` (`--list` as JSON, `--apply <component>`); pure parsers and `applyUpdate` are exported for tests |

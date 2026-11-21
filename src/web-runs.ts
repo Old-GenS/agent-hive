@@ -63,11 +63,14 @@ export interface Slots {
   release(): void;
   running(): number;
   queued(): number;
+  /** Change how many runs may be in progress (raising it starts queued waiters). */
+  setMax(n: number): void;
 }
 
 /** A fixed number of run slots, handed out FIFO. An aborted waiter leaves the queue. */
 export function createSlots(max: number): Slots {
   let running = 0;
+  let limit = max;
   interface Waiter {
     resolve: () => void;
     reject: (err: Error) => void;
@@ -77,10 +80,24 @@ export function createSlots(max: number): Slots {
   const waiters: Waiter[] = [];
   const abortError = () => new Error("aborted while queued");
 
+  /** Start queued waiters while there is room; an aborted one leaves the queue without a slot. */
+  function startWaiting(): void {
+    while (running < limit && waiters.length > 0) {
+      const waiter = waiters.shift()!;
+      waiter.signal.removeEventListener("abort", waiter.onAbort);
+      if (waiter.signal.aborted) {
+        waiter.reject(abortError());
+        continue;
+      }
+      running++;
+      waiter.resolve();
+    }
+  }
+
   return {
     acquire(signal: AbortSignal): Promise<void> {
       if (signal.aborted) return Promise.reject(abortError());
-      if (running < max) {
+      if (running < limit) {
         running++;
         return Promise.resolve();
       }
@@ -97,24 +114,25 @@ export function createSlots(max: number): Slots {
     },
     release(): void {
       if (running > 0) running--;
-      while (waiters.length > 0) {
-        const waiter = waiters.shift()!;
-        waiter.signal.removeEventListener("abort", waiter.onAbort);
-        if (waiter.signal.aborted) {
-          waiter.reject(abortError());
-          continue;
-        }
-        running++;
-        waiter.resolve();
-        return;
-      }
+      startWaiting();
     },
     running: () => running,
     queued: () => waiters.length,
+    setMax(n: number): void {
+      // Raising starts queued waiters; lowering lets running runs finish and new ones wait.
+      limit = n;
+      startWaiting();
+    },
   };
 }
 
 const slots = createSlots(config.maxConcurrent);
+
+/** Change how many runs may be in progress; new runs use it right away, no restart. */
+export function setMaxConcurrent(n: number): void {
+  config.maxConcurrent = n;
+  slots.setMax(n);
+}
 
 /** A run started by this process, so its events are still in memory. */
 interface LiveRun {
