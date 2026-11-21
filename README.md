@@ -145,7 +145,29 @@ npm run build:ui             # rebuild the web UI
 
 The code layout and the security invariants the code relies on are in [AGENTS.md](AGENTS.md).
 
+## Thanks
+
+Agent Hive is a thin layer over some excellent open-source projects. Thank you to everyone who
+builds and maintains them:
+
+- **[pi](https://pi.dev)**: the coding agent that does the actual work inside each VM. hive's whole
+  design (a prompt file in, a JSON event log out) leans on pi's headless mode.
+- **[libkrun](https://github.com/containers/libkrun)** and
+  **[libkrunfw](https://github.com/containers/libkrunfw)**: the library that boots a microVM in a
+  few hundred milliseconds, and the small Linux kernel it runs, from the
+  [containers](https://github.com/containers) project.
+- **[passt / pasta](https://passt.top)**: rootless networking that gives each VM the internet
+  without access to your machine or your LAN.
+- **[Fedora](https://fedoraproject.org)**: the base of the VM's filesystem, which also packages
+  libkrun and passt.
+- **[Chromium](https://www.chromium.org)**, **[Node.js](https://nodejs.org)** and
+  **[git](https://git-scm.com)**: inside every VM, and behind half of what the agent does.
+- **[Fastify](https://fastify.dev)**, **[Vite](https://vite.dev)**,
+  **[esbuild](https://esbuild.github.io)** and **[TypeScript](https://www.typescriptlang.org)**:
+  the server, the web UI build and the release bundle.
+
+Their licenses and the full list are in [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).
+
 ## License
 
-[MIT](LICENSE). Built on [pi](https://pi.dev) (BSD 3-Clause) and
-[libkrun](https://github.com/containers/libkrun) (Apache 2.0).
+[MIT](LICENSE).
