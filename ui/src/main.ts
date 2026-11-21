@@ -10,6 +10,7 @@ import "./app.css";
 import { createBeeIndicator, headerBee, miniHive, type BeeIndicator, type BeeState } from "./bee.js";
 import { renderMarkdown } from "./markdown.js";
 import { api, clearToken, el, esc, getToken, saveToken, setToken, serverUrl } from "./util.js";
+import { buildSetupPage } from "./onboarding.js";
 
 // ── types ──
 
@@ -477,6 +478,40 @@ let openRunSeq = 0;
 const RUNS_POLL_MS = 3000;
 const MAX_VISIBLE_RUNS = 5;
 
+/** This browser finished or skipped the first-run setup. */
+const ONBOARDING_KEY = "hive-onboarding-done";
+/** Set when "Start your first run" left #setup, to focus the task box once the form exists. */
+let focusTaskAfterRoute = false;
+
+function onboardingDone(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDING_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markOnboardingDone(): void {
+  try {
+    localStorage.setItem(ONBOARDING_KEY, "1");
+  } catch {
+    // Not remembered, but the flow still works for this page.
+  }
+}
+
+/** Whether the server says setup is needed, and this browser hasn't dismissed it. */
+async function onboardingNeeded(): Promise<boolean> {
+  if (onboardingDone()) return false;
+  try {
+    const res = await api("/api/onboarding");
+    if (!res.ok) return false;
+    const data = (await res.json()) as { needed?: unknown };
+    return data.needed === true;
+  } catch {
+    return false;
+  }
+}
+
 // ── small helpers ──
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -598,6 +633,8 @@ function renderLogin(showError = false): void {
 
 async function enterApp(user: { name: string }): Promise<void> {
   await loadProviders();
+  // A new user with no key, or a machine that isn't set up, starts in the setup flow.
+  if (await onboardingNeeded()) history.replaceState(null, "", "#setup");
   renderApp(user);
 }
 
@@ -759,6 +796,24 @@ function showRunMessage(message: string): void {
 function route(): void {
   if (!mainEl || !navRunsEl || !navSettingsEl) return;
   stopUsagePolling();
+  if (location.hash.startsWith("#setup")) {
+    // Full-page first-run flow: no run list, no settings sub-page.
+    navRunsEl.removeAttribute("aria-current");
+    navSettingsEl.removeAttribute("aria-current");
+    stopRunsPolling();
+    mainEl.replaceChildren(
+      buildSetupPage({
+        dismiss: markOnboardingDone,
+        startRun: () => {
+          markOnboardingDone();
+          focusTaskAfterRoute = true;
+          location.hash = "#runs";
+        },
+      }),
+    );
+    syncHeaderBee();
+    return;
+  }
   const view = location.hash.startsWith("#settings") ? "settings" : "runs";
   if (view === "settings") {
     navSettingsEl.setAttribute("aria-current", "page");
@@ -792,6 +847,10 @@ function route(): void {
       openRunSeq++;
       closeRun();
       runsViewEl?.replaceChildren(buildForm());
+      if (focusTaskAfterRoute) {
+        focusTaskAfterRoute = false;
+        document.getElementById("task")?.focus();
+      }
     } else if (run?.sessionId !== id) {
       void openRun(id);
     }
@@ -2146,7 +2205,8 @@ function buildSettings(page: "keys" | "computer"): HTMLElement {
   computerBtn.onclick = () => {
     location.hash = "#settings/computer";
   };
-  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn, computerBtn);
+  const setupAgain = el("a", { id: "runSetupAgain", class: "settings-nav-btn", href: "#setup" }, "Run setup again");
+  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings" }, apiKeysBtn, computerBtn, setupAgain);
   if (page === "computer") return el("div", { class: "settings-layout" }, nav, buildComputerPage());
   return el("div", { class: "settings-layout" }, nav, buildKeysPage());
 }

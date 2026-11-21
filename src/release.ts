@@ -191,8 +191,21 @@ export async function fetchRelease(tag?: string, timeoutMs = 30_000): Promise<Re
   };
 }
 
-/** Download one release asset to `dest`. */
-export async function download(asset: ReleaseAsset, dest: string, timeoutMs = 600_000): Promise<void> {
+/** How far a download has got: bytes received and the total when the server sent one. */
+export interface DownloadProgress {
+  received: number;
+  total: number | undefined;
+}
+
+export type OnProgress = (progress: DownloadProgress) => void;
+
+/** Download one release asset to `dest`, optionally reporting progress (from Content-Length). */
+export async function download(
+  asset: ReleaseAsset,
+  dest: string,
+  timeoutMs = 600_000,
+  onProgress?: OnProgress,
+): Promise<void> {
   const token = releaseToken();
   const headers: Record<string, string> = { "User-Agent": "agent-hive" };
   if (token) {
@@ -206,8 +219,20 @@ export async function download(asset: ReleaseAsset, dest: string, timeoutMs = 60
   if (!response.ok || !response.body) {
     throw new Error(`download failed: ${asset.name}: HTTP ${response.status}`);
   }
+  const length = response.headers.get("content-length");
+  const total = length !== null && /^\d+$/.test(length) ? Number(length) : undefined;
+  let received = 0;
+  if (onProgress) onProgress({ received, total });
+  async function* counted(source: AsyncIterable<Buffer | string>): AsyncIterable<Buffer | string> {
+    for await (const chunk of source) {
+      received += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+      if (onProgress) onProgress({ received, total });
+      yield chunk;
+    }
+  }
   await pipeline(
     Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
+    (source) => counted(source as AsyncIterable<Buffer | string>),
     createWriteStream(dest),
   );
 }
@@ -218,6 +243,7 @@ export async function ensureRootfs(
   rver: string,
   sums: Map<string, string>,
   tmp: string,
+  onProgress?: OnProgress,
 ): Promise<void> {
   const dest = join(rootfsDir(), rver);
   if (existsSync(join(dest, ".complete"))) return;
@@ -226,7 +252,7 @@ export async function ensureRootfs(
   const asset = rel.assets.find((a) => a.name === name);
   if (!asset) throw new Error(`release has no rootfs ${rver}`);
   const file = join(tmp, name);
-  await download(asset, file);
+  await download(asset, file, 600_000, onProgress);
   const actual = await sha256File(file);
   if (actual !== sums.get(name)) throw new Error(`checksum mismatch: ${name}`);
 
@@ -294,8 +320,11 @@ export async function installRelease(rel: Release, o: { publicKey?: string } = {
   }
 }
 
-/** Download the VM rootfs that belongs to the running bundle (hive setup). */
-export async function setupRootfs(o: { publicKey?: string } = {}): Promise<string> {
+/**
+ * Download the VM rootfs that belongs to the running bundle (hive setup). `onProgress` is called
+ * as the archive downloads; it is never required.
+ */
+export async function setupRootfs(o: { publicKey?: string; onProgress?: OnProgress } = {}): Promise<string> {
   if (!bundleRoot()) throw new Error("not an installed release");
   const rver = readFileSync(join(bundleRoot() as string, "ROOTFS_VERSION"), "utf8").trim();
   const dest = join(rootfsDir(), rver);
@@ -320,7 +349,7 @@ export async function setupRootfs(o: { publicKey?: string } = {}): Promise<strin
     if (!verifySums(sums, readFileSync(sigPath, "utf8"), key)) {
       throw new Error("release signature check failed");
     }
-    await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp);
+    await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, o.onProgress);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

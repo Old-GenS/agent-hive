@@ -15,21 +15,34 @@ Settings in the header.
   confirmation) work on each saved key. The storage is the private file; there is no keychain
   choice yet.
 - **Settings › This computer:** the checks from step 2 of screen 1 (KVM, libkrun, pasta, launcher,
-  VM filesystem) plus the GitHub connection and limits. No rootfs download from the UI yet.
-- **Not built:** the first-run screens (screen 1).
+  VM filesystem) plus the GitHub connection and limits.
+- **First run (`#setup`):** screen 1, built as a five-step flow: Welcome → Check this computer →
+  Add a model key → GitHub (optional) → Ready. A failed check shows the fix for this distro (and a
+  WSL-specific one) with a **Copy** button; an installed release whose VM filesystem is missing
+  offers **Download VM filesystem** with a progress bar. Every step has a **Skip setup** link, the
+  browser remembers when setup is done, and Settings has **Run setup again**. The flow opens by
+  itself on login when there is no model key or a check fails.
 
 ## Screen 1: first run
 
+Built at `#setup`; `hive doctor` prints the same fix text and commands.
+
 1. **Welcome:** what hive does, in three points.
-2. **Check this computer:** the `hive doctor` checks (KVM, libkrun, pasta), plus a **Download**
-   button with progress for the VM filesystem. A failed check shows the exact install command.
-3. **Add a model key:**
-   - pick a provider, paste the key, then **Test key** (it only continues once the key works);
-   - choose where to keep it;
-   - set the default model, prefilled per provider.
-4. **GitHub (optional):** detects the `gh` login. Choose the `gh` login (push and PRs), git
-   credentials only, or local repos only.
-5. **Ready:** a summary, plus the first commands to try.
+2. **Check this computer:** the `hive doctor` checks (KVM, libkrun, pasta, launcher, VM filesystem).
+   A failed check shows the exact command for this distro, with **Copy**; WSL gets its own note
+   about nested virtualization and the Fedora WSL distro. An installed release whose VM
+   filesystem is missing offers **Download VM filesystem** with a progress bar and **Check again**.
+   Next becomes **Continue anyway** when a check fails, so a key can be added first.
+3. **Add a model key:** pick a provider, paste the key, then **Test and save** (the key is tested
+   before it is written; the server's error shows inline). The default model is shown; **Make
+   default** is offered when another provider already has a key. Choosing a keychain instead of
+   the private file is not built.
+4. **GitHub (optional):** detects the `gh` login; when it isn't connected, it explains that local
+   repos still work and shows `gh auth login` in a copy box. The mockup's choice between a `gh`
+   login, git credentials only and local repos is not built: hive uses the server's `gh` login (see
+   [SERVER.md](SERVER.md#github-access)).
+5. **Ready:** a summary (checks, model key, GitHub) and **Start your first run**, which lands on
+   Runs with the task box focused; the terminal equivalent (`hive run "<task>"`) is copyable.
 
 ## Screen 2: Settings › API keys
 

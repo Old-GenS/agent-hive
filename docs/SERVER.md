@@ -45,6 +45,12 @@ is kept.
 
 ## The web UI
 
+**First run:** a new user with no model key, or a machine that isn't set up, lands on `#setup`
+(Welcome → Check this computer → Add a model key → GitHub → Ready). A failed check shows the
+command that fixes it for this distro, and WSL gets its own advice. An installed release whose VM
+filesystem is missing offers **Download VM filesystem** with progress. Every step can be skipped,
+and Settings has **Run setup again**. `hive doctor` prints the same fixes in the terminal.
+
 **Runs**
 
 - **New run:** the task; an existing repo (picked from your GitHub repos via `gh`, with its
@@ -107,6 +113,8 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | GET | `/api/system/usage` | Live CPU, memory, disk, temperature and runs |
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key |
 | GET | `/api/models?provider=` | Models to offer for a provider |
+| GET | `/api/onboarding` | First-run state: whether setup is needed, the system checks with their distro-aware fixes, the key and GitHub status, and the VM filesystem download state |
+| POST | `/api/setup/rootfs` | Download the VM filesystem for an installed release (202; progress via `GET /api/onboarding`); 409 when it isn't possible or a download is already running |
 | GET | `/api/keys` | Each provider's key status (masked, never the key) |
 | POST | `/api/keys` | Test and save a key (`provider`, `key`) |
 | POST | `/api/keys/:provider/test` | Test a provider's key |

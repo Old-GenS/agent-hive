@@ -9,6 +9,8 @@ import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { followJsonl } from "./follow.js";
+import { fixFor, hostInfo } from "./fixes.js";
+import type { CheckId, Fix } from "./fixes.js";
 
 export type Isolation = "microvm" | "unavailable";
 
@@ -303,8 +305,11 @@ function readTail(path: string, max: number): string {
 
 export interface SystemCheck {
   name: string;
+  id: CheckId;
   ok: boolean;
   detail: string;
+  /** The distro-aware fix, set only when the check fails. */
+  fix?: Fix;
 }
 
 /** What the server runs sandboxes with, plus the checks behind it, for the UI's "This computer". */
@@ -321,7 +326,12 @@ export function systemInfo(): {
   } catch (err) {
     kvm = (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "no access";
   }
-  checks.push({ name: "Hardware virtualization", ok: kvm === "ok", detail: kvm === "ok" ? "/dev/kvm" : `/dev/kvm: ${kvm}` });
+  checks.push({
+    name: "Hardware virtualization",
+    id: "kvm",
+    ok: kvm === "ok",
+    detail: kvm === "ok" ? "/dev/kvm" : `/dev/kvm: ${kvm}`,
+  });
   const launcher = existsSync(config.sandbox.vmBin);
   let libkrun = false;
   if (launcher) {
@@ -335,9 +345,14 @@ export function systemInfo(): {
       libkrun = false;
     }
   }
-  checks.push({ name: "libkrun (starts the VM)", ok: libkrun, detail: config.sandbox.libkrun });
-  checks.push({ name: "pasta (network isolation)", ok: onPath("pasta"), detail: "VMs reach the internet, not this computer or the local network" });
-  checks.push({ name: "VM launcher", ok: launcher, detail: config.sandbox.vmBin });
+  checks.push({ name: "libkrun (starts the VM)", id: "libkrun", ok: libkrun, detail: config.sandbox.libkrun });
+  checks.push({
+    name: "pasta (network isolation)",
+    id: "pasta",
+    ok: onPath("pasta"),
+    detail: "VMs reach the internet, not this computer or the local network",
+  });
+  checks.push({ name: "VM launcher", id: "launcher", ok: launcher, detail: config.sandbox.vmBin });
   let rootfs = config.sandbox.rootfs;
   let rootfsOk = false;
   try {
@@ -346,7 +361,11 @@ export function systemInfo(): {
   } catch {
     rootfsOk = false;
   }
-  checks.push({ name: "VM filesystem", ok: rootfsOk, detail: rootfs });
+  checks.push({ name: "VM filesystem", id: "rootfs", ok: rootfsOk, detail: rootfs });
+  const host = hostInfo();
+  for (const check of checks) {
+    if (!check.ok) check.fix = fixFor(check.id, host);
+  }
   return { isolation: runtimeInfo.isolation, runtime: runtimeInfo.runtime, warning: runtimeInfo.warning, checks };
 }
 

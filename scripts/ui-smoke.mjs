@@ -58,6 +58,8 @@ async function waitForHealth() {
 
 async function login(page) {
   await page.goto(`${BASE}/ui/`);
+  // The main flows are not about first-run setup: mark it done before signing in.
+  await page.evaluate(() => localStorage.setItem("hive-onboarding-done", "1"));
   await page.fill("#token", TOKEN);
   await page.click("#loginBtn");
   await page.waitForSelector("#provider", { timeout: 15_000 });
@@ -406,6 +408,7 @@ try {
     nodes.filter((node) => (node.textContent ?? "").trim() === "Default").length,
   );
   assert(defaultPills === 1, `settings table has one Default pill (got ${defaultPills})`);
+  assert((await page.$$("#runSetupAgain")).length === 1, "settings links back to the setup flow");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-settings.png") });
 
   const envRow = await page.$eval("#keysTable tbody", (tbody) => {
@@ -486,6 +489,70 @@ try {
     `Log out shows the current user on hover (got ${logoutTitle})`,
   );
   assert((await page.$$(".user-name")).length === 0, "the user name is no longer in the header");
+
+  // ── first-run onboarding (#setup): welcome -> checks -> key -> GitHub -> ready ──
+  const onboarding = {
+    needed: true,
+    checks: [
+      { name: "Hardware virtualization", id: "kvm", ok: true, detail: "/dev/kvm" },
+      {
+        name: "pasta (network isolation)",
+        id: "pasta",
+        ok: false,
+        detail: "not found",
+        fix: { text: "Install passt, which provides pasta.", command: "sudo dnf install passt" },
+      },
+    ],
+    hasKey: false,
+    defaultProvider: null,
+    github: { connected: false },
+    host: { distro: "fedora", wsl: false, bundle: true },
+    rootfs: { ok: false, canDownload: true, download: { state: "idle", received: 0, total: undefined } },
+  };
+  await page.route("**/api/onboarding", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(onboarding) }),
+  );
+  await page.route("**/api/setup/rootfs", (route) =>
+    route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ state: "downloading" }) }),
+  );
+  // A fresh browser: no token and no remembered setup, so signing in enters the setup flow.
+  await page.evaluate(() => {
+    localStorage.removeItem("hive-onboarding-done");
+    localStorage.removeItem("hive_token");
+  });
+  await page.goto(`${BASE}/ui/`);
+  await page.fill("#token", TOKEN);
+  await page.click("#loginBtn");
+  await page.waitForSelector("#onboarding");
+  const welcomeTitle = await page.$eval("#onboarding .setup-step-body h1", (node) => (node.textContent ?? "").trim());
+  assert(welcomeTitle === "Welcome to hive", `setup opens on the Welcome step (got ${JSON.stringify(welcomeTitle)})`);
+  await page.click("#setup-next");
+  await page.waitForSelector("#setup-checks");
+  const failedFix = await page.$eval(".setup-check.is-failed .setup-command-text", (node) => (node.textContent ?? "").trim());
+  assert(
+    failedFix === "sudo dnf install passt",
+    `the failed check shows its fix command (got ${JSON.stringify(failedFix)})`,
+  );
+  assert((await page.$$("#setup-download")).length === 1, "the Download VM filesystem button is offered");
+  await page.click("#setup-download");
+  await page.waitForSelector(".setup-progress");
+  await page.screenshot({ path: join(repoRoot, ".handoff", "ui-onboarding-checks.png") });
+  await page.click("#setup-next");
+  await page.waitForSelector("#setup-provider");
+  await page.click("#setup-next");
+  await page.waitForSelector("#setup-github-check");
+  await page.click("#setup-next");
+  await page.waitForSelector("#setup-start-run");
+  const summaryText = await page.$eval("#setup-summary", (node) => (node.textContent ?? "").trim());
+  assert(summaryText.includes("checks passed"), `the Ready step summarizes the checks (got ${JSON.stringify(summaryText)})`);
+  await page.click("#setup-start-run");
+  await page.waitForSelector("#provider");
+  const setupHash = await page.evaluate(() => location.hash);
+  assert(setupHash === "#runs", `Start your first run lands on the Runs page (got ${JSON.stringify(setupHash)})`);
+  const focusedId = await page.evaluate(() => document.activeElement?.id);
+  assert(focusedId === "task", `Start your first run focuses the task box (got ${JSON.stringify(focusedId)})`);
+  await page.unroute("**/api/onboarding");
+  await page.unroute("**/api/setup/rootfs");
 
   // ── phone: runs view at 390 px ──
   await page.setViewportSize({ width: 390, height: 844 });

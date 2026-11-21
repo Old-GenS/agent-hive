@@ -13,7 +13,7 @@ import { capacity } from "../web-runs.js";
 import { hostname } from "node:os";
 
 /** Whether the server's gh login works, and as whom. */
-async function githubStatus(): Promise<{ connected: boolean; login?: string; error?: string }> {
+export async function githubStatus(): Promise<{ connected: boolean; login?: string; error?: string }> {
   try {
     return { connected: true, login: await githubLogin() };
   } catch (err) {

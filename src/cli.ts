@@ -1195,16 +1195,20 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const { config, providerInfo } = await import("./config.js");
   const { libkrunAvailable } = await import("./sandbox.js");
   const { currentVersion } = await import("./release.js");
+  const { fixFor, hostInfo } = await import("./fixes.js");
+  type CheckId = Parameters<typeof fixFor>[0];
+  const host = hostInfo();
 
   let allOk = true;
   const version = `hive ${currentVersion() ?? "dev (from source)"}`;
   // Plain output is `<label>: <detail>` for every check, exactly as before; the terminal view
-  // replaces the colon with a ✓/✗ and keeps the same fix hint in the detail.
-  const checks: { ok: boolean; label: string; detail: string }[] = [];
+  // replaces the colon with a ✓/✗ and keeps the same fix hint in the detail. A failed check that
+  // has a distro-aware fix prints its text and command on the lines below.
+  const checks: { ok: boolean; label: string; detail: string; id?: CheckId }[] = [];
   const notes: string[] = [];
 
   const kvm = kvmState();
-  checks.push({ ok: kvm === "ok", label: "/dev/kvm", detail: kvm });
+  checks.push({ ok: kvm === "ok", id: "kvm", label: "/dev/kvm", detail: kvm });
   if (kvm !== "ok") allOk = false;
 
   const libkrun = config.sandbox.libkrun;
@@ -1222,6 +1226,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   }
   checks.push({
     ok: libkrunOk,
+    id: "libkrun",
     label: "libkrun",
     detail: libkrunOk ? `ok (${libkrun})` : "not found — install your distro's libkrun package (Fedora: sudo dnf install libkrun)",
   });
@@ -1230,6 +1235,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const pasta = commandPath("pasta");
   checks.push({
     ok: pasta !== undefined,
+    id: "pasta",
     label: "pasta",
     detail: pasta ? `ok (${pasta})` : "not found — install passt (Fedora: sudo dnf install passt)",
   });
@@ -1238,6 +1244,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const launcherOk = existsSync(config.sandbox.vmBin);
   checks.push({
     ok: launcherOk,
+    id: "launcher",
     label: "launcher",
     detail: launcherOk ? `ok (${config.sandbox.vmBin})` : `missing (${config.sandbox.vmBin})`,
   });
@@ -1253,6 +1260,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   }
   checks.push({
     ok: rootfsOk,
+    id: "rootfs",
     label: "rootfs",
     detail: rootfsOk ? `ok (${rootfsPath})` : `missing (${config.sandbox.rootfs}) — run hive setup`,
   });
@@ -1287,15 +1295,27 @@ async function cmdDoctor(args: string[]): Promise<number> {
   notes.push(`thinking: ${def.thinking}`);
 
   const lines: string[] = [];
+  const fixLines = (check: (typeof checks)[number], tty: boolean): void => {
+    if (check.ok || check.id === undefined) return;
+    const fix = fixFor(check.id, host);
+    lines.push(tty ? dim(`  ${fix.text}`, true) : `  ${fix.text}`);
+    if (fix.command !== undefined) {
+      lines.push(tty ? `  $ ${cyan(fix.command, true)}` : `  $ ${fix.command}`);
+    }
+  };
   if (colorEnabled(process.stdout)) {
     lines.push(bold(version));
     for (const check of checks) {
       lines.push(`${check.ok ? green(symbols.done, true) : red(symbols.failed, true)} ${check.label}  ${check.detail}`);
+      fixLines(check, true);
     }
     for (const note of notes) lines.push(dim(note, true));
   } else {
     lines.push(version);
-    for (const check of checks) lines.push(`${check.label}: ${check.detail}`);
+    for (const check of checks) {
+      lines.push(`${check.label}: ${check.detail}`);
+      fixLines(check, false);
+    }
     lines.push(...notes);
   }
   process.stdout.write(lines.join("\n") + "\n");
