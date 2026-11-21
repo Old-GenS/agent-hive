@@ -21,7 +21,7 @@ hive continue [run] "<prompt>"
 hive log [run] [--json]
 hive diff [run] [--stat]
 hive apply [run] [--branch <name>]
-hive export [run] [--zip | --bundle] [-o <path>] [--force]
+hive export [run] [--zip | --bundle | --report] [-o <path>] [--force]
 hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
 hive list
 hive clean <run> | --all
@@ -403,17 +403,26 @@ async function cmdExport(args: string[]): Promise<number> {
     options: {
       zip: { type: "boolean" },
       bundle: { type: "boolean" },
+      report: { type: "boolean" },
       output: { type: "string", short: "o" },
       force: { type: "boolean" },
     },
   });
-  if (values.zip && values.bundle) throw new Error("pick one of --zip or --bundle");
-  const { exportRun, resolveRun } = await import("./runs.js");
+  if ([values.zip, values.bundle, values.report].filter(Boolean).length > 1) {
+    throw new Error("pick one of --zip, --bundle or --report");
+  }
+  const { exportReport, exportRun, resolveRun } = await import("./runs.js");
   const dir = resolveRun(positionals[0]);
-  const format = values.bundle ? "bundle" : "zip";
+  const format: "zip" | "bundle" | "report" = values.report ? "report" : values.bundle ? "bundle" : "zip";
   const runName = basename(dir);
-  const outPath = values.output ?? join(process.cwd(), `${runName}.${format}`);
+  const ext = format === "report" ? "md" : format;
+  const outPath = values.output ?? join(process.cwd(), `${runName}.${ext}`);
   if (existsSync(outPath) && !values.force) throw new Error(`${outPath} already exists; use --force to overwrite`);
+  if (format === "report") {
+    const report = exportReport(dir, outPath);
+    process.stdout.write(`hive: wrote report for ${runName} to ${report.path}\n`);
+    return 0;
+  }
   const result = await exportRun(dir, format, outPath);
   process.stdout.write(`hive: exported ${result.commits} commit(s) to ${result.path}\n`);
   if (format === "bundle") process.stdout.write(`git clone ${result.path} ${runName}\n`);

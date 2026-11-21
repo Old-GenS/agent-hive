@@ -21,6 +21,7 @@ import {
   openPr,
   pushRun,
   readMeta,
+  reportMarkdown,
   startRun,
   writeMeta,
   type RunMeta,
@@ -515,18 +516,25 @@ export default async function webRunRoutes(app: FastifyInstance) {
   });
 
   // Download a finished run's result, built from its patches in a fresh clone of the trusted
-  // source (never from the agent's work/ copy): a zip of the files or a git bundle of the commits.
+  // source (never from the agent's work/ copy): a zip of the files, a git bundle of the commits,
+  // or a Markdown report built from the run's meta.json.
   app.get("/export/:sessionId", async (req, reply) => {
     const id = (req.params as any).sessionId as string;
     const dir = runDir(id);
     if (!dir) return notFound(reply);
     const format = (req.query as any)?.format;
-    if (format !== "zip" && format !== "bundle") {
-      return reply.code(400).send({ error: "format must be zip or bundle" });
+    if (format !== "zip" && format !== "bundle" && format !== "report") {
+      return reply.code(400).send({ error: "format must be zip, bundle or report" });
     }
     const meta = metaOf(dir);
     if (!meta) return notFound(reply);
     if (liveRuns.has(id) || isLive(meta)) return reply.code(409).send({ error: "Run is still going" });
+
+    if (format === "report") {
+      reply.header("Content-Type", "text/markdown; charset=utf-8");
+      reply.header("Content-Disposition", `attachment; filename="${id}.md"`);
+      return reply.send(reportMarkdown(id, meta));
+    }
 
     const ext = format === "zip" ? "zip" : "bundle";
     const tmp = mkdtempSync(join(tmpdir(), "hive-export-"));

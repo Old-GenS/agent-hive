@@ -80,6 +80,8 @@ export interface RunMeta {
   thinking: string;
   /** first 200 characters of the prompt */
   prompt: string;
+  /** every prompt of the run (the first one, then any follow-ups), full text */
+  prompts?: { text: string; at: number }[];
   status: RunStatus;
   pid: number;
   commits: number;
@@ -439,6 +441,109 @@ export async function exportRun(
   return { path: outPath, commits: patches.length };
 }
 
+/**
+ * A run's facts as a Markdown report, built only from its meta.json: the first prompt's first line
+ * as the title, a facts table, every prompt, the agent's final report, its error and the commits
+ * and files the run made. Pure, so the CLI, the web route and the tests all share it.
+ */
+export function reportMarkdown(name: string, meta: RunMeta): string {
+  const prompts: { text: string; at: number | undefined }[] = meta.prompts?.length
+    ? meta.prompts
+    : [{ text: meta.prompt, at: undefined }];
+  const title = (prompts[0].text.split("\n").find((line) => line.trim() !== "") ?? "").trim().slice(0, 120);
+
+  const rows: [string, string][] = [
+    ["Run", name],
+    [
+      "Repository",
+      meta.createdRepo ??
+        (meta.repo || (meta.newRepo ? `new project ${meta.newRepo.name}` : "")),
+    ],
+    ["Status", meta.status === "aborted" ? "stopped" : meta.status === "queued" ? "running" : meta.status],
+    ["Model", `${meta.provider} · ${meta.model} · thinking ${meta.thinking}`],
+    ["Started", isoNoMillis(meta.createdAt)],
+    ["Finished", meta.finishedAt === undefined ? "—" : isoNoMillis(meta.finishedAt)],
+    [
+      "Duration",
+      meta.finishedAt === undefined ? "—" : durationText(meta.finishedAt - meta.createdAt),
+    ],
+    [
+      "Cost",
+      `$${meta.usage.cost.toFixed(4)} (${meta.usage.input} in / ${meta.usage.output} out tokens)`,
+    ],
+    ["Commits", String(meta.commits)],
+  ];
+  if (meta.pushed) rows.push(["Branch", meta.pushed.branch]);
+  if (meta.prUrl) rows.push(["Pull request", meta.prUrl]);
+
+  const parts: string[] = [`# ${title}`, "", "| | |", "|---|---|"];
+  for (const [label, value] of rows) parts.push(`| ${label} | ${tableCell(value)} |`);
+
+  parts.push("");
+  if (prompts.length > 1) {
+    parts.push("## Prompts");
+    prompts.forEach((prompt, index) => {
+      parts.push("", `### ${index + 1} — ${prompt.at === undefined ? "—" : isoNoMillis(prompt.at)}`, "", prompt.text);
+    });
+  } else {
+    parts.push("## Prompt", "", prompts[0].text);
+  }
+
+  parts.push("", "## Report", "", meta.summary ?? "_The agent left no report._");
+
+  if (meta.error !== undefined) {
+    const fence = fenceFor(meta.error);
+    parts.push("", "## Error", "", `${fence}\n${meta.error}\n${fence}`);
+  }
+
+  if (meta.changes?.commits.length) {
+    parts.push("", "## Commits", "", ...meta.changes.commits.map((subject) => `- ${subject}`));
+  }
+
+  if (meta.changes?.files.length) {
+    parts.push("", "## Files changed", "");
+    for (const file of meta.changes.files) {
+      const stats = file.added === null || file.removed === null ? "binary" : `+${file.added} −${file.removed}`;
+      parts.push(`- \`${file.path}\` (${stats})`);
+    }
+  }
+
+  return parts.join("\n") + "\n";
+}
+
+/** YYYY-MM-DDTHH:MM:SSZ, without milliseconds. */
+function isoNoMillis(ms: number): string {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/** "12 min 3 s", "3 s". */
+function durationText(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes} min ${seconds} s` : `${seconds} s`;
+}
+
+/** A table cell: pipes escaped and newlines flattened, so the row keeps its shape. */
+function tableCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+/** A code fence longer than any run of backticks in the content (at least three). */
+function fenceFor(text: string): string {
+  let longest = 0;
+  for (const match of text.matchAll(/`+/g)) longest = Math.max(longest, match[0].length);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
+/** Write a finished run's Markdown report to `outPath`; refuses while the run is still going. */
+export function exportReport(dir: string, outPath: string): { path: string } {
+  const meta = readMeta(dir);
+  if (isLive(meta)) throw new Error("run is still going");
+  writeFileSync(outPath, reportMarkdown(basename(dir), meta));
+  return { path: outPath };
+}
+
 /** Subject of the first `Subject: ` line in a format-patch file, with the `[PATCH …]` tag off. */
 export function patchSubject(patchText: string): string {
   const line = patchText.split("\n").find((l) => l.startsWith("Subject: "));
@@ -663,6 +768,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     model,
     thinking,
     prompt: o.prompt.slice(0, 200),
+    prompts: [{ text: o.prompt, at: Date.now() }],
     status: "queued",
     pid: process.pid,
     commits: 0,
@@ -740,6 +846,7 @@ export async function continueRun(dir: string, o: ContinueRunOptions): Promise<{
 
   meta.status = "queued";
   meta.pid = process.pid;
+  meta.prompts = [...(meta.prompts ?? []), { text: o.prompt, at: Date.now() }];
   delete meta.error;
   delete meta.finishedAt;
   writeMeta(dir, meta);

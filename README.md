@@ -67,7 +67,8 @@ cd ~/code/some-repo
 hive run "add input validation to the signup form"
 hive diff --stat
 hive apply                       # as uncommitted changes in your working tree
-hive export                      # or a zip of the project files, or --bundle for a git bundle
+hive export                      # or a zip of the project files, --bundle for a git bundle
+hive export --report             # or a Markdown report of the run (prompts, report, commits)
 # or
 hive push --pr                   # new branch hive/<run> + a GitHub pull request
 ```
@@ -89,7 +90,7 @@ hive push --pr --base main
 | `hive log [run]` | Replay a run's event log. It follows the log live while the run is going. `--json` prints raw events. |
 | `hive diff [run]` | Show the run's changes. `--stat` gives a summary. |
 | `hive apply [run]` | Apply the run's patches to the current repo as uncommitted changes (the repo must be clean and at the run's base), or use `--branch <name>` to put them on a new branch. Local runs only. |
-| `hive export [run]` | Download the run's result: a zip of the project files (default) or, with `--bundle`, a git bundle of its commits. `-o <path>` picks the output file (default `<run name>.zip` / `.bundle` in the current directory), `--force` overwrites an existing file. Like a push, both are built on your machine from the run's patches in a fresh clone of the trusted source, never from the run's `work/` copy. |
+| `hive export [run]` | Download the run's result: a zip of the project files (default), with `--bundle` a git bundle of its commits, or with `--report` a Markdown report (the prompts, the agent's report, the error and the commits). `-o <path>` picks the output file (default `<run name>.zip` / `.bundle` / `.md` in the current directory), `--force` overwrites an existing file. Zip and bundle are built on your machine from the run's patches in a fresh clone of the trusted source, never from the run's `work/` copy; the report is built from the run's saved data. |
 | `hive push [run]` | Put the run's commits on a new branch and push it with your own git credentials. `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for the PR's base. Never forced. |
 | `hive list` | List runs, newest first. |
 | `hive clean <run>` | Delete a run. `--all` deletes every finished run. |
@@ -310,7 +311,9 @@ wait in a FIFO queue and the run list shows them as queued.
   has an **Open pull request** button (nothing is opened until you click). The PR description is
   the agent's write-up followed by the commit and file lists from git. When the run has commits,
   **Download zip** and **Download git bundle** save the result: like a push, both are built on
-  the host from the run's patches, never from the agent's `work/` copy.
+  the host from the run's patches, never from the agent's `work/` copy. Every finished run also has
+  a **Download report** button that saves its Markdown report (the prompts, the agent's final
+  report, the error if any, and the commits) built from the run's saved data.
 
 Every repo run is set up to change code: the agent commits in the VM and hive pushes its commits to
 a `hive/<id>` branch (never `main`), even for a review. For a review without changes, say "don't
@@ -349,7 +352,7 @@ All endpoints except `/health` need `Authorization: Bearer <token>`.
 | GET | `/runs` | Every run the server knows about, newest first, each with `sessionId`, `title`, `status`, repo and model, plus the current `capacity` |
 | POST | `/pr/:id` | Open a pull request from the run's branch; the description is the agent's last message plus the commits and files changed. Returns `{url}` |
 | POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue. Returns `{url}` |
-| GET | `/export/:id?format=zip\|bundle` | Download the run's result: a zip of the project files or a git bundle of its commits, built on the host from the run's patches (404 unknown run, 409 still running, 400 no commits) |
+| GET | `/export/:id?format=zip\|bundle\|report` | Download the run's result: a zip of the project files, a git bundle of its commits (built on the host from the run's patches), or a Markdown report built from the run's saved data (404 unknown run, 409 still running, 400 no commits) |
 | POST | `/abort/:id` | Stop the running sandbox |
 | DELETE | `/session/:id` | Delete the session and its files |
 | POST | `/events/:id/ticket` | One-time ticket (60 s) for the event stream |

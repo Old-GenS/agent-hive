@@ -87,7 +87,7 @@ test("GET /status is 404 for a missing or malformed id", async () => {
 test("GET /export validates the format, then reports an empty run and an unknown id", async () => {
   const badFormat = await app.inject({ method: "GET", url: `/export/${ID}?format=tar` });
   assert.equal(badFormat.statusCode, 400);
-  assert.deepEqual(badFormat.json(), { error: "format must be zip or bundle" });
+  assert.deepEqual(badFormat.json(), { error: "format must be zip, bundle or report" });
 
   // This run has no out/*.patch, so there is nothing to build an archive from.
   const empty = await app.inject({ method: "GET", url: `/export/${ID}?format=zip` });
@@ -97,6 +97,16 @@ test("GET /export validates the format, then reports an empty run and an unknown
   const missing = await app.inject({ method: "GET", url: "/export/nope?format=zip" });
   assert.equal(missing.statusCode, 404);
   assert.deepEqual(missing.json(), { error: "Session not found" });
+});
+
+test("GET /export?format=report returns the run's Markdown report as an attachment", async () => {
+  const res = await app.inject({ method: "GET", url: `/export/${ID}?format=report` });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.headers["content-type"], /^text\/markdown; charset=utf-8$/);
+  const disposition = String(res.headers["content-disposition"]);
+  assert.match(disposition, /^attachment; filename="demo-20260101-000000\.md"$/);
+  assert.ok(res.body.includes("Fix the widget"), res.body);
+  assert.ok(res.body.includes("## Prompt"), res.body);
 });
 
 test("POST /prompt rejects repo and newRepo together and a missing repository", async () => {

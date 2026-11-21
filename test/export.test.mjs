@@ -19,7 +19,7 @@ process.env.GIT_AUTHOR_EMAIL = "t@t";
 process.env.GIT_COMMITTER_NAME = "t";
 process.env.GIT_COMMITTER_EMAIL = "t@t";
 
-const { exportRun } = await import("../dist/runs.js");
+const { exportReport, exportRun, readMeta, reportMarkdown } = await import("../dist/runs.js");
 
 const IDENT = ["-c", "user.name=t", "-c", "user.email=t@t"];
 
@@ -139,4 +139,108 @@ test("exportRun never runs code from the run's work/ folder", async () => {
   const out = join(tempDir("hive-export-out-"), "result.zip");
   await exportRun(dir, "zip", out);
   assert.equal(existsSync(marker), false, "the agent's post-checkout hook was not run");
+});
+
+// ── Markdown report (built from meta.json only) ──
+
+function makeReportRun(name, meta) {
+  const dir = join(runsDir, name);
+  mkdirSync(dir, { recursive: true });
+  writeMeta(dir, meta);
+  return dir;
+}
+
+test("reportMarkdown describes a done run with prompts, commits, a branch and a PR", () => {
+  const name = "report-20260101-000000";
+  const createdAt = Date.parse("2026-01-01T00:00:00Z");
+  const dir = makeReportRun(name, {
+    base: "0".repeat(40),
+    prompt: "Fix the widget\nand its tests",
+    prompts: [
+      { text: "Fix the widget\nand its tests", at: createdAt },
+      { text: "Now add the missing tests", at: createdAt + 300_000 },
+    ],
+    status: "done",
+    commits: 1,
+    summary: "The widget is fixed.",
+    changes: { commits: ["add hello"], files: [{ path: "hello.txt", added: 1, removed: 0 }], moreFiles: 0 },
+    pushed: { branch: "hive/report", url: "https://github.com/me/demo.git", at: 1 },
+    prUrl: "https://github.com/me/demo/pull/7",
+    createdAt,
+    finishedAt: createdAt + 12 * 60_000 + 3_000,
+  });
+  const md = reportMarkdown(name, readMeta(dir));
+
+  assert.ok(md.startsWith("# Fix the widget\n"), md);
+  assert.ok(md.includes("| Run | report-20260101-000000 |"));
+  assert.ok(md.includes("## Prompts"));
+  assert.ok(md.includes("Fix the widget\nand its tests"));
+  assert.ok(md.includes("Now add the missing tests"));
+  assert.ok(md.includes("## Report"));
+  assert.ok(md.includes("The widget is fixed."));
+  assert.ok(md.includes("## Commits"));
+  assert.ok(md.includes("- add hello"));
+  assert.ok(md.includes("- `hello.txt` (+1 −0)"));
+  assert.ok(md.includes("hive/report"));
+  assert.ok(md.includes("https://github.com/me/demo/pull/7"));
+  assert.ok(!md.includes("## Error"), "a done run has no error section");
+  assert.ok(md.includes("| Duration | 12 min 3 s |"), md);
+});
+
+test("reportMarkdown escapes the table and picks a longer fence for an aborted run's error", () => {
+  const name = "report-aborted-20260101-000000";
+  const error = "the model ```crashed``` here\non the second line";
+  const dir = makeReportRun(name, {
+    base: "0".repeat(40),
+    provider: "deepseek",
+    model: "weird|model",
+    status: "aborted",
+    commits: 0,
+    error,
+  });
+  const md = reportMarkdown(name, readMeta(dir));
+
+  assert.ok(md.includes("| Status | stopped |"), md);
+  assert.ok(md.includes("weird\\|model"), "the model's pipe is escaped in the table");
+  assert.ok(md.includes("## Error"));
+  assert.ok(!md.includes("## Commits"), "an aborted run with no changes has no commits section");
+  // The fence must be longer than the triple-backtick run inside the error, so the block stays whole.
+  const fenced = /(`{4,})\nthe model ```crashed``` here\non the second line\n\1/.exec(md);
+  assert.ok(fenced, md);
+});
+
+test("reportMarkdown uses meta.prompt for an old run without prompts", () => {
+  const name = "report-old-20260101-000000";
+  const dir = makeReportRun(name, {
+    base: "0".repeat(40),
+    prompt: "Old-school prompt\nsecond line",
+    status: "done",
+  });
+  const md = reportMarkdown(name, readMeta(dir));
+
+  assert.ok(md.includes("## Prompt"));
+  assert.ok(!md.includes("## Prompts"));
+  assert.ok(md.includes("Old-school prompt\nsecond line"));
+  assert.ok(md.startsWith("# Old-school prompt\n"), md);
+});
+
+test("exportReport refuses a live run and writes the report of a finished one", () => {
+  const liveDir = makeReportRun("report-live-20260101-000000", {
+    base: "0".repeat(40),
+    status: "running",
+    pid: process.pid,
+  });
+  const out = join(tempDir("hive-report-out-"), "report.md");
+  assert.throws(() => exportReport(liveDir, out), /run is still going/);
+  assert.equal(existsSync(out), false);
+
+  const { dir, name } = makeRun("report-file-20260101-000000");
+  const meta = readMeta(dir);
+  writeMeta(dir, { ...meta, prompt: "Write the file", summary: "All done." });
+  const result = exportReport(dir, out);
+  assert.equal(result.path, out);
+  assert.ok(existsSync(out));
+  const md = readFileSync(out, "utf8");
+  assert.ok(md.startsWith("# Write the file\n"), md);
+  assert.ok(md.includes("All done."));
 });

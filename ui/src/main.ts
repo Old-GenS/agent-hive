@@ -86,7 +86,7 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 type Tone = "ok" | "warn" | "danger";
 
-type ExportFormat = "zip" | "bundle";
+type ExportFormat = "zip" | "bundle" | "report";
 
 interface AssistantItem {
   kind: "assistant";
@@ -117,6 +117,8 @@ type RunItem =
       tone: Tone;
       title: string;
       detail: string;
+      /** made by finishRun, so the run's result (its report, and the zip when it has commits) can be downloaded */
+      final?: boolean;
       link?: { href: string; label: string };
       changes?: Changes;
       /** how many commits the run made */
@@ -235,29 +237,49 @@ async function postIssue(item: Extract<RunItem, { kind: "banner" }>): Promise<vo
   updateItem(item);
 }
 
-/** Download the run's result: a zip of the files or a git bundle of the commits, built on the host. */
+/** Download the run's result: a zip of the files, a git bundle, or its Markdown report, built on the host. */
 function exportElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
   const state = item.export ?? { state: "idle" };
   item.export = state;
   const box = el("div", { class: "pr-actions" });
   const preparing = state.state === "preparing";
-  const zipBtn = el(
-    "button",
-    { class: "btn", id: "downloadZipBtn", type: "button" },
-    preparing && state.format === "zip" ? "Preparing…" : "Download zip",
-  );
+  const hasCommits = (item.commits ?? 0) > 0 || (item.changes?.commits.length ?? 0) > 0;
   const bundleBtn = el(
     "button",
     { class: "btn", id: "downloadBundleBtn", type: "button" },
     preparing && state.format === "bundle" ? "Preparing…" : "Download git bundle",
   );
-  zipBtn.disabled = preparing;
   bundleBtn.disabled = preparing;
-  zipBtn.onclick = () => void downloadExport(item, "zip");
   bundleBtn.onclick = () => void downloadExport(item, "bundle");
-  // The git bundle button is hidden for now (hive export --bundle still works); add bundleBtn back here to show it.
+  // The git bundle button is hidden for now (hive export --bundle still works); add bundleBtn back in box.append to show it.
   void bundleBtn;
-  box.append(zipBtn, el("span", { class: "pr-hint" }, "Built from the run's commits on this computer."));
+  if (hasCommits) {
+    const zipBtn = el(
+      "button",
+      { class: "btn", id: "downloadZipBtn", type: "button" },
+      preparing && state.format === "zip" ? "Preparing…" : "Download zip",
+    );
+    zipBtn.disabled = preparing;
+    zipBtn.onclick = () => void downloadExport(item, "zip");
+    box.append(zipBtn);
+  }
+  const reportBtn = el(
+    "button",
+    { class: "btn", id: "downloadReportBtn", type: "button" },
+    preparing && state.format === "report" ? "Preparing…" : "Download report",
+  );
+  reportBtn.disabled = preparing;
+  reportBtn.onclick = () => void downloadExport(item, "report");
+  box.append(
+    reportBtn,
+    el(
+      "span",
+      { class: "pr-hint" },
+      hasCommits
+        ? "Built from the run's commits on this computer."
+        : "The prompt, the agent's report and the run's details, as Markdown.",
+    ),
+  );
   if (state.state === "error" && state.error) box.append(el("p", { class: "alert alert-danger" }, state.error));
   return box;
 }
@@ -278,7 +300,8 @@ async function downloadExport(
     }
     const blob = await res.blob();
     const disposition = res.headers.get("Content-Disposition") ?? "";
-    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${sessionId}.${format}`;
+    const fallback = format === "report" ? `${sessionId}.md` : `${sessionId}.${format}`;
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fallback;
     const url = URL.createObjectURL(blob);
     const link = el("a", { href: url, download: filename });
     link.style.display = "none";
@@ -1313,7 +1336,7 @@ function fillItem(li: HTMLElement, item: RunItem): void {
       }
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
       if (item.changes) banner.append(changesElement(item.changes));
-      if ((item.commits ?? 0) > 0 || (item.changes && item.changes.commits.length > 0)) banner.append(exportElement(item));
+      if (item.final) banner.append(exportElement(item));
       if (item.pr) banner.append(prElement(item));
       if (item.issue) banner.append(issueElement(item));
       li.replaceChildren(banner);
@@ -1617,6 +1640,7 @@ function finishRun(event: any): void {
       kind: "banner",
       tone: "ok",
       title: "Done",
+      final: true,
       detail: parts.join(" · "),
       link,
       changes: parseChanges(event.changes),
@@ -1625,9 +1649,9 @@ function finishRun(event: any): void {
       issue: canIssue ? { state: "ready" } : undefined,
     };
   } else if (status === "aborted") {
-    item = { kind: "banner", tone: "warn", title: "Stopped", detail: event.error ? String(event.error) : "" };
+    item = { kind: "banner", tone: "warn", title: "Stopped", final: true, detail: event.error ? String(event.error) : "" };
   } else {
-    item = { kind: "banner", tone: "danger", title: "Failed", detail: event.error ? String(event.error) : "" };
+    item = { kind: "banner", tone: "danger", title: "Failed", final: true, detail: event.error ? String(event.error) : "" };
   }
   // A reopened run: the replayed hive_done carries no PR/issue URL, so use the saved status.
   if (item.kind === "banner") {
