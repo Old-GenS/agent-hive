@@ -1,24 +1,19 @@
 ## Goal
 
-Three fixes from real runs:
-
-1. **Skip review cycles when the main step made no commits.** A "review and report" task makes no
-   commits; its review cycle then rebuilds the project for nothing (a real run spent 20+ minutes
-   there). Find out with the export step (in a VM, as today), never with host git in `work/`.
-2. **Live cost.** A running run shows `$0.0000` in the run list and the CLI's `hive list` until it
-   ends, because `meta.usage` is only written at the end. Save it while the run goes, and show a
-   live cost on the web UI's run page.
-3. **Markdown in the web UI's timeline.** The agent's messages show raw markdown (`## Heading`,
-   `- item`, tables). Render a safe subset as HTML.
+A **report download** for every finished run (done, failed or stopped; with or without commits): a
+Markdown file with the run's facts, every prompt, the agent's final report, the error if any, and
+the commit list. Built on the host from the run's saved data (`meta.json`); nothing new crosses
+out of the VM. Surfaces: a **Download report** button in the web UI and `hive export --report` in
+the CLI.
 
 ## Files to touch
 
 - `src/runs.ts`
-- `ui/src/markdown.ts` (new)
+- `src/web-runs.ts`
+- `src/cli.ts`
 - `ui/src/main.ts`
-- `ui/src/app.css`
-- `test/run-steps.test.mjs`
-- `test/markdown.test.mjs` (new)
+- `test/export.test.mjs`
+- `test/web-runs.test.mjs`
 - `README.md`
 - `.handoff/report.md`
 
@@ -26,73 +21,106 @@ Three fixes from real runs:
 
 1. Run `npm ci`, then `npm run build:vm`.
 
-2. **Skip pointless reviews** (`src/runs.ts`):
-   - Move the export code in `runStepsInner` (empty `out/`, run the `hive-export` VM with
-     `meta.base`, count `patchFiles(dir)`) into `async function exportPatches(dir: string, meta:
-     RunMeta): Promise<{ ok: boolean; code: number; commits: number }>`, and use it for the final
-     export exactly as today (same error handling).
-   - Before the review loop, when the main step's status is `done`, `meta.reviewCycles > 0` and
-     `work/` exists, call `exportPatches`. If it succeeds with `commits === 0`, skip the review
-     cycles and call `o.onEvent({ type: "hive_note", text: "No commits, so the review was skipped." })`.
-     If it fails, run the reviews as today (don't block on it).
-   - Export a pure `export function shouldReview(o: { status: RunStatus; cycles: number; commits:
-     number | undefined }): boolean` = `status === "done" && cycles > 0 && commits !== 0` and use
-     it for that decision.
+2. `src/runs.ts`, keep every prompt:
+   - Add `prompts?: { text: string; at: number }[]` to `RunMeta` (full prompt text, not cut).
+   - `startRun` sets `meta.prompts = [{ text: o.prompt, at: Date.now() }]` (the user's prompt,
+     without the new-project prefix); `continueRun` appends `{ text: o.prompt, at: Date.now() }`.
+     Written with the meta writes that already happen there. `meta.prompt` (first 200 characters)
+     stays as it is.
 
-3. **Live cost** (`src/runs.ts`): in `agentStep`'s `followJsonl` callback, after `addUsage`, write
-   `meta.json` (with `writeMeta`) at most once every 5 seconds while usage changed since the last
-   write (track `lastUsageWrite` and the cost written). Keep the final write at the end as today.
-   Export `export function usageWriteDue(now: number, last: number, changed: boolean): boolean` =
-   `changed && now - last >= 5000` and use it.
+3. `src/runs.ts`: `export function reportMarkdown(name: string, meta: RunMeta): string`, a pure
+   function returning:
 
-4. **Markdown** (`ui/src/markdown.ts`, new, no dependencies, plain TypeScript with only erasable
-   syntax: no `enum`, `namespace` or parameter properties, so Node can import it with type
-   stripping): `export function renderMarkdown(text: string): string` returning HTML. **Escape
-   everything first** with the same rules as `esc()` in `ui/src/util.ts` (copy that one-line
-   function into the module so it stays self-contained), then build markup only from the escaped
-   text. Supported:
-   - fenced code blocks (```` ``` ```` with an optional language) → `<pre><code>…</code></pre>`,
-     no further processing inside;
-   - headings `#` to `####` → `<h3>` to `<h6>` (one level down, so a message never outranks the
-     page title);
-   - unordered lists (`- `, `* `) and ordered lists (`1. `), one level, consecutive lines;
-   - GitHub-style tables (a header row, a `|---|` separator row, body rows) → `<table>` with
-     `<thead>`/`<tbody>`;
-   - blank-line-separated paragraphs → `<p>`, single newlines inside a paragraph → `<br>`;
-   - inline: `` `code` ``, `**bold**`, `*italic*` / `_italic_`, and links `[text](url)` only when
-     the url starts with `https://` or `http://` → `<a href="…" target="_blank" rel="noopener
-     noreferrer">`; any other url leaves the text as plain text.
-   - Nothing else produces tags; raw HTML in the input stays escaped text.
-   In `ui/src/main.ts`, `formatContent` returns `renderMarkdown(text)` (keep the function name; it
-   is used for assistant items). Add styles in `ui/src/app.css` for headings, lists, tables
-   (borders from the existing tokens, horizontal scroll on narrow screens), `pre` and `code` inside
-   timeline assistant items, matching the existing light and dark tokens.
+   ```
+   # <title: first non-empty line of the first prompt, max 120 characters>
 
-5. **Live cost on the run page** (`ui/src/main.ts`): keep a running total of
-   `event.message.usage.cost.total` from assistant `message_end` events in the run state and show
-   it in the run page's meta line (`<repo> · <provider> · <model> · $0.0123`, four decimals),
-   updated as events arrive; on `hive_done` use `event.usage.cost` when present.
+   | | |
+   |---|---|
+   | Run | <name> |
+   | Repository | <meta.createdRepo ?? meta.repo, or "new project <newRepo.name>"> |
+   | Status | <done | failed | stopped (for "aborted") | running> |
+   | Model | <provider> · <model> · thinking <thinking> |
+   | Started | <createdAt as ISO, UTC, no milliseconds> |
+   | Finished | <finishedAt as ISO, or "—"> |
+   | Duration | <"12 min 3 s" from createdAt to finishedAt, or "—"> |
+   | Cost | $<usage.cost with 4 decimals> (<input> in / <output> out tokens) |
+   | Commits | <commits> |
+   | Branch | <pushed.branch> (only when pushed) |
+   | Pull request | <prUrl> (only when set) |
 
-6. Tests:
-   - `test/markdown.test.mjs` (new): import `../ui/src/markdown.ts` directly (Node strips the
-     types). Cases: a heading, a list, an ordered list, a table, a fenced code block whose content
-     contains `**not bold**` and `<b>` (stays literal and escaped), inline code/bold/italic, an
-     `https` link (gets `rel="noopener noreferrer"`), a `javascript:alert(1)` link (no `<a`, no
-     `javascript:` inside an attribute), raw `<script>alert(1)</script>` (escaped, no `<script`),
-     and an attribute-breaking attempt like `[x](https://a.com/"onmouseover="alert(1))` (no
-     unescaped `"` inside the href).
-   - `test/run-steps.test.mjs`: `shouldReview` (done + cycles + 0 commits → false; done + cycles +
-     undefined → true; failed → false; 0 cycles → false) and `usageWriteDue`.
+   ## Prompt            (or "## Prompts" with "### 1 — <ISO time>" per prompt when more than one)
 
-7. `README.md`: one line each in the relevant sections: reviews are skipped when the run made no
-   commits; the cost updates while a run goes; the web UI renders the agent's markdown.
+   <prompt text>
+
+   ## Report
+
+   <meta.summary, or "_The agent left no report._">
+
+   ## Error             (only when meta.error is set)
+
+   ```text
+   <meta.error>
+   ```
+
+   ## Commits           (only when meta.changes has commits)
+
+   - <subject>
+   ...
+   ## Files changed     (only when meta.changes has files)
+
+   - `path` (+added −removed, or "binary")
+   ```
+
+   For old runs without `meta.prompts`, use `meta.prompt` as the single prompt. Table cell values
+   replace `|` with `\|` and newlines with spaces. Fenced blocks use a fence longer than any run of
+   backticks inside the content.
+
+4. `src/runs.ts`: `export function exportReport(dir: string, outPath: string): { path: string }`:
+   refuse with `"run is still going"` when `isLive(meta)`; otherwise write
+   `reportMarkdown(basename(dir), meta)` to `outPath`.
+
+5. `src/cli.ts`: `hive export` gains `--report` (exactly one of `--zip`, `--bundle`, `--report`;
+   default still `--zip`). Default output `<cwd>/<run name>.md`; refuses to overwrite without
+   `--force`, like the other formats. Update the usage text.
+
+6. `src/web-runs.ts`: `GET /export/:sessionId?format=report` → 200 with `reportMarkdown(id, meta)`,
+   `Content-Type: text/markdown; charset=utf-8`, `Content-Disposition: attachment;
+   filename="<id>.md"`; 409 when the run is live (as for the other formats). The format check
+   accepts `zip`, `bundle` and `report`; its error becomes `format must be zip, bundle or report`.
+
+7. `ui/src/main.ts`:
+   - Mark the banners made by `finishRun` (done, stopped, failed) with a new `final: true` field on
+     the banner item, so other banners (like "Couldn't send") are unaffected.
+   - Render `exportElement(item)` for every banner with `final: true`. Inside it, show **Download
+     zip** only when the run has commits (the current condition), and always show a **Download
+     report** button (`id="downloadReportBtn"`) that downloads `format=report` the same way as the
+     zip (Blob + temporary `<a download>`; filename from `Content-Disposition`, else `<run id>.md`;
+     `Preparing…` while waiting; errors shown like the zip's). The hint line reads `Built from the
+     run's commits on this computer.` when the zip button shows, and `The prompt, the agent's
+     report and the run's details, as Markdown.` when only the report button shows. Keep the git
+     bundle button hidden as it is now.
+
+8. Tests:
+   - `test/export.test.mjs`: `reportMarkdown` for (a) a done run with two prompts, a summary,
+     changes with one commit and one file, a pushed branch and a PR url: contains the title,
+     `## Prompts`, both prompts, `## Report`, `## Commits`, the commit subject, the file line, the
+     branch and the PR url, and no `## Error`; (b) an aborted run with an error containing a
+     triple-backtick run and a `|` in the model name: shows `stopped`, `## Error` with a longer
+     fence than the error's backticks, the escaped `\|` in the table, no `## Commits`; (c) an old
+     run without `prompts`: uses `meta.prompt`. `exportReport` on a live run rejects with
+     `run is still going` and on a finished one writes the file.
+   - `test/web-runs.test.mjs`: `GET /export/<id>?format=report` on the file's fake run returns
+     200, `text/markdown`, an attachment filename ending `.md`, and a body containing the run's
+     prompt; `format=tar` → 400 with the new message.
+
+9. `README.md`: `hive export --report` and the web UI's Download report button.
 
 ## Acceptance
 
 - `npm run build` exits 0.
 - `npm run build:ui` exits 0.
 - `npm test` exits 0.
-- `node --test test/markdown.test.mjs test/run-steps.test.mjs` exits 0 (after `npm run build`).
+- `node --test test/export.test.mjs test/web-runs.test.mjs` exits 0 (after `npm run build`).
 - `git status --short` lists no files other than those in **Files to touch**.
 
 ## Parallel work
@@ -109,13 +137,13 @@ None — do it sequentially.
 - The only checks to run are the **Acceptance** commands. Never boot a VM, start `hive run`, start
   the server or call GitHub/OpenRouter. If something outside Acceptance fails, note it in the
   report and finish.
-- Never run host git in `<run>/work`. Don't change `vm/`, `image/`, `src/sandbox.ts` or
-  `src/stall.ts`. No new dependencies (no markdown library).
+- The report is built only from `meta.json`. Don't read files from `work/` or `io/` for it. Never
+  run host git in `work/`. No new dependencies. Don't change `vm/`, `image/`, `src/sandbox.ts`.
 - Write `.handoff/report.md` as soon as Acceptance has been run, then stop.
 
 ## Out of scope
 
-- Markdown anywhere but the timeline's assistant messages; nested lists; images.
+- Including the full event timeline (tool calls) in the report; reports for runs still going.
 
 ## If blocked
 
