@@ -32,7 +32,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
-    "esbuild": "0.25.10",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.3"
   }
 }
