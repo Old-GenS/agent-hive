@@ -1,6 +1,6 @@
 /**
  * The run settings the web UI can change: VM CPUs and memory, runs at once, the time limit, the
- * stall time and the disk limit per run.
+ * stall time, the disk limit per run and how long finished runs are kept.
  *
  * They are read from the shell environment (wins, shown read-only), else the keys file, else the
  * defaults below. Saving writes the same private keys file the CLI reads at startup
@@ -15,7 +15,14 @@ import { readKeysFile, setKeysFileValue } from "./keys.js";
 import { parseMemoryMiB } from "./sandbox.js";
 import { setMaxConcurrent } from "./web-runs.js";
 
-export type SettingKey = "cpus" | "memoryMiB" | "maxConcurrent" | "timeoutMin" | "stallMin" | "diskMaxGb";
+export type SettingKey =
+  | "cpus"
+  | "memoryMiB"
+  | "maxConcurrent"
+  | "timeoutMin"
+  | "stallMin"
+  | "diskMaxGb"
+  | "retentionDays";
 
 /** Where a value comes from, in precedence order: this computer's environment, saved file, default. */
 export type SettingSource = "default" | "file" | "dotenv" | "env";
@@ -141,6 +148,18 @@ const SETTINGS: Record<SettingKey, SettingDef> = {
       config.sandbox.diskMaxGb = value;
     },
   },
+  retentionDays: {
+    env: "HIVE_RUN_RETENTION_DAYS",
+    label: "Keep finished runs",
+    unit: " days",
+    default: 14,
+    min: 0,
+    max: () => 3650,
+    current: () => config.runRetentionDays,
+    apply: (value) => {
+      config.runRetentionDays = value;
+    },
+  },
 };
 
 export const SETTING_KEYS: readonly SettingKey[] = [
@@ -150,6 +169,7 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   "timeoutMin",
   "stallMin",
   "diskMaxGb",
+  "retentionDays",
 ];
 
 export function isSettingKey(key: string): key is SettingKey {

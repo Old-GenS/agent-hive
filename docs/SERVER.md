@@ -75,10 +75,15 @@ and Settings has **Run setup again**. `hive doctor` prints the same fixes in the
   as Markdown, and each tool step. **Stop** ends the run.
 - **Follow-ups:** the message box under a finished run continues the same session.
 - **When it's done:** the agent's final message, the commits and files changed, and buttons for
-  **Open pull request**, **Download zip** and **Download report**. Nothing is opened on GitHub
-  until you click.
+  **Open pull request**, **Download zip** and **Download report**. **Delete** removes a finished
+  run and its folder after a confirmation that also warns when its commits were never pushed.
+  Nothing is opened on GitHub until you click.
+- **Starring:** the ☆ button on any run stars it (★). Starred runs are skipped by retention,
+  **Clear…** and `hive clean --all`; they can still be deleted one by one.
 - **Run list:** every run, from the web UI or the terminal, newest first, with its status and
-  time. Each run has its own link (`/ui/#runs/<run>`).
+  time; starred runs show a ★ next to their title. **Clear…** deletes finished runs in one go —
+  finished successfully (the default), or all finished runs including failed and stopped ones.
+  Each run has its own link (`/ui/#runs/<run>`).
 
 Each repo run pushes its commits to a `hive/<run>` branch when it finishes (never `main`). For a
 review that shouldn't change anything, say "don't edit or commit" in the task; when nothing
@@ -93,9 +98,10 @@ repository.
 - **API keys:** each provider's key (masked), where it comes from, its default model, and which
   provider is the default. **Add key** tests a key before saving it; saved keys can be tested,
   made the default or removed.
-- **Runs:** the VM size (CPUs and memory per run), runs at once, the time limit, the stall time
-  and the disk limit per run, checked against this computer's CPUs and RAM. Saved values apply to
-  new runs without a restart; values set in the server's environment are shown read-only.
+- **Runs:** the VM size (CPUs and memory per run), runs at once, the time limit, the stall time,
+  the disk limit per run and how long finished runs are kept, checked against this computer's CPUs
+  and RAM. Saved values apply to new runs without a restart; values set in the server's
+  environment are shown read-only.
 - **This computer:** how runs are isolated, the checks behind it (KVM, libkrun, pasta, launcher,
   VM filesystem), the GitHub login, a live **Resources** section (CPU, memory, disk, temperature,
   runs) and the limits, with a link to **Settings › Runs**.
@@ -119,7 +125,9 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | GET | `/runs` | Every run, newest first, plus the queue's capacity |
 | GET | `/status/:id` | A run's status, branch, commits and files changed, PR and issue links, usage, timing and error |
 | POST | `/abort/:id` | Stop a run |
-| DELETE | `/session/:id` | Delete a finished run and its files |
+| DELETE | `/session/:id` | Delete a finished run and its files (starred or not) |
+| PUT | `/session/:id/kept` | Star or unstar a run (`kept` boolean); returns `{sessionId, kept}`. Works on live runs |
+| POST | `/sessions/clear` | Delete finished runs in one go (`include`: `done` by default, or `finished`); skips live and starred runs; returns `{deleted, skipped}` |
 | POST | `/pr/:id` | Open a pull request from the run's branch; returns `{url}` |
 | POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue; returns `{url}` |
 | GET | `/export/:id?format=zip\|bundle\|report` | Download the result: a zip of the files, a git bundle of the commits (both built on the host from the run's patches), or a Markdown report |

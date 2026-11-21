@@ -23,6 +23,7 @@ import {
   pushRun,
   readMeta,
   reportMarkdown,
+  setKept,
   startRun,
   writeMeta,
   type RunMeta,
@@ -53,6 +54,29 @@ const promptSchema = {
           private: { type: "boolean" },
         },
       },
+    },
+  },
+} as const;
+
+/** `PUT /session/:id/kept`: the star toggle. */
+const keptSchema = {
+  body: {
+    type: "object",
+    required: ["kept"],
+    additionalProperties: false,
+    properties: {
+      kept: { type: "boolean" },
+    },
+  },
+} as const;
+
+/** `POST /sessions/clear`: which finished runs to delete; "done" is the default. */
+const clearSchema = {
+  body: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      include: { type: "string", enum: ["done", "finished"] },
     },
   },
 } as const;
@@ -225,6 +249,10 @@ export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: Ch
     createdRepo: meta.createdRepo,
     resultBranch: meta.pushed?.branch,
     commitsPushed: meta.pushed ? meta.commits : 0,
+    /** the run's commits that hive never pushed: what deleting it would lose */
+    unpushedCommits: meta.commits > 0 && meta.pushed === undefined ? meta.commits : 0,
+    /** starred: skipped by retention and Clear */
+    kept: Boolean(meta.kept),
     changes: changes ?? changesById.get(id) ?? meta.changes,
     commits: meta.commits,
     prUrl: meta.prUrl,
@@ -496,6 +524,38 @@ export default async function webRunRoutes(app: FastifyInstance) {
     }
     changesById.delete(id);
     return { sessionId: id, status: "destroyed" };
+  });
+
+  // Star or unstar a run: a kept run is skipped by retention and by Clear. Works on live runs too.
+  app.put("/session/:sessionId/kept", { schema: keptSchema }, async (req, reply) => {
+    const id = (req.params as any).sessionId as string;
+    const dir = runDir(id);
+    if (!dir) return notFound(reply);
+    const { kept } = req.body as { kept: boolean };
+    const meta = setKept(dir, kept);
+    return { sessionId: id, kept: Boolean(meta.kept) };
+  });
+
+  // Delete every finished run in one go: "done" (default) or every finished run, except starred
+  // ones and runs that are still going. A run left behind by a crashed hive counts as finished.
+  app.post("/sessions/clear", { schema: clearSchema }, async (req, reply) => {
+    const include = (req.body as { include?: "done" | "finished" } | undefined)?.include ?? "done";
+    const deleted: string[] = [];
+    const skipped: { id: string; error: string }[] = [];
+    for (const { name, dir, meta } of listRuns()) {
+      if (liveRuns.has(name) || isLive(meta)) continue;
+      if (meta.kept) continue;
+      if (include === "done" && meta.status !== "done") continue;
+      try {
+        cleanRun(dir);
+      } catch (err) {
+        skipped.push({ id: name, error: (err as Error).message });
+        continue;
+      }
+      changesById.delete(name);
+      deleted.push(name);
+    }
+    return reply.send({ deleted, skipped });
   });
 
   // Open a pull request from the run's pushed branch (only when the user clicks).

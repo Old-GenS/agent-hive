@@ -15,7 +15,7 @@ scripts and `grep` keep working. `--json` prints pi's raw events, one JSON objec
 
 When a command needs something you didn't pass and stdin is a terminal, `hive` asks: `hive run`
 and `hive new` for a prompt, `hive keys add` and `hive keys default` for a provider, and
-`hive clean` for the run to delete (arrow keys and Enter). Without a terminal these are usage
+`hive clean` for the run to delete (arrow keys and Enter). `hive keep` needs the run name. Without a terminal these are usage
 errors, as before.
 
 ## Running the agent
@@ -49,7 +49,7 @@ included. `--repo` accepts `owner/name` (github.com), an `https://` or `ssh://` 
 
 | Command | What it does |
 |---------|--------------|
-| `hive list` | List runs, newest first, with status, commits and cost (live while a run goes). |
+| `hive list` | List runs, newest first, with status, commits and cost (live while a run goes). Starred runs carry a ★ after the status. |
 | `hive log [run]` | Replay a run's events; follows live while it runs. `--json` for raw events. |
 | `hive diff [run]` | Show the run's changes. `--stat` for a summary. |
 
@@ -76,7 +76,8 @@ credential helper or `gh` login; none of these ever enter the VM. Commits use yo
 | `hive keys test [provider]` | Check one key, or every saved one. |
 | `hive keys remove <provider>` | Delete a saved key. |
 | `hive keys default <provider>` | Make a provider the default. |
-| `hive clean <run>` | Delete a run; `--all` deletes every finished run. |
+| `hive clean <run>` | Delete a run; `--all` deletes every finished run except starred ones. |
+| `hive keep [--off] <run>` | Star a run (★) so retention, the web UI's Clear and `hive clean --all` skip it; `--off` unstars it. |
 | `hive doctor` | Check `/dev/kvm`, libkrun, pasta, the launcher, the VM filesystem, and show the default provider and model. |
 | `hive setup` | Download the VM filesystem an installed release needs. |
 | `hive update` | Install the latest release after checking its signature (`--check` only reports, `--rollback` goes back). `--channel stable\|beta` switches the update channel: `beta` follows the daily signed prereleases. A beta install moving to stable never downgrades; it waits for the next stable release. |

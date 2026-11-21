@@ -375,6 +375,10 @@ interface RunState {
   finishedAt?: number;
   /** the run's cost so far, summed from assistant message_end events (live, then hive_done's total) */
   cost: number;
+  /** starred: skipped by retention and Clear */
+  kept: boolean;
+  /** commits hive never pushed: what deleting the run would lose */
+  unpushedCommits: number;
 }
 
 /** One row of GET /runs: what the run list shows. */
@@ -390,6 +394,9 @@ interface RunSummary {
   lastActivity: number;
   stepStartedAt?: number;
   finishedAt?: number;
+  /** starred: shown with a ★ and never cleared */
+  kept: boolean;
+  unpushedCommits: number;
 }
 
 function parseRunSummary(raw: unknown): RunSummary | null {
@@ -409,6 +416,8 @@ function parseRunSummary(raw: unknown): RunSummary | null {
     lastActivity: typeof r.lastActivity === "number" ? r.lastActivity : Date.now(),
     stepStartedAt: typeof r.stepStartedAt === "number" ? r.stepStartedAt : undefined,
     finishedAt: typeof r.finishedAt === "number" ? r.finishedAt : undefined,
+    kept: r.kept === true,
+    unpushedCommits: typeof r.unpushedCommits === "number" ? r.unpushedCommits : 0,
   };
 }
 
@@ -439,7 +448,11 @@ function runTimeLabel(summary: RunSummary): string {
 
 interface RunUi {
   pill: HTMLElement;
+  /** the ☆/★ star toggle, on every run */
+  keptBtn: HTMLButtonElement;
   continueBtn: HTMLButtonElement;
+  /** Delete, only on a finished run */
+  deleteBtn: HTMLButtonElement;
   stopBtn: HTMLButtonElement;
   newBtn: HTMLButtonElement;
   /** the run page's meta line: repo · provider · model · cost */
@@ -475,6 +488,8 @@ let runUi: RunUi | null = null;
 /** The latest GET /runs answer, and the signature last rendered (to skip identical re-renders). */
 let runList: RunSummary[] | null = null;
 let runListSignature = "";
+/** A one-off message under the run list's buttons ("Deleted 3 runs", …), cleared on the next action. */
+let runListNotice: string | null = null;
 let runsExpanded = false;
 let runsPollTimer: number | undefined;
 let runsFetchSeq = 0;
@@ -754,6 +769,8 @@ function runStateFromStatus(status: Record<string, unknown>): RunState {
     stepStartedAt: typeof status.stepStartedAt === "number" ? status.stepStartedAt : undefined,
     finishedAt: typeof status.finishedAt === "number" ? status.finishedAt : undefined,
     cost: 0,
+    kept: status.kept === true,
+    unpushedCommits: typeof status.unpushedCommits === "number" ? status.unpushedCommits : 0,
   };
 }
 
@@ -923,6 +940,9 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
     el("span", { class: "run-item-icon" }, miniHive(BEE_STATE[status]?.state ?? "idle")),
     el("span", { class: "run-item-title" }, summary.title || "Untitled run"),
   );
+  if (summary.kept) {
+    top.append(el("span", { class: "run-item-star", role: "img", "aria-label": "Starred", title: "Starred: skipped by cleanup" }, "\u2605"));
+  }
   const meta = el(
     "span",
     { class: "run-item-meta" },
@@ -930,6 +950,123 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
   );
   item.append(top, meta, pill);
   return item;
+}
+
+/**
+ * A modal confirm dialog: the native <dialog>, so Escape and the browser's focus handling work.
+ * Resolves true when the confirm button is pressed, false on Cancel or Escape.
+ */
+function confirmDialog(o: {
+  title: string;
+  body: (Node | string)[];
+  confirmLabel: string;
+  danger?: boolean;
+}): Promise<boolean> {
+  const dialog = el("dialog", { class: "hive-dialog" });
+  let resolveResult!: (value: boolean) => void;
+  const result = new Promise<boolean>((resolve) => {
+    resolveResult = resolve;
+  });
+  let settled = false;
+  const finish = (value: boolean): void => {
+    if (settled) return;
+    settled = true;
+    if (dialog.open) dialog.close();
+    dialog.remove();
+    resolveResult(value);
+  };
+  const cancelBtn = el("button", { class: "btn", type: "button" }, "Cancel");
+  cancelBtn.onclick = () => finish(false);
+  const confirmBtn = el(
+    "button",
+    { id: "dialogConfirm", class: `btn ${o.danger ? "btn-danger" : "btn-primary"}`, type: "button" },
+    o.confirmLabel,
+  );
+  confirmBtn.onclick = () => finish(true);
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    finish(false);
+  });
+  dialog.addEventListener("close", () => finish(false));
+  dialog.append(
+    el("h2", { class: "dialog-title" }, o.title),
+    el("div", { class: "dialog-body" }, ...o.body),
+    el("div", { class: "dialog-actions" }, cancelBtn, confirmBtn),
+  );
+  document.body.append(dialog);
+  dialog.showModal();
+  confirmBtn.focus();
+  return result;
+}
+
+/** The Clear… dialog: pick "done" or every finished run, then POST /sessions/clear. */
+function clearRunsDialog(): void {
+  const finished = (runList ?? []).filter((summary) => !BUSY_STATUS.has(summary.status));
+  const counts = {
+    done: finished.filter((summary) => summary.status === "idle" && !summary.kept).length,
+    finished: finished.filter((summary) => !summary.kept).length,
+  };
+  let scope: "done" | "finished" = "done";
+  const doneRadio = el("input", { id: "clear-done", type: "radio", name: "clearScope", value: "done" });
+  const finishedRadio = el("input", { id: "clear-finished", type: "radio", name: "clearScope", value: "finished" });
+  doneRadio.checked = true;
+  const countLine = el("p", { class: "dialog-count" });
+  const update = (): void => {
+    countLine.textContent = `Deletes ${counts[scope]} run${counts[scope] === 1 ? "" : "s"}.`;
+  };
+  const onChoice = (): void => {
+    scope = finishedRadio.checked ? "finished" : "done";
+    update();
+  };
+  doneRadio.addEventListener("change", onChoice);
+  finishedRadio.addEventListener("change", onChoice);
+  update();
+  const body = [
+    el(
+      "label",
+      { class: "dialog-choice", for: "clear-done" },
+      doneRadio,
+      el("span", {}, "Finished successfully"),
+    ),
+    el(
+      "label",
+      { class: "dialog-choice", for: "clear-finished" },
+      finishedRadio,
+      el("span", {}, "All finished runs, including failed and stopped"),
+    ),
+    countLine,
+    el("p", { class: "dialog-note" }, "Starred runs are kept."),
+  ];
+  void (async () => {
+    const ok = await confirmDialog({ title: "Clear finished runs?", body, confirmLabel: "Clear", danger: true });
+    if (!ok) return;
+    try {
+      const res = await api("/sessions/clear", { method: "POST", body: JSON.stringify({ include: scope }) });
+      const data = (await res.json().catch(() => ({}))) as { deleted?: unknown; skipped?: unknown; error?: unknown };
+      if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+      const deleted = Array.isArray(data.deleted)
+        ? data.deleted.filter((id): id is string => typeof id === "string")
+        : [];
+      const skipped = Array.isArray(data.skipped) ? (data.skipped as { id?: unknown; error?: unknown }[]) : [];
+      let notice = `Deleted ${deleted.length} run${deleted.length === 1 ? "" : "s"}`;
+      if (skipped.length > 0) {
+        const details = skipped.map((entry) => `${String(entry.id)} (${String(entry.error)})`).join("; ");
+        notice += `. ${skipped.length} could not be deleted: ${details}`;
+      }
+      // The open run may have just been cleared from under us.
+      if (run && deleted.includes(run.sessionId)) {
+        closeRun();
+        runsViewTarget = null;
+        location.hash = "#runs";
+      }
+      runListNotice = notice;
+      await refreshRuns();
+      renderRunsList(true);
+    } catch (err) {
+      runListNotice = `Couldn't clear runs: ${err instanceof Error ? err.message : String(err)}`;
+      renderRunsList(true);
+    }
+  })();
 }
 
 function renderRunsList(force = false): void {
@@ -940,9 +1077,15 @@ function renderRunsList(force = false): void {
   const list = runList ?? [];
   const newBtn = el("button", { id: "newRunBtn", class: "btn btn-primary", type: "button" }, "New run");
   newBtn.onclick = () => {
+    runListNotice = null;
     location.hash = "#runs";
   };
-  const children: HTMLElement[] = [newBtn];
+  // Clear deletes finished runs in one go; starred runs are always kept.
+  const clearBtn = el("button", { id: "clearRunsBtn", class: "text-btn runs-list-clear", type: "button" }, "Clear\u2026");
+  clearBtn.onclick = () => clearRunsDialog();
+  const actions = el("div", { class: "runs-list-actions" }, newBtn, clearBtn);
+  const children: HTMLElement[] = [actions];
+  if (runListNotice) children.push(el("p", { class: "runs-list-notice", role: "status" }, runListNotice));
   if (list.length === 0) {
     children.push(el("p", { class: "runs-list-empty" }, "No runs yet. Give the bees a task."));
   } else {
@@ -1359,6 +1502,8 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     stepStartedAt: typeof data.stepStartedAt === "number" ? data.stepStartedAt : undefined,
     finishedAt: typeof data.finishedAt === "number" ? data.finishedAt : undefined,
     cost: 0,
+    kept: false,
+    unpushedCommits: 0,
   };
   runUi = null;
   runsViewTarget = run.sessionId;
@@ -1433,13 +1578,27 @@ function buildRunView(): HTMLElement {
   const state = run!;
   runUi?.bee.destroy();
   const pill = el("span", { class: "pill" });
+  const keptBtn = el("button", { class: "btn btn-star", type: "button" });
+  keptBtn.onclick = () => void toggleRunKept();
   const continueBtn = el("button", { class: "btn btn-primary", type: "button" }, "Continue");
   continueBtn.onclick = () => void sendFollowUp(DEFAULT_CONTINUE_PROMPT);
+  const deleteBtn = el("button", { class: "btn btn-danger", type: "button" }, "Delete");
+  deleteBtn.onclick = () => void deleteRun();
   const stopBtn = el("button", { class: "btn btn-danger", type: "button" }, "Stop");
   stopBtn.onclick = () => void abortRun();
   const newBtn = el("button", { class: "btn", type: "button" }, "New run");
   newBtn.onclick = () => newRun();
-  const toolbar = el("div", { class: "run-toolbar" }, pill, continueBtn, el("span", { class: "spacer" }), stopBtn, newBtn);
+  const toolbar = el(
+    "div",
+    { class: "run-toolbar" },
+    pill,
+    keptBtn,
+    continueBtn,
+    deleteBtn,
+    el("span", { class: "spacer" }),
+    stopBtn,
+    newBtn,
+  );
 
   // github.com URLs read better as owner/name.
   const repoText = repoLabel(state.repo, state.newRepo);
@@ -1484,7 +1643,21 @@ function buildRunView(): HTMLElement {
   });
   const followUp = el("div", { class: "follow-up" }, followInput, followBtn);
 
-  runUi = { pill, continueBtn, stopBtn, newBtn, meta: metaEl, timeline, nodes, followInput, followBtn, empty, bee };
+  runUi = {
+    pill,
+    keptBtn,
+    continueBtn,
+    deleteBtn,
+    stopBtn,
+    newBtn,
+    meta: metaEl,
+    timeline,
+    nodes,
+    followInput,
+    followBtn,
+    empty,
+    bee,
+  };
   syncRunUi();
   return el("div", {}, head, timelineCard, followUp);
 }
@@ -1529,6 +1702,11 @@ function syncRunUi(): void {
   runUi.pill.textContent = STATUS_LABEL[run.status] ?? run.status;
   runUi.pill.className = `pill ${STATUS_PILL[run.status] ?? "pill-muted"}`;
   runUi.stopBtn.hidden = !run.busy;
+  runUi.deleteBtn.hidden = run.busy;
+  runUi.keptBtn.textContent = run.kept ? "\u2605" : "\u2606";
+  runUi.keptBtn.setAttribute("aria-pressed", run.kept ? "true" : "false");
+  runUi.keptBtn.setAttribute("aria-label", run.kept ? "Kept: skipped by cleanup" : "Keep this run");
+  runUi.keptBtn.title = run.kept ? "Kept: skipped by cleanup" : "Keep this run";
   const canContinue = CONTINUE_STATUSES.has(run.status) && !run.busy;
   runUi.continueBtn.hidden = !canContinue;
   runUi.followInput.placeholder = canContinue
@@ -1807,6 +1985,75 @@ async function sendFollowUp(message?: string): Promise<void> {
     appendItem({ kind: "banner", tone: "danger", title: "Couldn't send", detail: (err as Error).message });
     run.busy = false;
     syncRunUi();
+  }
+}
+
+/** Star or unstar the open run: PUT /session/:id/kept. Kept runs are skipped by every cleanup. */
+async function toggleRunKept(): Promise<void> {
+  if (!run || !runUi) return;
+  const state = run;
+  const next = !state.kept;
+  runUi.keptBtn.disabled = true;
+  try {
+    const res = await api(`/session/${encodeURIComponent(state.sessionId)}/kept`, {
+      method: "PUT",
+      body: JSON.stringify({ kept: next }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { kept?: unknown; error?: unknown };
+    if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    state.kept = data.kept === true;
+    runList = (runList ?? []).map((summary) =>
+      summary.sessionId === state.sessionId ? { ...summary, kept: state.kept } : summary,
+    );
+    renderRunsList(true);
+  } catch (err) {
+    appendItem({
+      kind: "banner",
+      tone: "danger",
+      title: "Couldn't change the star",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    if (run === state && runUi) {
+      runUi.keptBtn.disabled = false;
+      syncRunUi();
+    }
+  }
+}
+
+/** Delete the open run after a confirm dialog, then go back to the run list. */
+async function deleteRun(): Promise<void> {
+  if (!run || run.busy) return;
+  const state = run;
+  const body: (Node | string)[] = ["Its folder, logs and VM files are removed."];
+  if (state.unpushedCommits > 0) {
+    const commits = `${state.unpushedCommits} commit${state.unpushedCommits === 1 ? "" : "s"}`;
+    body.push(
+      `${commits} were never pushed from hive. If you haven't applied or downloaded them, they'll be lost.`,
+    );
+  }
+  if (state.kept) body.push("This run is starred.");
+  const ok = await confirmDialog({ title: "Delete this run?", body, confirmLabel: "Delete", danger: true });
+  if (!ok) return;
+  try {
+    const res = await api(`/session/${encodeURIComponent(state.sessionId)}`, { method: "DELETE" });
+    const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+    if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    runList = (runList ?? []).filter((summary) => summary.sessionId !== state.sessionId);
+    runListNotice = null;
+    renderRunsList(true);
+    if (run === state) {
+      closeRun();
+      runsViewTarget = null;
+      location.hash = "#runs";
+    }
+  } catch (err) {
+    appendItem({
+      kind: "banner",
+      tone: "danger",
+      title: "Couldn't delete this run",
+      detail: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -2226,7 +2473,14 @@ interface RunsSettingEntry {
   env: string;
 }
 
-type RunsSettingKey = "cpus" | "memoryMiB" | "maxConcurrent" | "timeoutMin" | "stallMin" | "diskMaxGb";
+type RunsSettingKey =
+  | "cpus"
+  | "memoryMiB"
+  | "maxConcurrent"
+  | "timeoutMin"
+  | "stallMin"
+  | "diskMaxGb"
+  | "retentionDays";
 
 interface RunsSettingsResponse {
   settings: Record<RunsSettingKey, RunsSettingEntry>;
@@ -2258,6 +2512,12 @@ const RUN_SETTING_SPECS: RunsSettingSpec[] = [
   },
   { key: "stallMin", label: "Stall time", help: "Stop a run when nothing changed for this long. 0 turns it off.", unit: "minutes" },
   { key: "diskMaxGb", label: "Disk per run", help: "Stop a run whose files grow past this. 0 turns it off.", unit: "GB" },
+  {
+    key: "retentionDays",
+    label: "Keep finished runs",
+    help: "Finished runs older than this are deleted, except starred ones. 0 keeps them forever.",
+    unit: "days",
+  },
 ];
 
 /** A MiB amount in GiB, one decimal at most: "2", "0.5", "15.5". */

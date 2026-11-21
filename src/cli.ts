@@ -43,6 +43,7 @@ hive export [run] [--zip | --bundle | --report] [-o <path>] [--force]
 hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
 hive list
 hive clean <run> | --all
+hive keep [--off] <run>
 hive keys [list]
 hive keys add <provider> [--no-test]
 hive keys test [provider]
@@ -737,9 +738,10 @@ async function cmdList(args: string[]): Promise<number> {
     const now = Date.now();
     const rows: string[][] = [["RUN", "STATUS", "COMMITS", "COST", "AGE", "REPO"]];
     for (const run of runs) {
+      const star = run.meta.kept ? " \u2605" : "";
       rows.push([
         run.name,
-        runStatusCell(run.meta.status, tty),
+        runStatusCell(run.meta.status, tty) + star,
         String(run.meta.commits),
         formatCost(run.meta.usage.cost),
         runAge(run.meta, now),
@@ -750,8 +752,9 @@ async function cmdList(args: string[]): Promise<number> {
     return 0;
   }
   for (const run of runs) {
+    const star = run.meta.kept ? " \u2605" : "";
     process.stdout.write(
-      `${run.name}  ${run.meta.status}  ${run.meta.commits} commit(s)  $${run.meta.usage.cost.toFixed(4)}  ${run.meta.repo}\n`,
+      `${run.name}  ${run.meta.status}${star}  ${run.meta.commits} commit(s)  $${run.meta.usage.cost.toFixed(4)}  ${run.meta.repo}\n`,
     );
   }
   return 0;
@@ -768,6 +771,10 @@ async function cmdClean(args: string[]): Promise<number> {
     for (const run of listRuns()) {
       if (isLive(run.meta)) {
         console.error(`hive: kept ${run.name} (still running)`);
+        continue;
+      }
+      if (run.meta.kept) {
+        console.error(`hive: kept ${run.name} (starred)`);
         continue;
       }
       cleanRun(run.dir);
@@ -796,6 +803,21 @@ async function cmdClean(args: string[]): Promise<number> {
   const dir = resolveRun(positionals[0]);
   cleanRun(dir);
   process.stdout.write(`hive: cleaned ${basename(dir)}\n`);
+  return 0;
+}
+
+async function cmdKeep(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: { off: { type: "boolean" } },
+  });
+  const { resolveRun, setKept } = await import("./runs.js");
+  if (positionals[0] === undefined) throw new Error("keep needs a run name");
+  const dir = resolveRun(positionals[0]);
+  setKept(dir, !values.off);
+  const name = basename(dir);
+  process.stdout.write(values.off ? `hive: unstarred ${name}\n` : `hive: starred ${name}\n`);
   return 0;
 }
 
@@ -1552,6 +1574,9 @@ async function main(): Promise<void> {
       return;
     case "clean":
       process.exitCode = await cmdClean(rest);
+      return;
+    case "keep":
+      process.exitCode = await cmdKeep(rest);
       return;
     case "keys":
       process.exitCode = await cmdKeys(rest);

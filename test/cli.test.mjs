@@ -3,7 +3,7 @@
 // HIVE_RUNS_DIR at import time.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -244,4 +244,87 @@ write(JSON.stringify(resolveContinueArgs(${JSON.stringify(positionals)}, (name) 
   assert.deepEqual(probe(["r1"], ["r1"]), { run: "r1", prompt });
   assert.deepEqual(probe(["r1", "do more"], ["r1"]), { run: "r1", prompt: "do more" });
   assert.deepEqual(probe(["fix the bug"], ["r1"]), { prompt: "fix the bug" });
+});
+
+// ── run management: hive keep and clean --all ──
+
+/** A finished run's meta, as `hive list`/`hive keep` read it. */
+function finishedMeta(overrides = {}) {
+  return {
+    repo: "/tmp/owner/repo",
+    source: "local",
+    base: "abc",
+    provider: "deepseek",
+    model: "m",
+    thinking: "low",
+    prompt: "p",
+    status: "done",
+    pid: 1,
+    commits: 1,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    createdAt: Date.now() - 7_200_000,
+    finishedAt: Date.now() - 3_600_000,
+    ...overrides,
+  };
+}
+
+/** A runs dir with one run folder per (name, meta) pair. */
+function makeRunsDir(prefix, runs) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  for (const [name, meta] of Object.entries(runs)) {
+    mkdirSync(join(dir, name), { recursive: true });
+    writeFileSync(join(dir, name, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+  }
+  return dir;
+}
+
+function cli(args, runsDir) {
+  return spawnSync(process.execPath, ["dist/cli.js", ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, HIVE_RUNS_DIR: runsDir, NO_COLOR: "1" },
+  });
+}
+
+test("hive keep stars and unstars a run, and hive list marks it with ★", () => {
+  const name = "demo-20240101-000000";
+  const dir = makeRunsDir("hive-keep-", { [name]: finishedMeta() });
+
+  const keep = cli(["keep", name], dir);
+  assert.equal(keep.status, 0, keep.stderr);
+  assert.match(keep.stdout, new RegExp(`^hive: starred ${name}$`, "m"));
+  assert.equal(JSON.parse(readFileSync(join(dir, name, "meta.json"), "utf8")).kept, true);
+
+  const list = cli(["list"], dir);
+  assert.equal(list.status, 0, list.stderr);
+  assert.match(list.stdout, /done ★/, list.stdout);
+
+  const off = cli(["keep", "--off", name], dir);
+  assert.equal(off.status, 0, off.stderr);
+  assert.match(off.stdout, new RegExp(`^hive: unstarred ${name}$`, "m"));
+  assert.equal(JSON.parse(readFileSync(join(dir, name, "meta.json"), "utf8")).kept, undefined);
+  assert.doesNotMatch(cli(["list"], dir).stdout, /★/);
+
+  assert.equal(cli(["keep"], dir).status, 1, "keep without a run name is a usage error");
+  assert.equal(cli(["keep", "--off", "nope"], dir).status, 1, "an unknown run is an error");
+});
+
+test("hive clean --all skips a starred run and deletes the rest", () => {
+  const dir = makeRunsDir("hive-clean-all-", {
+    "plain-run": finishedMeta(),
+    "kept-run": finishedMeta({ kept: true }),
+  });
+
+  const clean = cli(["clean", "--all"], dir);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /^hive: cleaned plain-run$/m);
+  assert.doesNotMatch(clean.stdout, /cleaned kept-run/);
+  assert.match(clean.stderr, /^hive: kept kept-run \(starred\)$/m);
+  assert.equal(existsSync(join(dir, "plain-run")), false);
+  assert.equal(existsSync(join(dir, "kept-run")), true);
+});
+
+test("hive --help mentions keep", () => {
+  const help = execFileSync(process.execPath, ["dist/cli.js", "--help"], { cwd: repoRoot, encoding: "utf8" });
+  assert.match(help, /^hive keep \[--off\] <run>$/m);
 });

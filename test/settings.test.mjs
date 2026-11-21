@@ -23,6 +23,7 @@ const SETTING_ENVS = [
   "HIVE_SANDBOX_TIMEOUT_MIN",
   "HIVE_STALL_MIN",
   "HIVE_RUN_DISK_MAX_GB",
+  "HIVE_RUN_RETENTION_DAYS",
 ];
 for (const name of SETTING_ENVS) delete process.env[name];
 
@@ -34,7 +35,15 @@ const { capacity } = await import("../dist/web-runs.js");
 const { setKeysFileValue } = await import("../dist/keys.js");
 const { default: settingsRoutes } = await import("../dist/routes/settings.js");
 
-const DEFAULTS = { cpus: 1, memoryMiB: 2048, maxConcurrent: 2, timeoutMin: 60, stallMin: 15, diskMaxGb: 20 };
+const DEFAULTS = {
+  cpus: 1,
+  memoryMiB: 2048,
+  maxConcurrent: 2,
+  timeoutMin: 60,
+  stallMin: 15,
+  diskMaxGb: 20,
+  retentionDays: 14,
+};
 
 function clearFile() {
   rmSync(file, { force: true });
@@ -45,8 +54,16 @@ function fittingMemoryMiB() {
   return Math.min(1024, host().memoryMiB - 1024);
 }
 
-test("the table has the six settings in order", () => {
-  assert.deepEqual(SETTING_KEYS, ["cpus", "memoryMiB", "maxConcurrent", "timeoutMin", "stallMin", "diskMaxGb"]);
+test("the table has the seven settings in order", () => {
+  assert.deepEqual(SETTING_KEYS, [
+    "cpus",
+    "memoryMiB",
+    "maxConcurrent",
+    "timeoutMin",
+    "stallMin",
+    "diskMaxGb",
+    "retentionDays",
+  ]);
 });
 
 test("readSettings reports defaults, this computer's limits and the env name", () => {
@@ -70,18 +87,26 @@ test("readSettings reports defaults, this computer's limits and the env name", (
 
 test("validateSettings accepts values in range and returns only the patch", () => {
   const result = validateSettings(
-    { cpus: 2, memoryMiB: 1024, maxConcurrent: 1, timeoutMin: 5, stallMin: 0, diskMaxGb: 0 },
+    { cpus: 2, memoryMiB: 1024, maxConcurrent: 1, timeoutMin: 5, stallMin: 0, diskMaxGb: 0, retentionDays: 0 },
     { cpus: 8, memoryMiB: 32768 },
   );
   assert.equal(result.ok, true);
-  assert.deepEqual(result.values, { cpus: 2, memoryMiB: 1024, maxConcurrent: 1, timeoutMin: 5, stallMin: 0, diskMaxGb: 0 });
+  assert.deepEqual(result.values, {
+    cpus: 2,
+    memoryMiB: 1024,
+    maxConcurrent: 1,
+    timeoutMin: 5,
+    stallMin: 0,
+    diskMaxGb: 0,
+    retentionDays: 0,
+  });
   assert.deepEqual(result.warnings, []);
 });
 
 test("validateSettings names each limit", () => {
   const h = { cpus: 8, memoryMiB: 32768 };
   const result = validateSettings(
-    { cpus: 9, memoryMiB: 511, maxConcurrent: 17, timeoutMin: 1441, stallMin: 241, diskMaxGb: 1001 },
+    { cpus: 9, memoryMiB: 511, maxConcurrent: 17, timeoutMin: 1441, stallMin: 241, diskMaxGb: 1001, retentionDays: 3651 },
     h,
   );
   assert.equal(result.ok, false);
@@ -91,17 +116,20 @@ test("validateSettings names each limit", () => {
   assert.match(result.errors.timeoutMin, /at most 1440 minutes/);
   assert.match(result.errors.stallMin, /at most 240 minutes/);
   assert.match(result.errors.diskMaxGb, /at most 1000 GB/);
+  assert.match(result.errors.retentionDays, /at most 3650 days/);
 
-  const tooSmall = validateSettings({ cpus: 0, timeoutMin: 4, stallMin: -1, diskMaxGb: -1 }, h);
+  const tooSmall = validateSettings({ cpus: 0, timeoutMin: 4, stallMin: -1, diskMaxGb: -1, retentionDays: -1 }, h);
   assert.match(tooSmall.errors.cpus, /at least 1/);
   assert.match(tooSmall.errors.timeoutMin, /at least 5 minutes/);
   assert.match(tooSmall.errors.stallMin, /at least 0 minutes/);
   assert.match(tooSmall.errors.diskMaxGb, /at least 0 GB/);
+  assert.match(tooSmall.errors.retentionDays, /at least 0 days/);
 
-  const notIntegers = validateSettings({ cpus: 1.5, timeoutMin: "60", maxConcurrent: null }, h);
+  const notIntegers = validateSettings({ cpus: 1.5, timeoutMin: "60", maxConcurrent: null, retentionDays: 1.5 }, h);
   assert.match(notIntegers.errors.cpus, /whole number/);
   assert.match(notIntegers.errors.timeoutMin, /whole number/);
   assert.match(notIntegers.errors.maxConcurrent, /whole number/);
+  assert.match(notIntegers.errors.retentionDays, /whole number/);
 
   const unknown = validateSettings({ nope: 1 }, h);
   assert.match(unknown.errors.nope, /Unknown setting/);
@@ -123,7 +151,15 @@ test("validateSettings rejects runs × memory that does not fit, warns when CPUs
 
 test("applySettings writes the keys file (mode 600) and updates config and the queue at once", () => {
   clearFile();
-  applySettings({ cpus: 3, memoryMiB: 1536, maxConcurrent: 4, timeoutMin: 90, stallMin: 5, diskMaxGb: 10 });
+  applySettings({
+    cpus: 3,
+    memoryMiB: 1536,
+    maxConcurrent: 4,
+    timeoutMin: 90,
+    stallMin: 5,
+    diskMaxGb: 10,
+    retentionDays: 30,
+  });
 
   const text = readFileSync(file, "utf8");
   for (const line of [
@@ -133,6 +169,7 @@ test("applySettings writes the keys file (mode 600) and updates config and the q
     "HIVE_SANDBOX_TIMEOUT_MIN=90",
     "HIVE_STALL_MIN=5",
     "HIVE_RUN_DISK_MAX_GB=10",
+    "HIVE_RUN_RETENTION_DAYS=30",
   ]) {
     assert.match(text, new RegExp(`^${line}$`, "m"), `${line} is saved`);
   }
@@ -143,6 +180,7 @@ test("applySettings writes the keys file (mode 600) and updates config and the q
   assert.equal(config.sandbox.timeoutMin, 90);
   assert.equal(config.sandbox.stallMin, 5);
   assert.equal(config.sandbox.diskMaxGb, 10);
+  assert.equal(config.runRetentionDays, 30);
   assert.equal(capacity().max, 4);
 
   const settings = readSettings();
@@ -159,6 +197,12 @@ test("resetSetting removes the saved value and restores the default", () => {
   assert.doesNotMatch(readFileSync(file, "utf8"), /^HIVE_SANDBOX_CPUS=/m);
   assert.equal(readSettings().cpus.source, "default");
   assert.equal(readSettings().cpus.value, 1);
+
+  resetSetting("retentionDays");
+  assert.equal(config.runRetentionDays, 14);
+  assert.doesNotMatch(readFileSync(file, "utf8"), /^HIVE_RUN_RETENTION_DAYS=/m);
+  assert.equal(readSettings().retentionDays.source, "default");
+  assert.equal(readSettings().retentionDays.value, 14);
 
   resetSetting("maxConcurrent");
   assert.equal(config.maxConcurrent, 2);
@@ -188,12 +232,14 @@ test("a new process reads the saved values from the keys file at startup", () =>
   setKeysFileValue("HIVE_SANDBOX_TIMEOUT_MIN", "30", startupFile);
   setKeysFileValue("HIVE_STALL_MIN", "0", startupFile);
   setKeysFileValue("HIVE_RUN_DISK_MAX_GB", "7", startupFile);
+  setKeysFileValue("HIVE_RUN_RETENTION_DAYS", "21", startupFile);
 
   const env = { ...process.env, HIVE_KEYS_FILE: startupFile, HIVE_DOTENV_PATH: join(dir, "nonexistent.env") };
   for (const name of SETTING_ENVS) delete env[name];
   const code = `import { config } from "./dist/config.js";
     console.log(JSON.stringify({ cpus: config.sandbox.cpus, memory: config.sandbox.memory, max: config.maxConcurrent,
-      timeout: config.sandbox.timeoutMin, stall: config.sandbox.stallMin, disk: config.sandbox.diskMaxGb }));`;
+      timeout: config.sandbox.timeoutMin, stall: config.sandbox.stallMin, disk: config.sandbox.diskMaxGb,
+      retention: config.runRetentionDays }));`;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -207,6 +253,7 @@ test("a new process reads the saved values from the keys file at startup", () =>
     timeout: 30,
     stall: 0,
     disk: 7,
+    retention: 21,
   });
 });
 

@@ -135,6 +135,8 @@ export interface RunMeta {
   summary?: string;
   /** where `hive push` put the run's commits */
   pushed?: { branch: string; url: string; at: number };
+  /** starred: never deleted by retention or Clear (the UI's ★, `hive keep`) */
+  kept?: boolean;
   prUrl?: string;
   issueUrl?: string;
   error?: string;
@@ -294,6 +296,8 @@ export function pruneRuns(now = Date.now()): string[] {
   const pruned: string[] = [];
   for (const { name, dir, meta } of listRuns()) {
     if (isLive(meta) || meta.finishedAt === undefined) continue;
+    // A starred run is kept out of every cleanup, however old it is.
+    if (meta.kept) continue;
     if (now - meta.finishedAt <= cutoff) continue;
     cleanRun(dir);
     pruned.push(name);
@@ -326,6 +330,18 @@ export function resolveRun(arg?: string): string {
 export function cleanRun(dir: string): void {
   if (isLive(readMeta(dir))) throw new Error(`run is still going: ${basename(dir)}`);
   rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * Star or unstar a run: a kept run is skipped by retention and by the web UI's Clear. Reads the
+ * meta, sets (or removes) `kept`, writes it back and returns the new meta. Allowed on a live run.
+ */
+export function setKept(dir: string, kept: boolean): RunMeta {
+  const meta = readMeta(dir);
+  if (kept) meta.kept = true;
+  else delete meta.kept;
+  writeMeta(dir, meta);
+  return meta;
 }
 
 /**
