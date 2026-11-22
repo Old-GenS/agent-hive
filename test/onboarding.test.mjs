@@ -85,5 +85,6 @@ test("POST /api/setup/rootfs fails from a source checkout", async () => {
   assert.equal(res.statusCode, 409);
   const body = res.json();
   assert.equal(typeof body.error, "string");
-  assert.match(body.error, /source|installed release/);
+  // macOS has no image to build yet, so its message names the missing arm64 image instead.
+  assert.match(body.error, process.platform === "darwin" ? /arm64 VM image/ : /source|installed release/);
 });

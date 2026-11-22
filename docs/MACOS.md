@@ -211,7 +211,8 @@ clang 21.0.0 and Rust 1.99.1, with no podman/docker/lima and no Homebrew writes.
 **Verdict: the Phase 0 gate passed.** A libkrun 1.19.8 VM booted from a raw ext4 image attached
 read-only with virtio-blk, with the implicit vsock disabled (`krun_add_vsock(ctx, 0)`) and one
 vsock port mapped to a host UNIX socket. Hive's unmodified egress proxy answered HTTP and HTTPS
-through that socket, and every direct network attempt failed. Phase 1 has not been started.
+through that socket, and every direct network attempt failed. Phase 1 has since built on this
+result (see [Phase 1 results](#phase-1-results)).
 
 | What | Result |
 |---|---|
@@ -403,7 +404,8 @@ the Phase 0 negative tests). `hive run` end to end waits for the arm64 image.
 - macOS run-image lifecycle: attach it at startup for the CLI, `hive serve` and the launchd
   service; keep a marker inside and refuse to run when it is not mounted; detach on shutdown; add
   it to `hive uninstall` and `hive doctor`.
-- `src/usage.ts`: no `/proc` or `/sys` on macOS — `os.freemem` fallback, no temperature sensor.
+- `src/usage.ts` is already platform-safe: it falls back to `os.freemem`, measures the disk with
+  `statfs` and reports no temperature when `/sys` is absent. Keep it covered by a macOS job.
 - `src/service.ts`: launchd already exists; fix the release-bundle command (it currently points at
   `lib/cli.js`, which a bundle does not ship).
 - `src/release.ts`: platform/arch asset names (`darwin-arm64` app, `linux-arm64` rootfs image)

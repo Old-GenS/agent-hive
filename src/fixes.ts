@@ -141,7 +141,12 @@ export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
           return { text: "The libkrun bundled with hive didn't load; reinstall hive.", command: INSTALL_CLI };
         }
         return {
-          text: "Build libkrun 1.19.8 and libkrunfw for macOS, or install hive's release, which bundles them.",
+          // There is no macOS release yet, and the recipe installs under .scratch/prefix, which is
+          // not on dyld's search path: name the variable that makes the launcher find it.
+          text:
+            "Build libkrun 1.19.8 and libkrunfw for macOS, then run hive with " +
+            "HIVE_LIBKRUN=.scratch/prefix/lib/libkrun.1.19.8.dylib (the launcher preloads libkrunfw from the " +
+            "same folder). There is no macOS release yet.",
           command: "scripts/macos-spike/build-libkrun.sh",
         };
       }
