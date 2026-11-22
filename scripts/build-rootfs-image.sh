@@ -47,7 +47,10 @@ cleanup() {
   if [[ -n "$cid" ]]; then
     podman rm -f "$cid" >/dev/null 2>&1 || true
   fi
-  rm -rf "$tmp"
+  # Packaged directories can be read-only (ca-trust) or unreadable to their owner; the image
+  # builder runs as that user, so hand access back before deleting.
+  chmod -R u+rwX "$tmp" 2>/dev/null || true
+  rm -rf "$tmp" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -55,11 +58,18 @@ cid=$(podman create "$IMAGE" true)
 podman export "$cid" | tar -x -C "$tmp" --exclude="dev/*"
 podman rm "$cid" >/dev/null
 cid=""
+# Fedora ships directories the owner cannot read or write (ca-trust is 0555, systemd's
+# dissect-root is not readable); du and mke2fs run as this user, so restore owner access first.
+chmod -R u+rwX "$tmp"
 
 [[ -f "$tmp/usr/local/bin/hive-vm-init" ]] || die "$IMAGE has no /usr/local/bin/hive-vm-init; rebuild it with npm run build:image"
 [[ -x "$tmp/usr/local/bin/hive-netd" ]] || die "$IMAGE has no /usr/local/bin/hive-netd; rebuild it with npm run build:image"
 
-content=$(du -sb --apparent-size "$tmp" | cut -f1)
+if ! content=$(du -sb --apparent-size "$tmp" | cut -f1); then
+  echo "build-rootfs-image: cannot measure $tmp; entries this user cannot read:" >&2
+  find "$tmp" ! -readable -printf "%M %u %p\n" 2>/dev/null | head -10 >&2
+  exit 1
+fi
 size=$(node "$repo_root/scripts/rootfs-image.mjs" size "$content")
 echo "build-rootfs-image: rootfs $id, $content bytes of files, image $size bytes" >&2
 
