@@ -191,3 +191,17 @@ test("the device login uses only flags gh 2.45 (Ubuntu 24.04) knows", async () =
   const source = readFileSync(new URL("../src/github-login.ts", import.meta.url), "utf8");
   assert.ok(!source.includes('"--skip-ssh-key"'), "--skip-ssh-key is not in gh 2.45");
 });
+
+test("logins ask for the workflow scope, and a push refused for it says how to fix it", async () => {
+  const { readFileSync } = await import("node:fs");
+  for (const file of ["../src/github-login.ts", "../src/cli.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.ok(source.includes('"--scopes", "workflow"'), `${file} asks for the workflow scope`);
+  }
+  const { pushErrorText } = await import("../dist/runs.js");
+  const refused = new Error(
+    "! [remote rejected] HEAD -> main (refusing to allow an OAuth App to create or update workflow `.github/workflows/pages.yml` without `workflow` scope)",
+  );
+  assert.match(pushErrorText(refused, "https://github.com/o/r.git"), /gh auth refresh -h github\.com -s workflow/);
+  assert.match(pushErrorText(new Error("boom"), "https://github.com/o/r.git"), /check your git credentials/);
+});

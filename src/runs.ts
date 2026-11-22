@@ -283,6 +283,21 @@ export function recoverRuns(
  * Delete finished runs older than config.runRetentionDays (0 = keep forever), then prune unused
  * per-repo VM cache buckets. Returns the deleted run names.
  */
+/**
+ * A failed push's message with what to do about it. GitHub refuses pushes that add or change
+ * `.github/workflows` files from a login without the `workflow` scope; say how to add it.
+ */
+export function pushErrorText(err: Error, url: string): string {
+  if (/without `?workflow`? scope/i.test(err.message)) {
+    return (
+      "GitHub refused the push: it changes files in .github/workflows, and your GitHub login doesn't " +
+      "have the workflow permission. Run: gh auth refresh -h github.com -s workflow (or hive login " +
+      "github), then push the run again (hive push <run>). The commits are kept."
+    );
+  }
+  return `${err.message} (check your git credentials for ${url})`;
+}
+
 export function pruneRuns(now = Date.now()): string[] {
   try {
     const liveKeys = new Set(listRuns().filter(({ meta }) => isLive(meta)).map(({ meta }) => cacheKey(meta)));
@@ -674,7 +689,7 @@ export async function pushRun(
     try {
       commits = await applyAndPush(dir, meta.base, pushed.branch, true);
     } catch (err) {
-      throw new Error(`${(err as Error).message} (check your git credentials for ${pushed.url})`);
+      throw new Error(pushErrorText(err as Error, pushed.url));
     }
     meta.pushed = { ...pushed, at: Date.now() };
     writeMeta(dir, meta);
@@ -697,7 +712,7 @@ export async function pushRun(
     try {
       commits = await applyAndPush(dir, meta.base, "main", true);
     } catch (err) {
-      throw new Error(`${(err as Error).message} (check your git credentials for ${url})`);
+      throw new Error(pushErrorText(err as Error, url));
     }
     meta.pushed = { branch: "main", url, at: Date.now() };
     writeMeta(dir, meta);

@@ -1588,7 +1588,7 @@ async function cmdLogin(args: string[]): Promise<number> {
     const { hostInfo } = await import("./fixes.js");
     if (hostInfo().wsl && onPath("wslview")) env.BROWSER = "wslview";
   }
-  const login = spawnSync(ghBin, ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"], {
+  const login = spawnSync(ghBin, ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--scopes", "workflow"], {
     stdio: "inherit",
     env,
   });
