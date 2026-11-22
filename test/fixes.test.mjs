@@ -123,7 +123,7 @@ test("fixFor pasta: a release bundle says its bundled pasta couldn't run and poi
 test("fixFor launcher: a bundle is reinstalled, a checkout is rebuilt", () => {
   const bundle = fixFor("launcher", { ...fedora, bundle: true });
   assert.match(bundle.command ?? "", /install-cli\.sh/);
-  assert.match(bundle.command ?? "", /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/ogsapps\/agent-hive\/main\/install-cli\.sh \| sh$/);
+  assert.match(bundle.command ?? "", /^curl -fsSL https:\/\/raw\.githubusercontent\.com\/Old-GenS\/agent-hive\/main\/install-cli\.sh \| sh$/);
   assert.match(bundle.text, /Reinstall hive/);
   assert.equal(fixFor("launcher", { ...fedora, bundle: false }).command, "npm run build:vm");
 });

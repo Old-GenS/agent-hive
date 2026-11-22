@@ -101,9 +101,22 @@ until a newer one passes that check.
 ## Automation and the nightly channel
 
 `.github/workflows/` keeps `main` at the newest upstream pins and publishes a signed nightly
-prerelease every day. Stable releases stay manual. The GitHub side is already set up: the
-`beta-release` environment (kept under its old name) holding the `BETA_SIGNING_KEY` secret,
-auto-merge enabled, and Actions allowed to create pull requests.
+prerelease every day. Stable releases stay manual.
+
+### Repository settings the automation depends on
+
+Set once, in the `Old-GenS` organization and its `agent-hive` repository:
+
+| Setting | Where | Value |
+|---|---|---|
+| Ruleset `main` | Settings › Rules | requires a pull request (0 approvals) and the `test`, `vm`, `windows-installer` checks; blocks force-pushes and deletion; **no bypass list** |
+| Allow auto-merge | Settings › General › Pull requests | on — the bots use it, and there is no merge workflow of our own |
+| Merge types | Settings › General › Pull requests | merge commit only (no squash or rebase, so a merged branch keeps its SHAs) |
+| Delete branch on merge | Settings › General › Pull requests | on |
+| Workflow permissions | Organization Settings › Actions › General | "Read and write permissions" — the org default is read-only, which makes publishing a release fail with `Resource not accessible by integration`; workflows ask for write explicitly |
+| Allow GitHub Actions to create pull requests | Organization Settings › Actions › General | on — `bump.yml` opens its PRs with `GITHUB_TOKEN` |
+| Secret scanning + push protection | Settings › Code security | on (free on a public repo); non-provider patterns is GHAS-only |
+| `BETA_SIGNING_KEY` | Settings › Environments › `beta-release` (kept under its old name) | the prerelease key, as an environment secret |
 
 ### Two signing keys
 
@@ -124,9 +137,11 @@ nightly installs keep trusting the previous prerelease key until they update.
 
 ### Branches and pull requests
 
-- `main` is the only branch. The repository's `main` ruleset requires the `test`, `vm` and
-  `windows-installer` checks and blocks force-pushes and deletion; repository admins bypass it, so
-  the maintainer pushes directly from either machine.
+- `main` is the only branch, and nobody pushes to it directly: the `main` ruleset requires a pull
+  request plus the `test`, `vm` and `windows-installer` checks, and blocks force-pushes and
+  deletion. It has no bypass list, so the maintainer's own changes take the same route. Pull
+  requests need no approval (the checks are the gate) and merge through GitHub's auto-merge as
+  merge commits.
 - The update automation goes through pull requests, merged by **GitHub's auto-merge** (the
   repository setting, enabled per pull request with `gh pr merge --auto`): GitHub waits for the
   required checks and merges. There is no merge workflow of our own.
@@ -158,7 +173,7 @@ reads.
 
 ### The daily nightly prerelease
 
-`nightly.yml` (daily at 05:41 UTC, or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
+`nightly.yml` (daily at 03:00 UTC — 19:00 in Vancouver — or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
 `v<package.json patch + 1>-nightly.<run number>` when `main` has moved since the last nightly tag or
 the rootfs needs rebuilding:
 

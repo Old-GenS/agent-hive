@@ -49,7 +49,7 @@ wsl --install Ubuntu-24.04 --name agent-hive
 ls -l /dev/kvm                       # crw-rw---- root kvm
 sudo usermod -aG kvm $USER           # then wsl --shutdown from Windows
 sudo apt install -y passt
-curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh | sh
 hive doctor && hive keys add openrouter
 cd ~ && hive new wsl-test "a hello world web page in one HTML file"
 hive serve                           # then http://127.0.0.1:8080/ui/ in the Windows browser
@@ -68,7 +68,7 @@ systemd in WSL; plain `hive serve` is enough, and `wslu`'s `wslview` opens the W
 written, awaiting its first test on a real machine:
 
 ```powershell
-irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
 1. **WSL:** if missing, `wsl --install --no-distribution` (needs admin and a reboot; the script
@@ -181,8 +181,9 @@ How they stay current:
    release of each pinned piece and, when there is one, opens a pull request against `main` that
    bumps the pin (`scripts/rootfs-plan.mjs` decides whether the rootfs is rebuilt).
 3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
-   rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`); the pull request
-   merges automatically once `test` and `vm` pass.
+   rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`). Every change reaches
+   `main` as a pull request that GitHub's auto-merge merges once `test`, `vm` and
+   `windows-installer` pass; there is no bypass, for anyone.
 4. **The rootfs is reused while it is current** *(done)*. The daily nightly build reuses the tested
    rootfs unless `image/` changed, it has pending security updates, it is 14+ days old with
    updates, or it was dispatched with `fresh_rootfs`.
@@ -191,9 +192,9 @@ How they stay current:
 
 ### The nightly channel
 
-- **One branch:** `main`. Bump pull requests and Dependabot updates merge into it automatically once
-  the required `test` and `vm` checks pass, so it's always the latest, but only CI-tested, not used
-  in real work yet.
+- **One branch:** `main`, reached only through pull requests. Bump pull requests and Dependabot
+  updates merge by GitHub's auto-merge once `test`, `vm` and `windows-installer` pass, so it's
+  always the latest, but only CI-tested, not used in real work yet.
 - **Nightly releases** *(done)*: every day with new commits, `nightly.yml` publishes a signed GitHub
   prerelease, `v<version>-nightly.<n>`, after a real VM smoke test. `hive update --channel nightly`
   follows them (`dev` and `beta` are accepted as aliases); the default channel follows only full
@@ -203,7 +204,8 @@ How they stay current:
 - **Rollback:** `hive update --rollback` works the same on both channels; going back to stable is
   `hive update --channel stable` (never a downgrade: it waits for the next stable release).
 - **Setup:** see "Automation and the nightly channel" in [RELEASING.md](RELEASING.md) for the two
-  signing keys, the branch protection and how to rotate the prerelease key.
+  signing keys, the ruleset and repository settings the automation needs, and how to rotate the
+  prerelease key.
 
 ## Step 3 — gVisor fallback when there is no KVM
 

@@ -32,13 +32,13 @@ hive push --pr     # or push a branch and open a pull request
 **Linux** (x86_64, with KVM):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh | sh
 ```
 
 **Windows 11** (through WSL2, in PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
 Then start the web UI. It opens in your browser and walks you through the rest (checks, an API

@@ -1,6 +1,6 @@
 # install.ps1 - install Agent Hive inside WSL2 on Windows 11, with no Linux prompts.
 #
-#   irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 #
 # The `irm | iex` form cannot pass parameters, so the matching environment variables work too:
 #   HIVE_WSL_DISTRO   the WSL distro to create or reuse (default agent-hive)
@@ -38,7 +38,7 @@ if ($Distro -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
 # line with CRLF, so every receiving command strips the CR on the Linux side.
 $OutputEncoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
 
-$InstallCliUrl = 'https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh'
+$InstallCliUrl = 'https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh'
 if ($env:HIVE_INSTALL_CLI_URL) { $InstallCliUrl = $env:HIVE_INSTALL_CLI_URL }
 
 $BinDir = Join-Path -Path $env:LOCALAPPDATA -ChildPath 'agent-hive\bin'
@@ -416,5 +416,5 @@ Write-Host "Keep projects in the Linux home folder, not under C:\ (much faster).
 Write-Host "From Explorer: \\wsl$\$Distro\home\$User"
 Write-Host ''
 Write-Host 'To remove it later:'
-Write-Host '  irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex'
+Write-Host '  irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex'
 Write-Host '  (with the environment variable HIVE_UNINSTALL=1 set, or run the file with -Uninstall)'

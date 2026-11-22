@@ -6,7 +6,7 @@
 # signature before switching versions.
 set -eu
 
-REPO=${HIVE_RELEASE_REPO:-ogsapps/agent-hive}
+REPO=${HIVE_RELEASE_REPO:-Old-GenS/agent-hive}
 API=${HIVE_RELEASE_API:-https://api.github.com}
 
 if [ "$(uname -m)" != "x86_64" ]; then
