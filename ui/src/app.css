@@ -1223,6 +1223,40 @@ textarea:disabled {
   grid-area: pill;
 }
 
+/* The run list's star sits over the card's bottom-right corner; the meta line leaves room for it. */
+.run-item-wrap {
+  position: relative;
+}
+
+.run-item-wrap .run-item-meta {
+  padding-right: 22px;
+}
+
+.run-item-star-btn {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.run-item-star-btn:hover {
+  color: var(--honey);
+  background: var(--surface-2);
+}
+
+.run-item-star-btn.is-kept {
+  color: var(--honey);
+}
+
 .runs-list-toggle {
   align-self: flex-start;
 }

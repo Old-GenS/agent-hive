@@ -941,9 +941,12 @@ async function refreshRuns(): Promise<void> {
 
 function runItemElement(summary: RunSummary, index: number): HTMLElement {
   const selected = run?.sessionId === summary.sessionId;
+  // The card is a link; the star is a button next to it (a button inside a link is invalid HTML),
+  // placed over the card's bottom-right corner.
+  const wrap = el("div", { class: "run-item-wrap" });
+  if (index >= MAX_VISIBLE_RUNS) wrap.classList.add("run-item-extra");
   const item = el("a", { class: "run-item", href: `#runs/${encodeURIComponent(summary.sessionId)}` });
   if (selected) item.setAttribute("aria-current", "page");
-  if (index >= MAX_VISIBLE_RUNS) item.classList.add("run-item-extra");
   const status = summary.status;
   const pill = el(
     "span",
@@ -956,16 +959,55 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
     el("span", { class: "run-item-icon" }, miniHive(BEE_STATE[status]?.state ?? "idle")),
     el("span", { class: "run-item-title" }, summary.title || "Untitled run"),
   );
-  if (summary.kept) {
-    top.append(el("span", { class: "run-item-star", role: "img", "aria-label": "Starred", title: "Starred: skipped by cleanup" }, "\u2605"));
-  }
   const meta = el(
     "span",
     { class: "run-item-meta" },
     `${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"} \u00b7 ${runTimeLabel(summary)}`,
   );
   item.append(top, meta, pill);
-  return item;
+  const kept = Boolean(summary.kept);
+  const star = el(
+    "button",
+    {
+      class: `run-item-star-btn${kept ? " is-kept" : ""}`,
+      type: "button",
+      "aria-pressed": kept ? "true" : "false",
+      "aria-label": kept ? "Starred: skipped by cleanup. Unstar" : "Star this run to keep it",
+      title: kept ? "Starred: skipped by cleanup" : "Star to keep this run",
+    },
+    kept ? "\u2605" : "\u2606",
+  );
+  star.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void setRunKept(summary.sessionId, !kept, star);
+  };
+  wrap.append(item, star);
+  return wrap;
+}
+
+/** Star or unstar any run from the run list (PUT /session/:id/kept), keeping the open run in step. */
+async function setRunKept(sessionId: string, next: boolean, button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  try {
+    const res = await api(`/session/${encodeURIComponent(sessionId)}/kept`, {
+      method: "PUT",
+      body: JSON.stringify({ kept: next }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { kept?: unknown; error?: unknown };
+    if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    const kept = data.kept === true;
+    runList = (runList ?? []).map((summary) => (summary.sessionId === sessionId ? { ...summary, kept } : summary));
+    if (run && run.sessionId === sessionId) {
+      run.kept = kept;
+      syncRunUi();
+    }
+    renderRunsList(true);
+  } catch (err) {
+    button.disabled = false;
+    runListNotice = `Couldn't change the star: ${err instanceof Error ? err.message : String(err)}`;
+    renderRunsList(true);
+  }
 }
 
 /**
