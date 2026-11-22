@@ -28,7 +28,7 @@ COPY no-ipv6.c /tmp/no-ipv6.c
 RUN gcc -O2 -o /usr/local/bin/no-ipv6 /tmp/no-ipv6.c && rm /tmp/no-ipv6.c
 
 # Pinned so a pi release can't change behaviour under a running deployment; bump deliberately.
-ARG PI_VERSION=1.5.2
+ARG PI_VERSION=1.6.0
 RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" corepack && corepack enable \
     && npm cache clean --force
 
