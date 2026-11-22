@@ -93,7 +93,7 @@ hive update --rollback            # goes back to the previous version
 hive update --channel dev         # follow the daily signed prereleases (--channel stable to go back)
 ```
 
-Restart a running server afterwards (`hive service restart`, or stop and start `hive serve`). The
+How new versions are checked, tested and released: [UPDATES.md](UPDATES.md). Restart a running server afterwards (`hive service restart`, or stop and start `hive serve`). The
 VM filesystem is only downloaded again when a release changes it.
 
 ## Uninstalling

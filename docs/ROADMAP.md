@@ -158,6 +158,9 @@ This is what makes `hive` work beyond Fedora (Ubuntu, Debian, Mint, WSL2 with an
 
 ## Keeping it up to date
 
+*Done.* The user-facing summary is [UPDATES.md](UPDATES.md); the maintainer details are in
+[RELEASING.md](RELEASING.md). The design notes below stay for reference.
+
 A release bundles or builds on pieces that each move on their own:
 
 | Piece | Source | Changes |

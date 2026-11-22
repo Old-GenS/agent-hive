@@ -130,6 +130,7 @@ The full picture is in **[How it works](docs/HOW-IT-WORKS.md)**.
 ## Docs
 
 - [Install](docs/INSTALL.md): requirements, Linux, Windows, from source, updating
+- [Staying up to date](docs/UPDATES.md): how libkrun, the VM and every dependency are kept current and tested
 - [How it works](docs/HOW-IT-WORKS.md): the design, the isolation, and what happens during a run
 - [CLI reference](docs/CLI.md): every command and option
 - [Configuration](docs/CONFIGURATION.md): settings, providers and models, OpenRouter routing
