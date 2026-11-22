@@ -124,15 +124,17 @@ nightly installs keep trusting the previous prerelease key until they update.
 
 ### Branches and pull requests
 
-- `main` is the only branch. Every change — yours, the daily update check's pull requests,
-  Dependabot's — lands on `main` through a pull request that merges automatically once the required
-  `test` and `vm` checks pass.
-- Dependabot's updates, major versions included, merge once CI passes, like the daily check's.
+- `main` is the only branch. The repository's `main` ruleset requires the `test`, `vm` and
+  `windows-installer` checks and blocks force-pushes and deletion; repository admins bypass it, so
+  the maintainer pushes directly from either machine.
+- The update automation goes through pull requests, merged by **GitHub's auto-merge** (the
+  repository setting, enabled per pull request with `gh pr merge --auto`): GitHub waits for the
+  required checks and merges. There is no merge workflow of our own.
+- Dependabot can't enable auto-merge on its own pull requests (a bot may not merge its own work), so
+  `dependabot-automerge.yml` makes that one call; the waiting and merging are GitHub's.
 - Pull requests opened with `GITHUB_TOKEN` don't start workflows on their own, so the bump workflow
   dispatches `ci.yml` on its branch before enabling auto-merge; that run's checks land on the same
   commit.
-- The maintainer sets `main` branch protection: required checks `test` and `vm`, auto-merge
-  allowed.
 
 ### The daily bump check
 
