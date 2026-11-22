@@ -109,5 +109,5 @@ overshoot.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HIVE_NO_UPDATE_CHECK` | — | `1` stops the once-a-day "new version available" notice |
-| `HIVE_RELEASE_REPO` | `ogsapps/agent-hive` | Where releases are looked up |
+| `HIVE_RELEASE_REPO` | `Old-GenS/agent-hive` | Where releases are looked up |
 | `GH_TOKEN` / `GITHUB_TOKEN` | — | Used for release lookups when set |

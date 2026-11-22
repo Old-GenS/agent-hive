@@ -5,7 +5,7 @@ a small Ubuntu distro dedicated to hive (it never touches your other distros) an
 working without any Linux prompts.
 
 ```powershell
-irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
 ## Requirements
@@ -56,7 +56,7 @@ The `irm | iex` form cannot pass parameters, so set environment variables instea
 | `HIVE_INSTALL_CLI_URL` | The `install-cli.sh` URL to run (for testing). |
 
 ```powershell
-$env:HIVE_WSL_DISTRO = 'agent-hive-test'; irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+$env:HIVE_WSL_DISTRO = 'agent-hive-test'; irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
 ## Using hive
@@ -124,7 +124,7 @@ its user `PATH` entry. It leaves
 `%UserProfile%\.wslconfig.hive-backup`.
 
 ```powershell
-$env:HIVE_UNINSTALL = '1'; irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+$env:HIVE_UNINSTALL = '1'; irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
 ## Troubleshooting
@@ -155,7 +155,7 @@ wsl --install Ubuntu-24.04 --name agent-hive
 ls -l /dev/kvm                      # needs crw-rw---- root kvm
 sudo usermod -aG kvm $USER          # only if /dev/kvm isn't readable; then wsl --shutdown
 sudo apt install -y passt
-curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh | sh
 hive doctor
 hive keys add openrouter
 ```

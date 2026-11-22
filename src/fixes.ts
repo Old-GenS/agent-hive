@@ -28,7 +28,7 @@ export interface Fix {
   command?: string;
 }
 
-const INSTALL_CLI = "curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh";
+const INSTALL_CLI = "curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh | sh";
 
 /** The unquoted value of a KEY=value line in /etc/os-release. */
 function osReleaseField(text: string, key: string): string | undefined {

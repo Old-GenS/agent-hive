@@ -211,7 +211,7 @@ function releaseApi(): string {
 }
 
 function releaseRepo(): string {
-  return process.env.HIVE_RELEASE_REPO || "ogsapps/agent-hive";
+  return process.env.HIVE_RELEASE_REPO || "Old-GenS/agent-hive";
 }
 
 type RawRelease = {

@@ -32,7 +32,7 @@ Releases bring their own Node.js and libkrun, and work on Ubuntu 20.04+, Debian 
 ## Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh | sh
 ```
 
 The script downloads the latest release, checks it against the release's `SHA256SUMS`, installs it
@@ -45,7 +45,7 @@ under `~/.local/share/agent-hive`, puts `hive` in `~/.local/bin` (adding that fo
 Runs through WSL2. One line in PowerShell (not as administrator):
 
 ```powershell
-irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
 It creates a dedicated `agent-hive` WSL distro (Ubuntu 24.04) with no Linux prompts, installs hive
@@ -55,7 +55,7 @@ instead install into it like on Linux:
 ```bash
 sudo apt install -y passt gh wslu
 sudo usermod -aG kvm $USER        # then run wsl --shutdown in Windows and reopen Ubuntu
-curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cli.sh | sh
 ```
 
 Details, options and troubleshooting: [WINDOWS.md](WINDOWS.md).
@@ -65,7 +65,7 @@ Details, options and troubleshooting: [WINDOWS.md](WINDOWS.md).
 Also needs Node.js 20+, git, podman and the system libkrun (Fedora: `sudo dnf install libkrun`).
 
 ```bash
-git clone https://github.com/ogsapps/agent-hive.git && cd agent-hive
+git clone https://github.com/Old-GenS/agent-hive.git && cd agent-hive
 npm ci && npm run build && npm run build:ui
 npm run build:image && npm run build:vm && npm run build:rootfs
 npm link            # puts `hive` on your PATH
