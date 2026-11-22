@@ -14,6 +14,17 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
   [hive-mcp](https://github.com/stansz/hive-mcp) package no longer works with this server; a
   built-in `hive mcp` is planned.
 
+## Working in this repo
+
+- **Commit to `main` and push, on `main`.** Don't create branches or open pull requests unless the
+  maintainer asks for one. `main` is protected so that pull requests must pass the `test` and `vm`
+  checks, but the maintainer pushes straight to it, and CI checks every push afterwards.
+- **Never rewrite `main`'s history:** no force-push, no rebase or reset of commits that are already
+  on GitHub.
+- If you do open a pull request because you were asked to, do the work only on that branch (leave
+  local `main` untouched), and it is merged with a merge commit (the repo allows no squash or
+  rebase merging).
+
 ## Layout
 
 | Path | What |
