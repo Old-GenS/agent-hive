@@ -267,7 +267,7 @@ and the Phase 0 negative network tests still hold inside a hive run.
   libkrun finds libkrunfw next to it, then re-sign.
 - `scripts/build-release-macos.sh`: Node `darwin-arm64`, the esbuild bundle, `ui/dist`, the arm64
   rootfs image from the arm64 job, `SHA256SUMS` and the release signature; wire it into the
-  dev/release workflows on `macos-14`.
+  nightly/release workflows on `macos-14`.
 - `versions.json`: add `libkrunfw.macos.aarch64` and `libkrunfw.linux.aarch64` URLs with
   SHA-256; teach `scripts/check-updates.mjs` about them.
 - Docs: a macOS section in `docs/INSTALL.md`, the README requirements, `AGENTS.md`, and the

@@ -32,8 +32,8 @@ Every pinned version lives in one place (`versions.json`, `image/Containerfile`,
 - **The VM filesystem is refreshed when it needs it:** the daily build checks the current one for
   pending Fedora updates and rebuilds it straight away for security fixes, or after 14 days for
   other updates. Otherwise it is reused, so you don't download 660 MB for nothing.
-- **A dev build comes out every day `main` changed:** a signed prerelease with everything that has
-  passed so far.
+- **A nightly build comes out every day `main` changed:** a signed prerelease with everything that
+  has passed so far.
 - **GitHub's security checks** watch the code: Dependabot alerts, secret scanning with push
   protection, and private vulnerability reporting (the Security tab).
 
@@ -43,12 +43,12 @@ There are two channels:
 
 | Channel | What you get | How |
 |---|---|---|
-| **stable** (the default) | releases the maintainer publishes by hand, after a dev build has been used for a while | `hive update` |
-| **dev** | the daily signed prerelease: newest fixes first, tested by CI but not yet used much | `hive update --channel dev` |
+| **stable** (the default) | releases the maintainer publishes by hand, after a nightly build has been used for a while | `hive update` |
+| **nightly** | the daily signed prerelease: newest fixes first, tested by CI but not yet used much | `hive update --channel nightly` (`dev` and `beta` are aliases) |
 
 `hive update` checks the release's signature before installing it (stable releases are signed
-with a key that never leaves the maintainer's machine; dev builds with a separate key that stable
-installs never accept). `hive update --rollback` goes back one version, and
+with a key that never leaves the maintainer's machine; nightly builds with a separate key that
+stable installs never accept). `hive update --rollback` goes back one version, and
 `hive update --channel stable` returns to the stable channel (it waits for the next stable release
 rather than downgrading).
 

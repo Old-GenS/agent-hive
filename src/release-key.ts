@@ -5,8 +5,8 @@ MCowBQYDK2VwAyEAp+ybUUJZ5EXfhhi3BwKCXicLYBc56HUojzuFjTsZFkg=
 `;
 
 /**
- * The prerelease key, which signs the daily dev prereleases built in CI (its private half is the
- * `BETA_SIGNING_KEY` environment secret). Stable installs never accept it.
+ * The prerelease key, which signs the daily nightly prereleases built in CI (its private half is
+ * the `BETA_SIGNING_KEY` environment secret). Stable installs never accept it.
  */
 export const PRERELEASE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAWdnEWR0UkzDTAxMQCbeb4/klDgiRDcRruujT3WNdcEs=

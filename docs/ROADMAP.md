@@ -1,8 +1,8 @@
 # Roadmap
 
 Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine.
-`main` is the one branch; the daily dev prereleases carry the newest dependencies before they're
-fully tested (see "Keeping it up to date").
+`main` is the one branch; the daily nightly prereleases carry the newest dependencies before
+they're fully tested (see "Keeping it up to date").
 
 ## Step 1 — Releases, `hive update`, system libkrun *(done: v0.4.0)*
 
@@ -183,26 +183,26 @@ How they stay current:
 3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
    rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`); the pull request
    merges automatically once `test` and `vm` pass.
-4. **The rootfs is reused while it is current** *(done)*. The daily dev build reuses the tested
+4. **The rootfs is reused while it is current** *(done)*. The daily nightly build reuses the tested
    rootfs unless `image/` changed, it has pending security updates, it is 14+ days old with
    updates, or it was dispatched with `fresh_rootfs`.
 5. **Security fixes skip the wait** *(done)*. A libkrun, libkrunfw or Chromium security fix goes to
-   `main` and gets a dev prerelease the same night; a stable release is a manual bump from `main`.
+   `main` and gets a nightly prerelease the same night; a stable release is a manual bump from `main`.
 
-### The dev channel
+### The nightly channel
 
 - **One branch:** `main`. Bump pull requests and Dependabot updates merge into it automatically once
   the required `test` and `vm` checks pass, so it's always the latest, but only CI-tested, not used
   in real work yet.
-- **Dev releases** *(done)*: every day with new commits, `dev.yml` publishes a signed GitHub
-  prerelease, `v<version>-dev.<n>`, after a real VM smoke test. `hive update --channel dev` follows
-  them (`beta` is accepted as an alias); the default channel follows only full releases.
-  `hive doctor` shows the channel.
-- **Stable releases:** cut by hand from `main` after a dev build has run real tasks for a few days
-  without trouble.
+- **Nightly releases** *(done)*: every day with new commits, `nightly.yml` publishes a signed GitHub
+  prerelease, `v<version>-nightly.<n>`, after a real VM smoke test. `hive update --channel nightly`
+  follows them (`dev` and `beta` are accepted as aliases); the default channel follows only full
+  releases. `hive doctor` shows the channel.
+- **Stable releases:** cut by hand from `main` after a nightly build has run real tasks for a few
+  days without trouble.
 - **Rollback:** `hive update --rollback` works the same on both channels; going back to stable is
   `hive update --channel stable` (never a downgrade: it waits for the next stable release).
-- **Setup:** see "Automation and the dev channel" in [RELEASING.md](RELEASING.md) for the two
+- **Setup:** see "Automation and the nightly channel" in [RELEASING.md](RELEASING.md) for the two
   signing keys, the branch protection and how to rotate the prerelease key.
 
 ## Step 3 — gVisor fallback when there is no KVM

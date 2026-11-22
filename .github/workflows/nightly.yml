@@ -1,4 +1,4 @@
-name: Dev prerelease
+name: Nightly prerelease
 
 on:
   schedule:
@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dev-release
+  group: nightly-release
   cancel-in-progress: false
 
 jobs:
@@ -54,12 +54,13 @@ jobs:
           info_file="$prev/rootfs-info.json"
           : > "$info_file"
 
-          # The newest dev prerelease tag, through the API like the rest. The old v*-beta.*
-          # tags (the channel's previous name) count as previous prereleases too.
+          # The newest nightly prerelease tag, through the API like the rest. Its dev and beta
+          # tag aliases, v*-dev.* and v*-beta.* (the channel's previous names), still count as
+          # previous prereleases too.
           dev_tag=$(gh release list --repo "$repo" --limit 100 \
             --json tagName,isPrerelease,isDraft \
             --jq '[.[] | select(.isDraft == false and .isPrerelease == true)
-                       | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(dev|beta)\\.[0-9]+$"))][0].tagName // ""')
+                       | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(nightly|dev|beta)\\.[0-9]+$"))][0].tagName // ""')
 
           # The newest release, stable or prerelease, that carries a rootfs-info.json asset.
           reuse_tag=""
@@ -117,7 +118,7 @@ jobs:
             build=false
           fi
 
-          version=$(RUN_NUMBER="${{ github.run_number }}" node -e 'const v=require("./package.json").version.split("."); console.log([v[0],v[1],Number(v[2])+1].join(".")+"-dev."+process.env.RUN_NUMBER)')
+          version=$(RUN_NUMBER="${{ github.run_number }}" node -e 'const v=require("./package.json").version.split("."); console.log([v[0],v[1],Number(v[2])+1].join(".")+"-nightly."+process.env.RUN_NUMBER)')
 
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "rootfs=$action" >> "$GITHUB_OUTPUT"
@@ -172,7 +173,7 @@ jobs:
             --pattern "rootfs-info.json" \
             --dir "$RUNNER_TEMP/reuse"
           echo "HIVE_RELEASE_REUSE_ROOTFS=$(ls "$RUNNER_TEMP/reuse"/hive-rootfs-*-linux-x86_64.tar.gz)" >> "$GITHUB_ENV"
-      - name: Build the dev prerelease
+      - name: Build the nightly prerelease
         env:
           HIVE_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
           HIVE_SIGNING_KEY: ${{ runner.temp }}/prerelease.pem
@@ -219,7 +220,7 @@ jobs:
           REUSE_TAG: ${{ needs.plan.outputs.reuse_tag }}
         run: |
           set -euo pipefail
-          prev_tag=$(git tag --list 'v*-dev.*' 'v*-beta.*' --sort=-v:refname | head -n1)
+          prev_tag=$(git tag --list 'v*-nightly.*' 'v*-dev.*' 'v*-beta.*' --sort=-v:refname | head -n1)  # dev/beta are aliases
           if [ -n "$prev_tag" ]; then
             commits=$(git log --oneline "$prev_tag..HEAD")
           else
@@ -231,7 +232,7 @@ jobs:
             rootfs_line="rootfs rebuilt: $ROOTFS_REASON"
           fi
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          Daily dev build of $GITHUB_SHA.
+          Daily nightly build of $GITHUB_SHA.
 
           ## Commits
           \`\`\`
@@ -243,7 +244,7 @@ jobs:
 
           ## Try it
           \`\`\`bash
-          hive update --channel dev
+          hive update --channel nightly
           \`\`\`
           EOF
       - name: Publish the prerelease
@@ -259,14 +260,15 @@ jobs:
             --title "v$VERSION" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             release/"$VERSION"/*
-      - name: Keep only the newest 5 dev prereleases
+      - name: Keep only the newest 5 nightly prereleases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Prereleases only (v*-dev.N, and the old v*-beta.N); stable releases are never touched.
+          # Prereleases only (v*-nightly.N, and the old v*-dev.N / v*-beta.N aliases); stable
+          # releases are never touched.
           old=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
-            --jq '[.[] | select(.isPrerelease and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(dev|beta)\\.[0-9]+$")))]
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(nightly|dev|beta)\\.[0-9]+$")))]
                   | sort_by(.createdAt) | reverse | .[5:] | .[].tagName')
           for tag in $old; do
             gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag

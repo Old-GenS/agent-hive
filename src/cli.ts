@@ -56,7 +56,7 @@ hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>
 hive uninstall [--yes] [--all] [--dry-run]
 hive setup
 hive doctor
-hive update [--check | --rollback | --channel stable|dev]
+hive update [--check | --rollback | --channel stable|nightly]
 hive --version
 `;
 
@@ -1635,10 +1635,11 @@ async function cmdUpdate(args: string[]): Promise<number> {
       channel: { type: "string" },
     },
   });
-  // `beta` is the old channel name; it now means `dev`.
-  const wanted = values.channel === "beta" ? "dev" : values.channel;
-  if (wanted !== undefined && wanted !== "stable" && wanted !== "dev") {
-    throw new Error("--channel must be stable or dev");
+  // `dev` and `beta` are the old channel names; they now mean `nightly`.
+  const wanted =
+    values.channel === "dev" || values.channel === "beta" ? "nightly" : values.channel;
+  if (wanted !== undefined && wanted !== "stable" && wanted !== "nightly") {
+    throw new Error("--channel must be stable or nightly");
   }
   const {
     activate,
@@ -1671,7 +1672,7 @@ async function cmdUpdate(args: string[]): Promise<number> {
   }
 
   const channel = readChannel();
-  const suffix = channel === "dev" ? " (dev channel)" : "";
+  const suffix = channel === "nightly" ? " (nightly channel)" : "";
   const rel = await fetchRelease(undefined, undefined, channel);
 
   // Switching to stable must not downgrade an install that is already on a newer prerelease.

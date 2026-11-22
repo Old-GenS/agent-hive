@@ -73,12 +73,13 @@ export function cacheFile(): string {
 
 /**
  * Compare dotted numeric versions. A leading `v` and missing trailing parts are ignored, and an
- * optional `-dev.N` (or the old `-beta.N`) prerelease sorts below the same `X.Y.Z` without one;
- * prereleases of the same version compare by N, whichever word they use.
+ * optional `-nightly.N` prerelease (the old `-dev.N` / `-beta.N` spellings are aliases) sorts
+ * below the same `X.Y.Z` without one; prereleases of the same version compare by N, whichever
+ * word they use.
  */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const parse = (version: string): { parts: number[]; prerelease: number | undefined } => {
-    const m = /^(\d+(?:\.\d+)*)(?:-(?:dev|beta)\.(\d+))?$/.exec(version.replace(/^v/, ""));
+    const m = /^(\d+(?:\.\d+)*)(?:-(?:nightly|dev|beta)\.(\d+))?$/.exec(version.replace(/^v/, ""));
     if (!m) throw new Error(`bad version: ${version}`);
     return {
       parts: m[1].split(".").map((part) => Number.parseInt(part, 10)),
@@ -101,25 +102,25 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
 }
 
 /**
- * True when `version` is a prerelease (`X.Y.Z-dev.N`) or uses the old `X.Y.Z-beta.N` suffix, with
- * or without a leading `v`.
+ * True when `version` is a prerelease (`X.Y.Z-nightly.N`), or uses one of the old prerelease
+ * aliases (`X.Y.Z-dev.N`, `X.Y.Z-beta.N`), with or without a leading `v`.
  */
 export function isPrerelease(version: string): boolean {
-  return /^v?\d+(?:\.\d+)*-(?:dev|beta)\.\d+$/.test(version);
+  return /^v?\d+(?:\.\d+)*-(?:nightly|dev|beta)\.\d+$/.test(version);
 }
 
-export type Channel = "stable" | "dev";
+export type Channel = "stable" | "nightly";
 
 /** Where the update channel is remembered: a file in the data dir. */
 export function channelFile(): string {
   return join(dataDir(), "channel");
 }
 
-/** The channel this install follows; a `dev` (or old `beta`) file means the dev channel. */
+/** The channel this install follows; the old `dev` and `beta` file values are aliases for nightly. */
 export function readChannel(): Channel {
   try {
     const saved = readFileSync(channelFile(), "utf8").trim();
-    return saved === "dev" || saved === "beta" ? "dev" : "stable";
+    return saved === "nightly" || saved === "dev" || saved === "beta" ? "nightly" : "stable";
   } catch {
     return "stable";
   }
@@ -132,7 +133,7 @@ export function writeChannel(channel: Channel): void {
 
 /** The release keys this channel trusts. Empty strings are dropped. */
 export function trustedKeys(channel: Channel): string[] {
-  return (channel === "dev" ? [RELEASE_PUBLIC_KEY, PRERELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]).filter(
+  return (channel === "nightly" ? [RELEASE_PUBLIC_KEY, PRERELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]).filter(
     (key) => key !== "",
   );
 }
@@ -245,7 +246,7 @@ async function fetchReleaseJson(url: string, timeoutMs: number): Promise<unknown
 
 /**
  * Look up the latest release, or a specific tag, on GitHub (or HIVE_RELEASE_API). Without a tag,
- * the stable channel uses `/releases/latest`; the dev channel lists the recent releases and picks
+ * the stable channel uses `/releases/latest`; the nightly channel lists the recent releases and picks
  * the highest version, prereleases included.
  */
 export async function fetchRelease(tag?: string, timeoutMs = 30_000, channel: Channel = "stable"): Promise<Release> {
@@ -426,7 +427,8 @@ export async function setupRootfs(
   if (existsSync(join(dest, ".complete"))) return dest;
 
   // A prerelease build trusts the prerelease key too, whether or not the channel file says so.
-  const channel: Channel = isPrerelease(currentVersion() ?? "0.0.0") || readChannel() === "dev" ? "dev" : "stable";
+  const channel: Channel =
+    isPrerelease(currentVersion() ?? "0.0.0") || readChannel() === "nightly" ? "nightly" : "stable";
   const keys = (o.publicKeys ?? trustedKeys(channel)).filter((key) => key !== "");
   if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 

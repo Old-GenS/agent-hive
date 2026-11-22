@@ -90,7 +90,7 @@ hive login github                 # optional: repos, pushes, pull requests
 hive update                       # installs a newer release after checking its signature
 hive update --check               # only says whether one is available
 hive update --rollback            # goes back to the previous version
-hive update --channel dev         # follow the daily signed prereleases (--channel stable to go back)
+hive update --channel nightly     # follow the daily signed prereleases (--channel stable to go back; dev and beta are aliases)
 ```
 
 How new versions are checked, tested and released: [UPDATES.md](UPDATES.md). Restart a running server afterwards (`hive service restart`, or stop and start `hive serve`). The
