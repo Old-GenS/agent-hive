@@ -79,9 +79,10 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `scripts/rootfs-plan.mjs` | The nightly build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
 | `scripts/vm-smoke.mjs` | The real-VM release check: HTTPS through the egress proxy, LAN and metadata addresses refused, headless Chromium renders a page, and a run with a fake OpenRouter key gets a 401 and no network error |
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
+| `scripts/macos-spike/` | The Phase 0 macOS harness: libkrun build recipe, throwaway launcher, vsock/egress bridge and guest probes; not used by the product build |
 | `docs/INSTALL.md` | Every install route (Linux release, Windows, from source), what's needed, after installing, updating and uninstalling; the README keeps only the two one-liners |
 | `docs/WINDOWS.md` | The Windows/WSL2 guide: requirements, what `install.ps1` does, the env vars, `hive` from PowerShell versus inside WSL, where projects live, GitHub and the web UI, updating, uninstalling, troubleshooting and the manual install route |
-| `docs/MACOS.md` | The macOS plan (not built yet): why the Linux network path doesn't carry over, the vsock-only egress design, the spike that gates it, the phases, the file map and the risks |
+| `docs/MACOS.md` | The macOS plan: why the Linux network path doesn't carry over, the vsock-only egress design, the Phase 0 spike and its results, the phases, the file map and the risks |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
 backend also `npm run build:vm` and `npm run build:rootfs`. For release-grade native builds
@@ -232,5 +233,5 @@ a daily nightly prerelease (`.github/workflows/`, `docs/RELEASING.md`).
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
 - a VM size per run
-- macOS: the launcher build for Apple silicon, and network isolation without pasta
+- macOS: Phase 0 passed (read-only ext4 image, TSI off, one vsock port to hive's egress proxy); the launcher build and the product plumbing are Phase 1
 - a per-run network allowlist
