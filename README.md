@@ -27,57 +27,28 @@ hive push --pr     # or push a branch and open a pull request
 - **Terminal or browser:** the `hive` CLI, or a web UI you can also use from your phone.
 - **Any model:** DeepSeek, Z.AI, OpenRouter, Anthropic or OpenAI.
 
-## Requirements
-
-- **Linux** with KVM (`/dev/kvm`): a regular PC or a server with virtualization enabled.
-- **pasta**, from your distro's `passt` package when it has one: `sudo apt install passt` (Debian,
-  Ubuntu, Mint), `sudo dnf install passt` (Fedora, RHEL) or `sudo pacman -S passt` (Arch). Release
-  installs prefer it but also bundle a static pasta fallback for distros without a package (Ubuntu
-  22.04, Debian 11, RHEL 8), so they need only KVM: libkrun is bundled too.
-- Building from source also needs the system **libkrun** (Fedora: `sudo dnf install libkrun`).
-- An API key for at least one model provider.
-
-Tested on Fedora 45 and Linux Mint 22.1, and in Ubuntu 22.04 and 24.04 containers.
-
-Windows 11: WSL2 (tested with Ubuntu 24.04), see [docs/WINDOWS.md](docs/WINDOWS.md).
-macOS is on the roadmap too.
-
 ## Install
 
-**From a release** (Linux x86_64):
+**Linux** (x86_64, with KVM):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
 ```
 
-The release brings its own Node.js and downloads the VM filesystem. `hive update` installs newer
-releases after checking their signature. `hive update --channel beta` follows the daily signed
-prereleases instead.
-
-**On Windows 11** (WSL2, one line in PowerShell):
+**Windows 11** (through WSL2, in PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
 ```
 
-It installs a dedicated WSL distro and hive inside it, with no Linux prompts. See
-[docs/WINDOWS.md](docs/WINDOWS.md).
-
-**From source** (also needs Node.js 20+, git and podman):
+Then:
 
 ```bash
-git clone https://github.com/ogsapps/agent-hive.git && cd agent-hive
-npm ci && npm run build && npm run build:ui
-npm run build:image && npm run build:vm && npm run build:rootfs
-npm link            # puts `hive` on your PATH
+hive doctor                       # checks everything is in place
+hive keys add openrouter          # or deepseek, zai, anthropic, openai
 ```
 
-Then check everything is in place and add a key:
-
-```bash
-hive doctor
-hive keys add openrouter      # or deepseek, zai, anthropic, openai
-```
+Requirements, building from source, updating and uninstalling: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## Using it
 
@@ -154,6 +125,7 @@ The full picture is in **[How it works](docs/HOW-IT-WORKS.md)**.
 
 ## Docs
 
+- [Install](docs/INSTALL.md): requirements, Linux, Windows, from source, updating
 - [How it works](docs/HOW-IT-WORKS.md): the design, the isolation, and what happens during a run
 - [CLI reference](docs/CLI.md): every command and option
 - [Configuration](docs/CONFIGURATION.md): settings, providers and models, OpenRouter routing
