@@ -660,14 +660,10 @@ static void load_symbols(void *lib, Krun *k) {
   k->krun_set_exec = (krun_set_exec_t)load_symbol(lib, "krun_set_exec");
   k->krun_set_rlimits = (krun_set_rlimits_t)load_symbol(lib, "krun_set_rlimits");
   k->krun_set_port_map = (krun_set_port_map_t)load_symbol(lib, "krun_set_port_map");
-  k->krun_add_disk = (krun_add_disk_t)load_symbol(lib, "krun_add_disk");
-  k->krun_set_root_disk_remount =
-      (krun_set_root_disk_remount_t)load_symbol(lib, "krun_set_root_disk_remount");
-  k->krun_disable_implicit_vsock =
-      (krun_disable_implicit_vsock_t)load_symbol(lib, "krun_disable_implicit_vsock");
-  k->krun_add_vsock = (krun_add_vsock_t)load_symbol(lib, "krun_add_vsock");
-  k->krun_add_vsock_port = (krun_add_vsock_port_t)load_symbol(lib, "krun_add_vsock_port");
   k->krun_start_enter = (krun_start_enter_t)load_symbol(lib, "krun_start_enter");
+  /* krun_add_disk, krun_set_root_disk_remount and the vsock calls are loaded only by the mode that
+   * uses them: the Linux release builds libkrun without the "blk" feature, so a folder-rootfs VM
+   * must not require them. --check validates only what every mode needs. */
 }
 
 static void krun_fail(const char *fn, int32_t rc) {
@@ -903,7 +899,11 @@ int main(int argc, char **argv) {
   KRUN_CALL(k, krun_set_vm_config, (uint32_t)ctx, (uint8_t)o.cpus, (uint32_t)o.memory);
   if (o.rootfs_is_image) {
     /* The raw image is the guest's /: attached read-only, and mounted "ro" so the guest does not
-     * even try an rw mount on the read-only block device (that fails at boot). */
+     * even try an rw mount on the read-only block device (that fails at boot). libkrun needs the
+     * "blk" feature for these two. */
+    k.krun_add_disk = (krun_add_disk_t)load_symbol(lib, "krun_add_disk");
+    k.krun_set_root_disk_remount =
+        (krun_set_root_disk_remount_t)load_symbol(lib, "krun_set_root_disk_remount");
     KRUN_CALL(k, krun_add_disk, (uint32_t)ctx, "root", o.rootfs, true);
     KRUN_CALL(k, krun_set_root_disk_remount, (uint32_t)ctx, "/dev/vda", "ext4", "ro");
   } else {
@@ -922,6 +922,10 @@ int main(int argc, char **argv) {
   if (o.nports > 0) {
     /* No implicit vsock: no TSI hijacking of AF_INET/AF_INET6. Each mapped port is the guest's
      * only route to the host, and behind it only hive's egress proxy. */
+    k.krun_disable_implicit_vsock =
+        (krun_disable_implicit_vsock_t)load_symbol(lib, "krun_disable_implicit_vsock");
+    k.krun_add_vsock = (krun_add_vsock_t)load_symbol(lib, "krun_add_vsock");
+    k.krun_add_vsock_port = (krun_add_vsock_port_t)load_symbol(lib, "krun_add_vsock_port");
     KRUN_CALL(k, krun_disable_implicit_vsock, (uint32_t)ctx);
     KRUN_CALL(k, krun_add_vsock, (uint32_t)ctx, 0);
     for (unsigned i = 0; i < o.nports; i++) {
