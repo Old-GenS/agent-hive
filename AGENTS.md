@@ -16,14 +16,19 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 
 ## Working in this repo
 
-- **Commit to `main` and push, on `main`.** Don't create branches or open pull requests unless the
-  maintainer asks for one. `main` is protected so that pull requests must pass the `test` and `vm`
-  checks, but the maintainer pushes straight to it, and CI checks every push afterwards.
+- **`main` is protected:** only the repo owner's account can push to it directly. Any other account
+  (including the maintainer's second account) works through a pull request, which merges once the
+  `test` and `vm` checks pass.
+- **Doing that without leaving a mess:**
+  1. Start from GitHub's `main`: `git fetch origin && git switch -c <short-branch-name> origin/main`.
+  2. Commit only on that branch. **Never commit on local `main`.**
+  3. `git push -u origin <branch>` and open the pull request (`gh pr create --base main`).
+  4. After it merges (a merge commit; the repo allows no squash or rebase merging), go back:
+     `git switch main && git pull`, and delete the branch.
+- If you can push to `main` directly (the owner's account), committing and pushing on `main` is
+  fine.
 - **Never rewrite `main`'s history:** no force-push, no rebase or reset of commits that are already
   on GitHub.
-- If you do open a pull request because you were asked to, do the work only on that branch (leave
-  local `main` untouched), and it is merged with a merge commit (the repo allows no squash or
-  rebase merging).
 
 ## Layout
 
