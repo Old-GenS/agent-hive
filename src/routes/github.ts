@@ -5,6 +5,7 @@
 import type { FastifyInstance } from "fastify";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { cancelGithubLogin, githubLoginState, startGithubLogin } from "../github-login.js";
 
 const execFileAsync = promisify(execFile);
 const GH_BIN = process.env.GH_BIN || "gh";
@@ -56,6 +57,16 @@ export default async function githubRoutes(app: FastifyInstance) {
     } catch (err: any) {
       return reply.code(502).send({ error: "Couldn't list branches (does the repo exist, and can gh see it?)" });
     }
+  });
+
+  // GitHub's device login, started from the web UI's Connect GitHub button (the person enters the
+  // code on their own device). Works the same with HIVE_GIT_PROTOCOL=ssh: it logs the server's own
+  // `gh` in, which the bot-account setup uses for repos, pull requests and new repositories.
+  app.post("/api/github/login", async () => startGithubLogin());
+  app.get("/api/github/login", async () => githubLoginState());
+  app.delete("/api/github/login", async () => {
+    cancelGithubLogin();
+    return { state: "idle" };
   });
 
   app.get("/api/user", async (req) => req.hiveUser);

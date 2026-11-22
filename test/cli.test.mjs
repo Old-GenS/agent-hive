@@ -328,3 +328,14 @@ test("hive --help mentions keep", () => {
   const help = execFileSync(process.execPath, ["dist/cli.js", "--help"], { cwd: repoRoot, encoding: "utf8" });
   assert.match(help, /^hive keep \[--off\] <run>$/m);
 });
+
+test("hive login without github prints the usage, and --help mentions it", () => {
+  const help = execFileSync(process.execPath, ["dist/cli.js", "--help"], { cwd: repoRoot, encoding: "utf8" });
+  assert.match(help, /^hive login github$/m);
+
+  for (const args of [["login"], ["login", "gitlab"]]) {
+    const result = spawnSync(process.execPath, ["dist/cli.js", ...args], { cwd: repoRoot, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(`${result.stdout}${result.stderr}`, /hive login github/);
+  }
+});

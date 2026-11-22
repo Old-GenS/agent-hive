@@ -1914,6 +1914,43 @@ a.btn {
   line-height: 1.5;
 }
 
+/* Connect GitHub: the device-login code and its actions (setup and Settings › This computer). */
+.github-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.github-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.github-terminal .setup-hint {
+  margin: 0;
+}
+
+.github-code-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.github-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--text);
+  user-select: all;
+}
+
 /* Settings › API keys */
 .settings-head {
   display: flex;

@@ -11,6 +11,7 @@ import { createBeeIndicator, headerBee, miniHive, type BeeIndicator, type BeeSta
 import { renderMarkdown } from "./markdown.js";
 import { api, clearToken, el, esc, getToken, saveToken, setToken, serverUrl } from "./util.js";
 import { buildSetupPage } from "./onboarding.js";
+import { githubConnect } from "./github-connect.js";
 
 // ── types ──
 
@@ -2915,21 +2916,24 @@ function buildComputerPage(): HTMLElement {
     el("p", { class: "settings-lead" }, "What each run is isolated with, and what it may use."),
     body,
   );
-  void (async () => {
+  void load();
+
+  async function load(): Promise<void> {
+    stopUsagePolling();
     try {
       const res = await api("/api/system");
       if (!res.ok) throw new Error(String(res.status));
-      body.replaceChildren(...computerSections((await res.json()) as SystemInfo));
+      body.replaceChildren(...computerSections((await res.json()) as SystemInfo, () => void load()));
       const section = body.querySelector<HTMLElement>("#usageSection");
       if (section) startUsagePolling(section);
     } catch {
       body.replaceChildren(el("p", { class: "alert alert-danger" }, "Couldn't load this computer's setup."));
     }
-  })();
+  }
   return content;
 }
 
-function computerSections(info: SystemInfo): HTMLElement[] {
+function computerSections(info: SystemInfo, refreshGithub: () => void): HTMLElement[] {
   const strong = info.isolation === "microvm";
   const summary = el(
     "div",
@@ -2994,13 +2998,26 @@ function computerSections(info: SystemInfo): HTMLElement[] {
       el("span", { class: "github-account" }, gh?.connected && gh.login ? gh.login : "Not connected"),
       el("span", { class: `pill ${gh?.connected ? "pill-ok" : "pill-danger"}` }, gh?.connected ? "Connected" : "Not connected"),
     ),
-    el(
-      "p",
-      { class: "github-detail" },
-      gh?.connected
-        ? `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`
-        : "Run gh auth login on the server so runs can clone private repos, push branches and open pull requests.",
-    ),
+  );
+  if (gh?.connected) {
+    ghCard.append(
+      el(
+        "p",
+        { class: "github-detail" },
+        `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`,
+      ),
+    );
+  } else {
+    ghCard.append(
+      el(
+        "p",
+        { class: "github-detail" },
+        "Connect GitHub so runs can clone private repos, push branches and open pull requests.",
+      ),
+      githubConnect({ refresh: refreshGithub }),
+    );
+  }
+  ghCard.append(
     el(
       "p",
       { class: "github-detail" },

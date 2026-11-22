@@ -63,7 +63,7 @@ included. `--repo` accepts `owner/name` (github.com), an `https://` or `ssh://` 
 
 Zip and bundle are built on your machine from the run's patches in a fresh clone of the original
 source, never from the agent's copy. `push --pr` needs a github.com remote and the
-[GitHub CLI](https://cli.github.com) (`gh auth login`). Pushes run as you, with your SSH key,
+[GitHub CLI](https://cli.github.com) (`hive login github`, or `gh auth login`). Pushes run as you, with your SSH key,
 credential helper or `gh` login; none of these ever enter the VM. Commits use your git
 `user.name` and `user.email` unless `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` are set.
 
@@ -76,6 +76,7 @@ credential helper or `gh` login; none of these ever enter the VM. Commits use yo
 | `hive keys test [provider]` | Check one key, or every saved one. |
 | `hive keys remove <provider>` | Delete a saved key. |
 | `hive keys default <provider>` | Make a provider the default. |
+| `hive login github` | Sign in to GitHub with the GitHub CLI's device login: the one-time code and prompts are on this terminal, then git is set to use the login and hive prints the account. On WSL it opens the Windows browser through `wslview` when that is installed. |
 | `hive clean <run>` | Delete a run; `--all` deletes every finished run except starred ones. |
 | `hive keep [--off] <run>` | Star a run (★) so retention, the web UI's Clear and `hive clean --all` skip it; `--off` unstars it. |
 | `hive doctor` | Check `/dev/kvm`, libkrun, pasta, the launcher, the VM filesystem, and show the default provider and model. |
