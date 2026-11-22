@@ -24,7 +24,7 @@ hive push --pr     # or push a branch and open a pull request
   login and other files stay outside.
 - **You stay in control:** results come back as patches. Nothing is pushed or opened on GitHub
   until you say so.
-- **Terminal or browser:** the `hive` CLI, or a web UI you can also use from your phone.
+- **Browser or terminal:** a web UI you can also use from your phone, or the `hive` CLI.
 - **Any model:** DeepSeek, Z.AI, OpenRouter, Anthropic or OpenAI.
 
 ## Install
@@ -41,16 +41,37 @@ curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli
 irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
 ```
 
-Then:
+Then start the web UI. It opens in your browser and walks you through the rest (checks, an API
+key, GitHub):
 
 ```bash
-hive doctor                       # checks everything is in place
-hive keys add openrouter          # or deepseek, zai, anthropic, openai
+hive serve
 ```
+
+Prefer the terminal? `hive doctor` checks the setup and `hive keys add openrouter` (or deepseek,
+zai, anthropic, openai) saves a key.
 
 Requirements, building from source, updating and uninstalling: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
-## Using it
+## Using it in the browser
+
+```bash
+hive serve                  # opens http://127.0.0.1:8080/ui/ in your browser
+hive service install        # or keep it running in the background
+```
+
+Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups or
+**Continue** a run that stopped, open pull requests, download results, delete runs and star the
+ones to keep, from the browser or your phone. **Settings › Runs** sets the VM size, how many runs
+go at once and the time limits. Runs from the web UI and the terminal share one list. Details,
+including using it from other devices on your network, in [docs/SERVER.md](docs/SERVER.md).
+
+<p>
+  <img src="docs/images/new-run.png" alt="Starting a new run: task, repo or new project, provider, model, thinking and review" width="68%">
+  <img src="docs/images/mobile.png" alt="A run on a phone" width="28%">
+</p>
+
+## Using it in the terminal
 
 ```bash
 cd ~/code/my-app
@@ -90,23 +111,6 @@ hive export --report     # a Markdown report: the prompt, the agent's report, th
 
 Options like `-m <model>`, `-p <provider>` and `--review <n>` (review cycles by a second agent
 pass) are in the [CLI reference](docs/CLI.md).
-
-## Web UI
-
-```bash
-hive serve                  # opens http://127.0.0.1:8080/ui/ in your browser
-hive service install        # or keep it running in the background
-```
-
-Start runs on your GitHub repos or new projects, watch the agent work live, send follow-ups or
-**Continue** a run that stopped, open pull requests, download results, delete runs and star the
-ones to keep, from the browser or your phone. **Settings › Runs** sets the VM size, how many runs go at once and the time limits. Runs
-from the web UI and the terminal share one list. Details in [docs/SERVER.md](docs/SERVER.md).
-
-<p>
-  <img src="docs/images/new-run.png" alt="Starting a new run: task, repo or new project, provider, model, thinking and review" width="68%">
-  <img src="docs/images/mobile.png" alt="A run on a phone" width="28%">
-</p>
 
 ## How it works
 
