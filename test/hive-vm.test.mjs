@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,6 +130,45 @@ test("--stderr-file is reported in the dry-run JSON", () => {
 test("stderr_file is null in the dry-run JSON when --stderr-file is absent", () => {
   const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--", "true"]);
   assert.equal(out.stderr_file, null);
+});
+
+test("--vsock, --pidfile and a disk image root appear in the dry-run JSON", () => {
+  const image = join(base, "root.img");
+  writeFileSync(image, "");
+  const out = dryRunJson([
+    "--dry-run",
+    "--rootfs", image,
+    "--vsock", "1024:/tmp/hv-abcdef.sock",
+    "--pidfile", "/tmp/hive-vm.pid",
+    "--", "true",
+  ]);
+  assert.equal(out.rootfs, realpathSync(image));
+  assert.equal(out.rootfs_image, true);
+  assert.deepEqual(out.vsock, [{ port: 1024, path: "/tmp/hv-abcdef.sock" }]);
+  assert.equal(out.pidfile, "/tmp/hive-vm.pid");
+});
+
+test("a directory rootfs is not an image, and vsock/pidfile are null when absent", () => {
+  const out = dryRunJson(["--dry-run", "--rootfs", dirA, "--", "true"]);
+  assert.equal(out.rootfs_image, false);
+  assert.deepEqual(out.vsock, []);
+  assert.equal(out.pidfile, null);
+});
+
+test("exit 2 on invalid --vsock and --pidfile values", () => {
+  const cases = [
+    ["--dry-run", "--rootfs", dirA, "--vsock", "1024", "--", "true"],
+    ["--dry-run", "--rootfs", dirA, "--vsock", "0:/tmp/hv-a.sock", "--", "true"],
+    ["--dry-run", "--rootfs", dirA, "--vsock", "1024:relative.sock", "--", "true"],
+    ["--dry-run", "--rootfs", dirA, "--vsock", "1024:/tmp/" + "x".repeat(120), "--", "true"],
+    ["--dry-run", "--rootfs", dirA, "--pidfile", "relative.pid", "--", "true"],
+    ["--dry-run", "--rootfs", join(base, "missing.img"), "--", "true"],
+  ];
+  for (const args of cases) {
+    const result = dryRun(args);
+    assert.equal(result.status, 2, "expected exit 2 for " + JSON.stringify(args) + "; stderr: " + result.stderr);
+    assert.ok(result.stderr.startsWith("hive-vm: "), "stderr should start with the program name: " + result.stderr);
+  }
 });
 
 test("--stderr-file must be an absolute path", () => {

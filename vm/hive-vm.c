@@ -27,6 +27,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
+
 #define MAX_SHARES 8
 #define EXEC_PATH "/usr/local/bin/hive-vm-init"
 
@@ -42,6 +46,13 @@ typedef int32_t (*krun_set_exec_t)(uint32_t ctx_id, const char *exec_path,
                                    const char *const argv[], const char *const envp[]);
 typedef int32_t (*krun_set_rlimits_t)(uint32_t ctx_id, const char *const rlimits[]);
 typedef int32_t (*krun_set_port_map_t)(uint32_t ctx_id, const char *const port_map[]);
+typedef int32_t (*krun_add_disk_t)(uint32_t ctx_id, const char *block_id, const char *disk_path,
+                                   bool read_only);
+typedef int32_t (*krun_set_root_disk_remount_t)(uint32_t ctx_id, const char *device,
+                                                const char *fstype, const char *options);
+typedef int32_t (*krun_disable_implicit_vsock_t)(uint32_t ctx_id);
+typedef int32_t (*krun_add_vsock_t)(uint32_t ctx_id, uint32_t tsi_features);
+typedef int32_t (*krun_add_vsock_port_t)(uint32_t ctx_id, uint32_t port, const char *filepath);
 typedef int32_t (*krun_start_enter_t)(uint32_t ctx_id);
 
 typedef struct {
@@ -54,6 +65,11 @@ typedef struct {
   krun_set_exec_t krun_set_exec;
   krun_set_rlimits_t krun_set_rlimits;
   krun_set_port_map_t krun_set_port_map;
+  krun_add_disk_t krun_add_disk;
+  krun_set_root_disk_remount_t krun_set_root_disk_remount;
+  krun_disable_implicit_vsock_t krun_disable_implicit_vsock;
+  krun_add_vsock_t krun_add_vsock;
+  krun_add_vsock_port_t krun_add_vsock_port;
   krun_start_enter_t krun_start_enter;
 } Krun;
 
@@ -69,11 +85,20 @@ typedef struct {
 } EnvVar;
 
 typedef struct {
+  uint32_t port;
+  char *path;
+} VsockPort;
+
+typedef struct {
   char *rootfs;
+  bool rootfs_is_image;
   unsigned cpus;
   unsigned memory;
   Share shares[MAX_SHARES];
   unsigned nshares;
+  VsockPort ports[8];
+  unsigned nports;
+  char *pidfile;
   EnvVar *env;
   unsigned nenv;
   unsigned env_cap;
@@ -167,6 +192,25 @@ static unsigned parse_uint(const char *opt, const char *val, unsigned lo, unsign
   return (unsigned)v;
 }
 
+/*
+ * --rootfs: a rootfs directory (shared read-only over virtiofs) or a raw disk image (attached
+ * read-only with virtio-blk and mounted as the guest's /). Linux uses the directory; macOS uses
+ * the image, because a folder rootfs on a Mac would need virtiofs for / and loses case and
+ * ownership semantics (docs/MACOS.md). Stored as its realpath().
+ */
+static char *resolve_rootfs(const char *opt, const char *path, bool *is_image) {
+  if (path[0] != '/') fail_usage("%s must be an absolute path (got \"%s\")", opt, path);
+  struct stat st;
+  if (stat(path, &st) != 0) fail_usage("%s does not exist: \"%s\"", opt, path);
+  if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) {
+    fail_usage("%s is neither a directory nor a disk image: \"%s\"", opt, path);
+  }
+  *is_image = S_ISREG(st.st_mode);
+  char *rp = realpath(path, NULL);
+  if (!rp) fail_usage("%s: realpath(\"%s\") failed: %s", opt, path, strerror(errno));
+  return rp;
+}
+
 /* An absolute existing directory, stored as its realpath(). */
 static char *resolve_host_dir(const char *opt, const char *path) {
   if (path[0] != '/') fail_usage("%s must be an absolute path (got \"%s\")", opt, path);
@@ -236,6 +280,52 @@ static void add_share(Options *o, const char *spec) {
   s->ro = ro;
 }
 
+/*
+ * --vsock PORT:HOST_SOCKET maps one guest vsock port to a host UNIX socket. With it the launcher
+ * disables the implicit (TSI) vsock device, so the guest has no IP network at all and the mapped
+ * port is its only way out (docs/MACOS.md). sun_path caps the socket path at 104 bytes on macOS.
+ */
+static void add_vsock(Options *o, const char *spec) {
+  if (o->nports >= sizeof o->ports / sizeof o->ports[0]) {
+    fail_usage("at most %zu --vsock options are supported", sizeof o->ports / sizeof o->ports[0]);
+  }
+  const char *colon = strchr(spec, ':');
+  if (!colon) fail_usage("--vsock expects PORT:HOST_SOCKET (got \"%s\")", spec);
+  char *port_text = xstrndup(spec, (size_t)(colon - spec));
+  unsigned port = parse_uint("--vsock port", port_text, 1, 65535);
+  free(port_text);
+  const char *path = colon + 1;
+  if (path[0] != '/') fail_usage("--vsock host socket must be an absolute path (got \"%s\")", spec);
+  if (strlen(path) >= 104) fail_usage("--vsock host socket path is too long (max 103 bytes): \"%s\"", path);
+  VsockPort *p = &o->ports[o->nports++];
+  p->port = (uint32_t)port;
+  p->path = xstrdup(path);
+}
+
+/*
+ * The launcher's pid, in the run folder, for a later process to find and stop a VM whose hive is
+ * gone. O_NOFOLLOW: the run folder is host-only, but a stale symlink there must not be followed.
+ * Removed when the launcher exits normally; a crash leaves it for the next startup's recovery.
+ */
+static void write_pidfile(const char *path) {
+  char text[32];
+  int len = snprintf(text, sizeof text, "%d\n", (int)getpid());
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) fail_runtime("cannot open --pidfile \"%s\": %s", path, strerror(errno));
+  ssize_t written = write(fd, text, (size_t)len);
+  int err = errno;
+  close(fd);
+  if (written != len) fail_runtime("cannot write --pidfile \"%s\": %s", path, strerror(err));
+}
+
+/* The pidfile to remove when this process exits; both the launcher and, after the fork, the VM
+ * process inherit it, so a normal exit at either end cleans up and a crash leaves it behind. */
+static const char *exit_pidfile;
+
+static void remove_exit_pidfile(void) {
+  if (exit_pidfile) (void)unlink(exit_pidfile);
+}
+
 static void add_setenv(Options *o, const char *spec) {
   const char *eq = strchr(spec, '=');
   if (!eq) fail_usage("--setenv expects NAME=VALUE (got \"%s\")", spec);
@@ -276,6 +366,7 @@ static void share_tag(unsigned index, char *buf, size_t bufsz) {
 static void print_dry_run(const Options *o, char **command) {
   fputs("{\"rootfs\":", stdout);
   json_string(o->rootfs);
+  printf(",\"rootfs_image\":%s", o->rootfs_is_image ? "true" : "false");
   printf(",\"cpus\":%u,\"memory\":%u", o->cpus, o->memory);
   fputs(",\"watch_pid\":", stdout);
   if (o->watch_pid) {
@@ -313,11 +404,24 @@ static void print_dry_run(const Options *o, char **command) {
     if (i) putchar(',');
     json_string(o->env[i].name);
   }
+  fputs("],\"vsock\":[", stdout);
+  for (unsigned i = 0; i < o->nports; i++) {
+    if (i) putchar(',');
+    printf("{\"port\":%u,\"path\":", o->ports[i].port);
+    json_string(o->ports[i].path);
+    putchar('}');
+  }
   fputs("],\"workdir\":", stdout);
   json_string(o->workdir);
   fputs(",\"dns\":", stdout);
   if (o->dns) {
     json_string(o->dns);
+  } else {
+    fputs("null", stdout);
+  }
+  fputs(",\"pidfile\":", stdout);
+  if (o->pidfile) {
+    json_string(o->pidfile);
   } else {
     fputs("null", stdout);
   }
@@ -352,9 +456,10 @@ static char *shares_value(const Options *o) {
   return out;
 }
 
-/* NULL-terminated envp: the --env/--setenv vars plus HIVE_SHARES/HIVE_WORKDIR/HIVE_DNS. */
+/* NULL-terminated envp: the --env/--setenv vars plus HIVE_SHARES/HIVE_WORKDIR/HIVE_DNS and the
+ * vsock port hive-vm-init starts hive-netd for. */
 static char **build_envp(const Options *o) {
-  size_t cap = o->nenv + 4;
+  size_t cap = o->nenv + 5;
   char **envp = calloc(cap, sizeof(*envp));
   if (!envp) oom();
   size_t n = 0;
@@ -372,6 +477,10 @@ static char **build_envp(const Options *o) {
   n++;
   if (o->dns) {
     if (asprintf(&envp[n], "HIVE_DNS=%s", o->dns) < 0) oom();
+    n++;
+  }
+  if (o->nports > 0 && getenv("HIVE_VSOCK_PORT") == NULL) {
+    if (asprintf(&envp[n], "HIVE_VSOCK_PORT=%u", o->ports[0].port) < 0) oom();
     n++;
   }
   envp[n] = NULL;
@@ -487,9 +596,44 @@ static void stop_child(pid_t child) {
 
 /* ---- libkrun loading and invocation --------------------------------------- */
 
+#ifdef __APPLE__
+/*
+ * libkrun loads its kernel bundle with dlopen("libkrunfw.5.dylib") when the VM starts, and dyld
+ * searches the usual system paths only. A release bundle keeps libkrunfw next to libkrun, which is
+ * not one of them, so load it from libkrun's own directory first; dyld then reuses that image when
+ * libkrun asks for it by name. HIVE_LIBKRUNFW names the file explicitly. Best effort: with no
+ * libkrunfw next to libkrun, dyld's own search still applies.
+ */
+static void preload_libkrunfw(const char *libkrun_path) {
+  const char *named = getenv("HIVE_LIBKRUNFW");
+  char *path = NULL;
+  if (named && *named) {
+    path = xstrdup(named);
+  } else {
+    const char *slash = strrchr(libkrun_path, '/');
+    if (!slash) return;
+    if (asprintf(&path, "%.*s/libkrunfw.5.dylib", (int)(slash - libkrun_path), libkrun_path) < 0) {
+      oom();
+    }
+  }
+  void *fw = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+  if (!fw) fprintf(stderr, "hive-vm: cannot preload %s: %s\n", path, dlerror());
+  free(path);
+}
+#endif
+
 static void *load_libkrun(void) {
   const char *lib = getenv("HIVE_LIBKRUN");
-  if (!lib || !*lib) lib = "libkrun.so.1";
+  if (!lib || !*lib) {
+#ifdef __APPLE__
+    lib = "libkrun.1.dylib";
+#else
+    lib = "libkrun.so.1";
+#endif
+  }
+#ifdef __APPLE__
+  preload_libkrunfw(lib);
+#endif
   void *handle = dlopen(lib, RTLD_NOW);
   if (!handle) {
     const char *err = dlerror();
@@ -516,6 +660,13 @@ static void load_symbols(void *lib, Krun *k) {
   k->krun_set_exec = (krun_set_exec_t)load_symbol(lib, "krun_set_exec");
   k->krun_set_rlimits = (krun_set_rlimits_t)load_symbol(lib, "krun_set_rlimits");
   k->krun_set_port_map = (krun_set_port_map_t)load_symbol(lib, "krun_set_port_map");
+  k->krun_add_disk = (krun_add_disk_t)load_symbol(lib, "krun_add_disk");
+  k->krun_set_root_disk_remount =
+      (krun_set_root_disk_remount_t)load_symbol(lib, "krun_set_root_disk_remount");
+  k->krun_disable_implicit_vsock =
+      (krun_disable_implicit_vsock_t)load_symbol(lib, "krun_disable_implicit_vsock");
+  k->krun_add_vsock = (krun_add_vsock_t)load_symbol(lib, "krun_add_vsock");
+  k->krun_add_vsock_port = (krun_add_vsock_port_t)load_symbol(lib, "krun_add_vsock_port");
   k->krun_start_enter = (krun_start_enter_t)load_symbol(lib, "krun_start_enter");
 }
 
@@ -529,12 +680,30 @@ static void krun_fail(const char *fn, int32_t rc) {
     if (rc_ < 0) krun_fail(#fn, rc_);               \
   } while (0)
 
-static bool kvm_usable(void) {
+/* The host's hardware virtualization: /dev/kvm on Linux, Hypervisor.framework on macOS. */
+static bool hardware_virtualization(void) {
+#ifdef __APPLE__
+  int supported = 0;
+  size_t len = sizeof supported;
+  return sysctlbyname("kern.hv_support", &supported, &len, NULL, 0) == 0 && supported == 1;
+#else
   return access("/dev/kvm", R_OK | W_OK) == 0;
+#endif
+}
+
+static void check_virtualization(void) {
+#ifdef __APPLE__
+  if (!hardware_virtualization()) {
+    fail_runtime("Hypervisor.framework is not available (kern.hv_support is not 1); "
+                 "hive needs Apple silicon and macOS 14 or newer");
+  }
+#else
+  if (!hardware_virtualization()) fail_runtime("/dev/kvm is not usable");
+#endif
 }
 
 static void do_check(void) {
-  if (!kvm_usable()) fail_runtime("/dev/kvm is not usable");
+  check_virtualization();
   void *lib = load_libkrun();
   Krun k;
   load_symbols(lib, &k);
@@ -571,7 +740,14 @@ int main(int argc, char **argv) {
     } else if (strcmp(arg, "--rootfs") == 0) {
       const char *val = take_value(&i, argc, argv, arg);
       free(o.rootfs);
-      o.rootfs = resolve_host_dir("--rootfs", val);
+      o.rootfs = resolve_rootfs("--rootfs", val, &o.rootfs_is_image);
+    } else if (strcmp(arg, "--vsock") == 0) {
+      add_vsock(&o, take_value(&i, argc, argv, arg));
+    } else if (strcmp(arg, "--pidfile") == 0) {
+      const char *val = take_value(&i, argc, argv, arg);
+      if (val[0] != '/') fail_usage("--pidfile must be an absolute path (got \"%s\")", val);
+      free(o.pidfile);
+      o.pidfile = xstrdup(val);
     } else if (strcmp(arg, "--cpus") == 0) {
       o.cpus = parse_uint("--cpus", take_value(&i, argc, argv, arg), 1, 16);
     } else if (strcmp(arg, "--memory") == 0) {
@@ -626,7 +802,22 @@ int main(int argc, char **argv) {
 
   /* Normal run: every step below is fatal on failure. */
   if (o.stderr_file) redirect_stderr(o.stderr_file);
-  if (!kvm_usable()) fail_runtime("/dev/kvm is not usable");
+  check_virtualization();
+#ifdef __APPLE__
+  /* No TSI fallback here: a macOS VM's only shared paths are its virtiofs shares, and its only
+   * network path is the egress proxy behind --vsock (docs/MACOS.md). */
+  if (!o.rootfs_is_image) {
+    fail_runtime("--rootfs must be a raw disk image on macOS, not a folder (docs/MACOS.md)");
+  }
+  if (o.nports == 0) {
+    fail_runtime("--vsock is required on macOS: without it libkrun gives the guest its implicit TSI network");
+  }
+#endif
+  if (o.pidfile) {
+    write_pidfile(o.pidfile);
+    exit_pidfile = o.pidfile;
+    (void)atexit(remove_exit_pidfile);
+  }
 
   char *ctl = make_ctl_dir();
   char **envp = build_envp(&o);
@@ -710,7 +901,16 @@ int main(int argc, char **argv) {
   int32_t ctx = k.krun_create_ctx();
   if (ctx < 0) krun_fail("krun_create_ctx", ctx);
   KRUN_CALL(k, krun_set_vm_config, (uint32_t)ctx, (uint8_t)o.cpus, (uint32_t)o.memory);
-  KRUN_CALL(k, krun_add_virtiofs3, (uint32_t)ctx, "/dev/root", o.rootfs, (uint64_t)0, true);
+  if (o.rootfs_is_image) {
+    /* The raw image is the guest's /: attached read-only, and mounted "ro" so the guest does not
+     * even try an rw mount on the read-only block device (that fails at boot). */
+    KRUN_CALL(k, krun_add_disk, (uint32_t)ctx, "root", o.rootfs, true);
+    KRUN_CALL(k, krun_set_root_disk_remount, (uint32_t)ctx, "/dev/vda", "ext4", "ro");
+  } else {
+#ifndef __APPLE__
+    KRUN_CALL(k, krun_add_virtiofs3, (uint32_t)ctx, "/dev/root", o.rootfs, (uint64_t)0, true);
+#endif
+  }
   for (unsigned i = 0; i < o.nshares; i++) {
     char tag[16];
     share_tag(i, tag, sizeof tag);
@@ -719,11 +919,22 @@ int main(int argc, char **argv) {
   }
   /* The control directory is not a task share: no tag in HIVE_SHARES, no 8-share limit. */
   KRUN_CALL(k, krun_add_virtiofs3, (uint32_t)ctx, "hivectl", ctl, (uint64_t)0, false);
+  if (o.nports > 0) {
+    /* No implicit vsock: no TSI hijacking of AF_INET/AF_INET6. Each mapped port is the guest's
+     * only route to the host, and behind it only hive's egress proxy. */
+    KRUN_CALL(k, krun_disable_implicit_vsock, (uint32_t)ctx);
+    KRUN_CALL(k, krun_add_vsock, (uint32_t)ctx, 0);
+    for (unsigned i = 0; i < o.nports; i++) {
+      KRUN_CALL(k, krun_add_vsock_port, (uint32_t)ctx, o.ports[i].port, o.ports[i].path);
+    }
+  }
   const char *rlimits[] = {"7=65536:65536", NULL};
   KRUN_CALL(k, krun_set_rlimits, (uint32_t)ctx, rlimits);
+#ifndef __APPLE__
   /* Empty, not NULL: a NULL port map would expose every listening guest port to the host. */
   const char *port_map[] = {NULL};
   KRUN_CALL(k, krun_set_port_map, (uint32_t)ctx, port_map);
+#endif
   KRUN_CALL(k, krun_set_workdir, (uint32_t)ctx, "/");
   /* Empty argv (never NULL) and only HIVE_CTL: everything else comes from the files. */
   const char *exec_argv[] = {NULL};
