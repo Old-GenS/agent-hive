@@ -74,13 +74,19 @@ jobs:
           sudo mount -t tmpfs tmpfs /mnt/hive-image/tmp
 
           echo "ext4: $(sudo dumpe2fs -h "$img" 2>/dev/null | grep -m1 "^Filesystem features")"
-          echo "node: $(sudo chroot /mnt/hive-image /usr/bin/node --version)"
-          echo "chromium: $(sudo chroot /mnt/hive-image /usr/bin/chromium --no-sandbox --version)"
-          echo "pi: $(sudo chroot /mnt/hive-image /usr/bin/env HOME=/tmp PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 /usr/local/bin/pi --version)"
+          node_version=$(sudo chroot /mnt/hive-image /usr/bin/node --version)
+          chromium_version=$(sudo chroot /mnt/hive-image /usr/bin/chromium-browser --no-sandbox --version 2>&1)
+          pi_version=$(sudo chroot /mnt/hive-image /usr/bin/env HOME=/tmp PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 /usr/local/bin/pi --version)
+          echo "node: $node_version"
+          echo "chromium: $chromium_version"
+          echo "pi: $pi_version"
+          [[ "$node_version" == v24.* ]] || { echo "expected Node 24, got $node_version"; exit 1; }
+          [[ "$chromium_version" == *Chromium* ]] || { echo "chromium-browser did not report a version"; exit 1; }
+          [[ -n "$pi_version" ]] || { echo "pi did not report a version"; exit 1; }
           sudo chroot /mnt/hive-image /bin/bash -n /usr/local/bin/hive-vm-init
           sudo chroot /mnt/hive-image test -x /usr/local/bin/hive-netd
       - name: Upload the image
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hive-rootfs-image-${{ github.sha }}
           path: |
