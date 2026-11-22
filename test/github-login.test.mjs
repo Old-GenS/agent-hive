@@ -185,3 +185,9 @@ test("routes: POST starts the login, GET reports it, DELETE cancels it", async (
     await app.close();
   }
 });
+
+test("the device login uses only flags gh 2.45 (Ubuntu 24.04) knows", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/github-login.ts", import.meta.url), "utf8");
+  assert.ok(!source.includes('"--skip-ssh-key"'), "--skip-ssh-key is not in gh 2.45");
+});

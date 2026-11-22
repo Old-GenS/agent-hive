@@ -134,7 +134,9 @@ async function completeLogin(): Promise<void> {
 }
 
 function runLogin(startedAt: number): void {
-  const args = ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--skip-ssh-key"];
+  // Only flags old gh has too (Ubuntu 24.04 ships 2.45, without --skip-ssh-key); with
+  // --git-protocol https gh never asks about SSH keys anyway.
+  const args = ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"];
   // BROWSER=true stops gh opening a browser on the server; the person opens the link themselves.
   const proc = spawn(ghBin(), args, {
     env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", BROWSER: "true" },
