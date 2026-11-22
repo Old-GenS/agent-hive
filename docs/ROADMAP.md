@@ -181,8 +181,8 @@ How they stay current:
    release of each pinned piece and, when there is one, opens a pull request against `main` that
    bumps the pin (`scripts/rootfs-plan.mjs` decides whether the rootfs is rebuilt).
 3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
-   rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`); the maintainer merges
-   the pull request once `test` and `vm` pass.
+   rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`); the pull request
+   merges automatically once `test` and `vm` pass.
 4. **The rootfs is reused while it is current** *(done)*. The daily dev build reuses the tested
    rootfs unless `image/` changed, it has pending security updates, it is 14+ days old with
    updates, or it was dispatched with `fresh_rootfs`.

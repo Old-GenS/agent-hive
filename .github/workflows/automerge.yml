@@ -1,0 +1,50 @@
+name: Merge tested update PRs
+
+# Merges open pull requests labelled "automerge" (the daily update check's and Dependabot's
+# minor/patch updates) once CI has passed on their latest commit: test, vm and windows-installer.
+# main has no branch protection, so GitHub's own auto-merge can't wait for CI; this does instead.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automerge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    steps:
+      - name: Merge labelled pull requests whose checks all passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          required="test vm windows-installer"
+          for pr in $(gh pr list --base main --label automerge --state open --json number --jq '.[].number'); do
+            sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+            ok=true
+            for name in $required; do
+              conclusion=$(gh api "repos/$GH_REPO/commits/$sha/check-runs?check_name=$name" \
+                --jq '[.check_runs[] | .conclusion] | if length == 0 then "missing" else (if all(. == "success") then "success" else .[0] end) end')
+              if [ "$conclusion" != "success" ]; then
+                echo "#$pr: $name is ${conclusion:-pending}; not merging yet"
+                ok=false
+              fi
+            done
+            if [ "$ok" = true ]; then
+              gh pr merge "$pr" --merge --delete-branch && echo "#$pr: merged"
+            fi
+          done
