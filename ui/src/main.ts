@@ -423,7 +423,15 @@ function parseRunSummary(raw: unknown): RunSummary | null {
     model: typeof r.model === "string" ? r.model : "",
     provider: typeof r.provider === "string" ? r.provider : "",
     createdAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
-    lastActivity: typeof r.lastActivity === "number" ? r.lastActivity : Date.now(),
+    // The server sends no lastActivity; a finished run's age counts from when it finished.
+    lastActivity:
+      typeof r.lastActivity === "number"
+        ? r.lastActivity
+        : typeof r.finishedAt === "number"
+          ? r.finishedAt
+          : typeof r.createdAt === "number"
+            ? r.createdAt
+            : Date.now(),
     stepStartedAt: typeof r.stepStartedAt === "number" ? r.stepStartedAt : undefined,
     finishedAt: typeof r.finishedAt === "number" ? r.finishedAt : undefined,
     kept: r.kept === true,
@@ -452,8 +460,25 @@ function formatElapsed(ms: number): string {
 
 function runTimeLabel(summary: RunSummary): string {
   if (BUSY_STATUS.has(summary.status)) return formatElapsed(Date.now() - (summary.stepStartedAt ?? summary.createdAt));
-  const minutes = Math.max(0, Math.floor((Date.now() - summary.lastActivity) / 60000));
-  return `${minutes} min ago`;
+  return timeAgo(Date.now() - summary.lastActivity, summary.lastActivity);
+}
+
+/**
+ * "just now", "5 min ago", "3 h ago" (the same day), then by calendar day: "yesterday",
+ * "4 days ago", else the date.
+ */
+function timeAgo(ms: number, at: number): string {
+  const minutes = Math.max(0, Math.floor(ms / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const then = new Date(at);
+  const now = new Date();
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(now) - dayStart(then)) / 86_400_000);
+  if (days <= 0) return `${Math.floor(minutes / 60)} h ago`;
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return then.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 interface RunUi {
@@ -964,6 +989,9 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
     { class: "run-item-meta" },
     `${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"} \u00b7 ${runTimeLabel(summary)}`,
   );
+  meta.title = summary.finishedAt !== undefined
+    ? `Started ${dateTime(summary.createdAt)}, finished ${dateTime(summary.finishedAt)}`
+    : `Started ${dateTime(summary.createdAt)}`;
   item.append(top, meta, pill);
   const kept = Boolean(summary.kept);
   const star = el(
@@ -1753,7 +1781,26 @@ function updateRunMeta(): void {
   if (!run || !runUi) return;
   const parts = [repoLabel(run.repo, run.newRepo), run.providerLabel || "provider", run.model || "default model"];
   if (run.cost > 0) parts.push(`$${run.cost.toFixed(4)}`);
+  const started = run.stepStartedAt;
+  if (started !== undefined) {
+    parts.push(
+      run.finishedAt !== undefined && !run.busy
+        ? `${dateTime(started)} – ${clockTime(run.finishedAt, started)}`
+        : `started ${dateTime(started)}`,
+    );
+  }
   runUi.meta.textContent = parts.join(" · ");
+}
+
+/** "Nov 21, 1:42 PM" in the viewer's locale and time zone. */
+function dateTime(at: number): string {
+  return new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** The end of a time range: just the clock time when it's the same day as `from`, else the date too. */
+function clockTime(at: number, from: number): string {
+  const sameDay = new Date(at).toDateString() === new Date(from).toDateString();
+  return sameDay ? new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : dateTime(at);
 }
 
 function syncRunUi(): void {
