@@ -1,7 +1,7 @@
 # macOS (Apple silicon)
 
 **Status: plan, not implemented.** This is the design for running hive natively on a Mac. Nothing
-below is built yet, and the spike in [Phase 0](#phase-0--spike-12-days) decides the networking
+below is built yet, and the spike in [Phase 0](#phase-0--spike-23-days) decides the networking
 piece before the rest is worth starting.
 
 hive runs the agent inside a libkrun microVM. On Linux the VM reaches the internet only through
@@ -29,7 +29,7 @@ macOS 27):
 
 - libkrun supports **macOS/ARM64 on HVF**, and the pinned 1.19.8 release includes `vmm/macos` and
   `virtio/fs/macos` fixes, so no version bump is needed for a spike.
-- **virtio-fs works on macOS**, which is what `work/`, `io/`, `out/` and the rootfs use.
+- **virtio-fs works on macOS**, which is what `work/`, `io/` and `out/` use.
 - **vsock works on macOS.** macOS has no host `AF_VSOCK`, so libkrun keeps a vsock↔UNIX-socket
   proxy for the guest; krunkit uses the same device for its time sync.
 - libkrun can run **without TSI**: `krun_disable_implicit_vsock()` then a vsock device with zero
@@ -41,6 +41,8 @@ macOS 27):
   `com.apple.security.cs.disable-library-validation` (what krunkit's entitlements do). Ad-hoc is
   free and enough on your own Mac; a notarized download for other people needs an Apple Developer
   account (US$99/year).
+- libkrunfw's aarch64 kernel has `EXT4_FS`, `EROFS_FS`, `SQUASHFS` and `VIRTIO_BLK` built in,
+  and libkrun 1.19.8 has `krun_add_disk(..., read_only)`, so a read-only rootfs image is supported.
 - Current code assumptions that need a platform branch: `/dev/kvm` (`src/sandbox.ts:28`),
   pasta (`src/pasta.ts`), `/proc` in `recoverRuns` (`src/runs.ts:258`), `du -B1`
   (`src/diskwatch.ts:17`, GNU-only), and the `linux-x86_64` release asset names
@@ -100,36 +102,68 @@ configures.
 macOS-specific). Once macOS proves it, Linux could drop pasta and use one network model everywhere.
 That is deliberately *not* part of this step; Linux stays untouched until macOS ships.
 
-## Filesystems: case and ownership
+## Filesystems: case, ownership and the rootfs image
 
 macOS volumes are **case-insensitive** by default (APFS: `File.txt` and `file.txt` are one file),
-and an ordinary Mac user cannot create files owned by root, device nodes or other users' files.
-On Linux both the VM's root and a run's `work/` are plain host folders shared over virtio-fs, so
-neither problem exists there. On a Mac it would bite in two places:
+and an ordinary Mac user cannot create files owned by root, device nodes or files with file
+capabilities. Linux has neither problem, so both only show up on a Mac. They hit in two separate
+places, and each has its own fix.
 
-- **The VM filesystem.** Unpacking the Fedora rootfs into a folder collides on paths that differ
-  only by case (they exist in a normal Fedora install, for example under `/usr/share/terminfo` and
-  in Perl and kernel-header trees) and loses root ownership, setuid bits and device nodes.
-  **Plan: ship the macOS rootfs as a read-only disk image** (erofs, or ext4) attached with
-  virtio-blk (`BLK=1`, already in the Phase 0 build), not as a folder. The image keeps Linux
-  semantics inside the VM whatever the Mac's disk does, and it is one file to download, verify
-  and replace. The RAM overlay for writes stays as it is.
-- **The run's `work/`.** A repo with two paths that differ only by case cannot be checked out
-  correctly on a case-insensitive folder, and git in the VM would see phantom changes.
-  **Plan:** keep the run folders on a case-sensitive APFS volume or disk image that hive creates
-  once (`hdiutil create -fs "Case-sensitive APFS"`, mounted under hive's data dir), or at minimum
-  detect case collisions when cloning and refuse the run with a clear message. Decide in Phase 0
-  from the numbers: a case-sensitive sparse image also shares over virtio-fs, so it doesn't change
-  the design.
+### The guest rootfs: a raw image, not a folder
+
+Unpacking the Fedora rootfs into a folder collides on paths that differ only by case: a normal
+Fedora install has them, for example under `/usr/share/terminfo` (`a/` and `A/`) and in Perl and
+kernel-header trees. A folder also loses root ownership, setuid bits, device nodes and file
+capabilities, and exposes the whole rootfs (tens of thousands of files) through virtio-fs.
+
+**Plan: ship the macOS rootfs as a raw disk image attached read-only with virtio-blk.** The image
+keeps Linux semantics inside the VM whatever the Mac's disk does, and it is one file to download,
+verify and replace. The RAM overlay for writes stays as it is.
+
+- **Format:** libkrunfw's aarch64 kernel has `EXT4_FS`, `EROFS_FS` and `SQUASHFS` built in, plus
+  `VIRTIO_BLK`, so all three work. Pick on size and boot time: erofs and squashfs compress better,
+  ext4 is the most familiar. Decide in Phase 0.
+- **Read-only means enforced on the host:** `krun_add_disk(ctx, "root", path, read_only = true)`
+  and the host opens the file read-only. `mount -o ro` in the guest is not enough, because the
+  guest's root could remount it. Confirm the exact root-disk call in Phase 0; 1.19.8 still has the
+  deprecated `krun_set_root_disk` for comparison.
+- **Consequences for the code:** `hive-vm --rootfs` takes a file, `libkrunAvailable()` checks a
+  file, libkrun boots the image as the read-only root device and `hive-vm-init` only builds the
+  overlay on top, and the release asset becomes `hive-rootfs-<hash>-linux-arm64.img` (or
+  `.img.gz`) instead of a folder tarball. Linux can keep the folder rootfs until the image path
+  has proved itself.
+
+### Run folders: case-sensitive by default, not as a fallback
+
+A repo with two paths that differ only by case cannot be checked out on a case-insensitive folder.
+This bites **before** `work/` exists: `prepareRepo` clones the pristine copy into `<run>/origin`
+on the same volume, and `origin/` is what pushes and exports read, so detecting a collision after
+that clone is already too late.
+
+**Plan: keep the run folders on a case-sensitive APFS sparse image that hive creates once**
+(`hdiutil create -fs "Case-sensitive APFS" -type SPARSE`, stored under the data dir and attached at
+a fixed mountpoint). That covers `origin/`, `work/`, `io/`, `out/` and every run, so a
+case-colliding repo simply works and no detection is needed. Share it over virtio-fs as usual.
+
+Its lifecycle needs as much care as the proxy:
+
+- **Attach at startup** (CLI, `hive serve`, the launchd service) and **detach on shutdown**;
+  `hive uninstall` must detach it too.
+- **Keep a marker file inside the image and refuse to run when it is not mounted.** Otherwise the
+  mountpoint is an empty folder: runs "disappear", and new ones land on the Mac volume.
+- **Measure disk use on the host.** `statfsSync(runsDir)` inside the image reports the image's
+  filesystem, not the Mac's free space, and `du` on the mount does not show the sparse file's
+  allocation. The free-space guard (`HIVE_MIN_FREE_DISK_GB`) must look at the volume holding the
+  image, and the image needs a size cap and a growth policy.
 
 Ownership inside `work/` is not a problem: the agent runs as root in the VM and files map to the
 Mac user on the host, as they do with rootless podman on Linux.
 
 ## Phases
 
-### Phase 0 — Spike (1–2 days)
+### Phase 0 — Spike (2–3 days)
 
-Goal: answer the four unknowns on real hardware before touching hive.
+Goal: answer the unknowns that decide the design, on real hardware, before touching hive.
 
 1. Build the pinned libkrun:
    ```bash
@@ -140,13 +174,15 @@ Goal: answer the four unknowns on real hardware before touching hive.
    make BLK=1 NET=1
    make BLK=1 NET=1 PREFIX="$HOME/.local" install
    ```
-2. With podman (arm64 machine), export a small Fedora arm64 rootfs. A bare rootfs is enough for
-   the transport tests; the full hive image comes in Phase 2.
+2. With podman (arm64 machine), export a Fedora arm64 rootfs and turn it into a raw image
+   (`mke2fs -d` for ext4, or `mkfs.erofs`). Do not extract it to a folder: the Fedora tree has
+   case collisions on APFS (terminfo `a/` and `A/`), so a folder rootfs is subtly wrong from the
+   start. A minimal image is enough for the transport tests; the full hive image comes in Phase 2.
 3. Write a throwaway C launcher (~80 lines) that does: disable implicit vsock → add a TSI-free
-   vsock device → map port 1024 to `/tmp/echo.sock` → share the rootfs and one test folder →
-   `krun_set_exec` a shell.
+   vsock device → map port 1024 to `/tmp/echo.sock` → attach the rootfs image read-only with
+   virtio-blk → share one test folder → `krun_set_exec` a shell.
 4. Check, in this order:
-   - the VM boots on HVF (record the time);
+   - the VM boots on HVF from the image (record the time);
    - the shared folder is visible and `git status` / a small `npm install` on it is usable
      (virtio-fs is the performance risk);
    - guest `AF_VSOCK` to cid 2 port 1024 reaches a host UNIX socket and bytes come back (use
@@ -156,21 +192,24 @@ Goal: answer the four unknowns on real hardware before touching hive.
 5. Negative test, the security gate: with TSI disabled, `curl --noproxy '*'` to a LAN address,
    a public IP and a hostname, plus `ping`, must all fail.
 6. Ad-hoc sign the test launcher with krunkit's entitlements and confirm it still boots.
-7. Filesystems (see [Filesystems](#filesystems-case-and-ownership)): boot from the rootfs as a
-   read-only erofs/ext4 image over virtio-blk and check that root-owned files, setuid `sudo` and
-   case-differing paths are intact; then clone a repo with two paths that differ only by case into
-   a case-sensitive APFS sparse image shared over virtio-fs, and confirm `git status` is clean.
+7. Filesystems (see [Filesystems](#filesystems-case-ownership-and-the-rootfs-image)): boot from
+   the raw image with virtio-blk, confirm the guest cannot remount it writable, that the terminfo
+   `a/` and `A/` trees both survive and that file capabilities are present; then clone a repo with
+   two paths that differ only by case into a case-sensitive APFS sparse image shared over
+   virtio-fs, and confirm `git status` is clean.
 
 **Exit criteria:** a booting macOS VM with proxy-only networking, and numbers for boot time,
-virtio-fs throughput and vsock throughput. If step 4 or 5 fails, stop: the fallback is gvproxy with
-an explicit "reduced isolation" label, and that is a product decision, not an implementation detail.
+virtio-fs throughput on `work/`, vsock throughput and the image size. If step 4 or 5 fails, stop:
+the fallback is gvproxy with an explicit "reduced isolation" label, and that is a product decision,
+not an implementation detail.
 
 ### Phase 1 — Networking in the launcher and host (2–4 days)
 
 - `vm/hive-vm.c`: `__APPLE__` guards — HVF check instead of `/dev/kvm`, `libkrun.1.dylib` as the
   default `dlopen` name, macOS-safe compile flags (`-Wl,-z,relro,-z,now` is ELF-only), the
   `--vsock` mode above, `--pidfile`, and `--watch-pid` (it works on macOS: there is no pasta PID
-  namespace, so a dead hive stops its VM immediately).
+  namespace, so a dead hive stops its VM immediately). Also `--rootfs` taking a raw image that is
+  attached read-only with `krun_add_disk`, instead of a folder.
 - `src/sandbox.ts`: spawn `hive-vm` directly on macOS (no pasta), start the per-VM bridge, point
   `HTTP(S)_PROXY` at `http://127.0.0.1:3128`, and clean both up on exit, abort, stall and timeout.
 - `image/`: `hive-netd` plus its start-up in `hive-vm-init`; `no-ipv6` stays for Linux but is
@@ -179,15 +218,18 @@ an explicit "reduced isolation" label, and that is a product decision, not an im
   dylib candidates (`lib/libkrun.1.dylib`, `libkrunfw.5.dylib`) and the labels `hive doctor` and
   the UI show.
 
-**Exit criteria:** `hive run` on this Mac completes a real task, and the Phase 0 negative network
-tests still hold inside a hive run.
+**Exit criteria:** `hive run` on this Mac completes a real task from the read-only rootfs image,
+and the Phase 0 negative network tests still hold inside a hive run.
 
-### Phase 2 — arm64 rootfs (1–2 days)
+### Phase 2 — arm64 rootfs image (2–3 days)
 
 - Build `image/` for `linux/arm64` (a `podman machine` or an `ubuntu-24.04-arm` CI job) and check
   Chromium, Node 24, pi and `hive-export` on arm64.
-- Make `vm/build-rootfs.sh` architecture-aware; name the artifact
-  `hive-rootfs-<hash>-linux-arm64.tar.gz`.
+- Export the container image's root filesystem and turn it into a raw disk image on the arm64
+  runner (`mke2fs -d` or `mkfs.erofs`; macOS has no mkfs). This is a separate step from
+  `vm/build-rootfs.sh`, which keeps producing the Linux folder rootfs.
+- Name the macOS artifact `hive-rootfs-<hash>-linux-arm64.img` (or `.img.gz`), checksummed and
+  signed like the app bundle; `release.ts` and the installer must accept an image, not a folder.
 - Keep the license/source obligations current (Fedora, Chromium, node, pi; libkrunfw is already in
   `THIRD-PARTY.md`).
 
@@ -204,12 +246,17 @@ tests still hold inside a hive run.
 - `src/runs.ts`: `recoverRuns` via the pidfile plus `ps -axo pid=,command=` on macOS; keep
   `/proc` on Linux.
 - `src/diskwatch.ts`: `du -s -k -x --`, then ×1024 (works on both platforms and fixes the 512×
-  undercount). `src/stall.ts` is fine as is (`find -mmin` is portable).
+  undercount). On macOS the run folder lives on the case-sensitive image: check free space on the
+  host volume holding the image, not `statfs` on the mountpoint, and cap the image's growth.
+  `src/stall.ts` is fine as is (`find -mmin` is portable).
+- macOS run-image lifecycle: attach it at startup for the CLI, `hive serve` and the launchd
+  service; keep a marker inside and refuse to run when it is not mounted; detach on shutdown; add
+  it to `hive uninstall` and `hive doctor`.
 - `src/usage.ts`: no `/proc` or `/sys` on macOS — `os.freemem` fallback, no temperature sensor.
 - `src/service.ts`: launchd already exists; fix the release-bundle command (it currently points at
   `lib/cli.js`, which a bundle does not ship).
-- `src/release.ts`: platform/arch asset names (`darwin-arm64` app, `linux-arm64` rootfs) and
-  install paths.
+- `src/release.ts`: platform/arch asset names (`darwin-arm64` app, `linux-arm64` rootfs image)
+  and install paths.
 - `install-cli.sh` (or a macOS installer): `shasum -a 256` fallback, zsh `PATH`, Gatekeeper note.
 - UI: "This computer" shows Hypervisor.framework and the vsock network; nothing else changes.
 
@@ -219,42 +266,45 @@ tests still hold inside a hive run.
   the launcher with entitlements and an ad-hoc signature, `install_name_tool` so the bundled
   libkrun finds libkrunfw next to it, then re-sign.
 - `scripts/build-release-macos.sh`: Node `darwin-arm64`, the esbuild bundle, `ui/dist`, the arm64
-  rootfs, `SHA256SUMS` and the release signature; wire it into the dev/release workflows on
-  `macos-14`.
+  rootfs image from the arm64 job, `SHA256SUMS` and the release signature; wire it into the
+  dev/release workflows on `macos-14`.
 - `versions.json`: add `libkrunfw.macos.aarch64` and `libkrunfw.linux.aarch64` URLs with
   SHA-256; teach `scripts/check-updates.mjs` about them.
 - Docs: a macOS section in `docs/INSTALL.md`, the README requirements, `AGENTS.md`, and the
   roadmap.
 - Later: Homebrew tap or cask; a notarized Developer ID build for distribution.
 
-**Total: roughly 2–4 weeks** after the spike. The security/networking work (Phases 0–1) carries
-almost all of the risk; Phases 2–4 are mostly packaging.
+**Total: roughly 3–4 weeks** after the spike. The security/networking work (Phases 0–1) carries
+almost all of the risk; Phases 2–4 are packaging and filesystem plumbing.
 
 ## Changes by file
 
 | File | Change |
 |---|---|
-| `vm/hive-vm.c` | HVF/dylib guards, vsock-only network mode, pidfile, macOS flags |
-| `image/hive-vm-init` | start `hive-netd`; nothing else |
+| `vm/hive-vm.c` | HVF/dylib guards, vsock-only network mode, read-only rootfs image, pidfile, macOS flags |
+| `image/hive-vm-init` | build the overlay over the read-only root image; start `hive-netd` |
 | `image/hive-netd.c` (new) | TCP `127.0.0.1:3128` → `AF_VSOCK` cid 2 |
 | `image/Containerfile` | build and install `hive-netd` for the guest architecture |
-| `src/sandbox.ts` | macOS spawn path, unix-socket bridge, HVF check, labels |
+| `vm/build-rootfs.sh`, `scripts/build-rootfs-image.sh` (new) | Linux folder rootfs unchanged; build and compress the macOS raw image |
+| `src/sandbox.ts` | macOS spawn path, unix-socket bridge, HVF check, rootfs image, disk accounting, labels |
 | `src/pasta.ts`, `src/libkrun.ts` | backend/dylib selection per platform |
 | `src/runs.ts` | `recoverRuns` without `/proc`; launcher pid |
-| `src/diskwatch.ts` | portable `du` |
-| `src/config.ts`, `src/usage.ts`, `src/service.ts`, `src/release.ts` | platform branches |
+| `src/diskwatch.ts` | portable `du`; host free space while runs live on the image |
+| `src/config.ts`, `src/usage.ts`, `src/service.ts`, `src/uninstall.ts`, `src/release.ts` | platform branches, run-image attach/detach, image asset |
 | `src/cli.ts` | doctor/checks, `HIVE_RUNTIME` validation |
 | `install-cli.sh` / `install.sh` | macOS install and `update` path |
 | `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | build and sign |
 | `versions.json`, `scripts/check-updates.mjs` | arm64 pins |
-| `.github/workflows/` | macOS unit/build job; arm64 rootfs; release assets |
+| `.github/workflows/` | macOS unit/build job; arm64 rootfs image; release assets |
 
 ## Risks
 
 | Risk | Mitigation |
 |---|---|
-| Case-insensitive APFS and no root ownership break a folder-based rootfs and repos with case-colliding paths | rootfs as a read-only disk image over virtio-blk; run folders on a case-sensitive APFS image, or refuse case collisions; tested in Phase 0 step 7 |
-| virtio-fs is slow for many small files (git, npm) on macOS | measure in Phase 0; if unusable, put `work/` on a virtio-blk image and export patches — a bigger change, decided on numbers |
+| Case-insensitive APFS breaks a folder-based rootfs and repos with case-colliding paths | rootfs as a read-only image over virtio-blk; run folders on a case-sensitive APFS image; tested in Phase 0 step 7 |
+| The case-sensitive run image is not mounted after a crash or a failed `hdiutil attach` | marker file inside it, refuse to run, attach at every entry point, `hive doctor` |
+| Disk accounting inside a sparse image | free space from the host volume, an image size cap, `du` on the mount only for run data |
+| virtio-fs is slow for many small files (git, npm) on macOS | the rootfs is a block image now; measure `work/` and `io/` in Phase 0; if unusable, put `work/` on a virtio-blk image and export patches — a bigger change, decided on numbers |
 | vsock-without-TSI does not behave as documented | the Phase 0 negative test is the gate; fallback is gvproxy with an explicit reduced-isolation label |
 | Chromium, npm or git ignores the proxy and wants DNS | all honour the `*_PROXY` variables today; test each in Phase 0; npm's cache already lives in the VM |
 | GitHub's macOS runners are VMs, and nested HVF needs an M3+ host and macOS 15+ | do not count on a VM boot in CI: unit tests and `hive-vm --check` there, a `scripts/macos-smoke.sh` run by hand on real hardware |
@@ -267,8 +317,12 @@ almost all of the risk; Phases 2–4 are mostly packaging.
 1. **Apple silicon only (macOS 14+)** — Intel Macs are out. Accepted?
 2. **Proxy-only egress by default**, with gvproxy only as an explicit reduced-isolation opt-in.
 3. **Source build first**, signed/notarized installer later.
-4. **arm64 rootfs in CI** (`ubuntu-24.04-arm`) or a local `podman machine`.
+4. **arm64 rootfs image in CI** (`ubuntu-24.04-arm`) or a local `podman machine`.
 5. **Linux stays on pasta** until macOS ships; unify later.
+6. **Rootfs image format:** ext4, erofs or squashfs (all three are in libkrunfw's aarch64 kernel);
+   chosen on size and boot time in Phase 0.
+7. **Run folders on a case-sensitive image by default** (recommended) rather than detecting and
+   refusing case collisions.
 
 ## Sources
 
