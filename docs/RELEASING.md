@@ -58,7 +58,32 @@ until a newer one passes that check.
 | `node` | The Node.js version bundled in the app (`HIVE_NODE_VERSION` still overrides it) |
 | `skip` | Upstream versions known to be broken for hive, per component, with the reason. The daily bump check never offers them (libkrunfw 5.6.4: DNS fails in the VM) |
 
-## Cut a release
+## Promote a nightly to stable
+
+This is the normal way to cut a stable release. It guarantees the stable matches the nightly that
+was tested: the same app commit, the same VM filesystem, re-signed with the stable key.
+
+1. Bump `version` in `package.json` to the stable version the nightly tag names
+   (`v0.5.6-nightly.3` promotes to `0.5.6`), commit it and merge it to `main`.
+2. Promote:
+
+   ```bash
+   npm run promote -- v0.5.6-nightly.3
+   ```
+
+   `scripts/promote.mjs` checks the nightly's `SHA256SUMS.sig` against `PRERELEASE_PUBLIC_KEY`,
+   checks that the nightly's rootfs was built from the promoted commit's `image/` tree, builds the
+   app from that same commit in a throwaway worktree (the checkout is not touched), reuses that
+   rootfs, checks the result's `SHA256SUMS.sig` against `RELEASE_PUBLIC_KEY`, and writes
+   `release/<version>/`. `--dry-run` checks the nightly and builds nothing; `--publish` also creates
+   the GitHub release (a stable one, with notes naming the nightly and the rootfs it reused).
+
+   It needs podman, network, `gh`, and the stable signing key (`HIVE_SIGNING_KEY`, default
+   `~/.config/agent-hive/release-signing-key.pem`).
+
+## Build a release by hand
+
+For an app-only change, or when the VM filesystem needs a forced rebuild:
 
 1. Bump `version` in `package.json`.
 2. Build:
@@ -67,24 +92,21 @@ until a newer one passes that check.
    npm run release
    ```
 
-   Set `HIVE_SIGNING_KEY` to use a key other than `~/.config/agent-hive/release-signing-key.pem`,
-   and `HIVE_RELEASE_SKIP_ROOTFS=1` to skip building the rootfs (the bundle then records
-   `ROOTFS_VERSION=none`). `HIVE_RELEASE_VERSION=<x.y.z or x.y.z-nightly.n>` overrides
-   `package.json`'s version (the nightly workflow uses it; the old `dev` and `beta` spellings are
-   accepted as aliases), and
-   `HIVE_RELEASE_REUSE_ROOTFS=<path to hive-rootfs-<rver>-linux-x86_64.tar.gz>` reuses a rootfs an
-   earlier release built instead of running podman: the file's name gives the rootfs version, and a
-   `rootfs-info.json` next to it (which every built rootfs release has) is copied into the output.
+   A hand build always rebuilds the VM filesystem from a freshly pulled base image with podman's
+   cache skipped, so Fedora and Chromium security updates are in and the new rootfs id makes users
+   download it again (about 660 MB). Reusing a rootfs another machine already built is possible by
+   handing over a tarball whose `rootfs-info.json` (next to it) names this checkout's `image/` tree:
+
+   ```bash
+   npm run release -- --reuse-rootfs <path to hive-rootfs-<rver>-linux-x86_64.tar.gz>
+   ```
+
+   The build refuses a rootfs from another image tree; that check is `scripts/release-rootfs.mjs`.
+   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (the nightly workflow and `promote` use
+   it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
 
    The build also runs `scripts/build-native.sh` for libkrun, libkrunfw and the launcher (podman
    and network; see above), and downloads the GPL source assets described below.
-
-   **Security updates in the VM:** the image's packages (Fedora, Chromium, Node, git) aren't
-   pinned, but podman's layer cache keeps the old ones, so a plain release reuses the previous
-   rootfs. Set `HIVE_RELEASE_FRESH_ROOTFS=1` to rebuild it without the cache and with a freshly
-   pulled base image. That gives a new rootfs version, which every user downloads again (about
-   660 MB), so do it for Chromium or Fedora security fixes and at least monthly, not for every
-   app-only release. Say in the release notes when the rootfs changed.
 
    **GPL source:** libkrunfw contains the Linux kernel (GPL-2.0) and the bundled pasta is built
    from the passt sources (GPL-2.0-or-later), so a release publishes the corresponding source too:
@@ -101,7 +123,8 @@ until a newer one passes that check.
 ## Automation and the nightly channel
 
 `.github/workflows/` keeps `main` at the newest upstream pins and publishes a signed nightly
-prerelease every day. Stable releases stay manual.
+prerelease every day. A stable release is promoted from one of those nightlies with
+`npm run promote` (see "Promote a nightly to stable"), so it never differs from what CI tested.
 
 ### Repository settings the automation depends on
 
@@ -197,11 +220,8 @@ only a rebuild pays the ~660 MB rootfs build and download.
 
 ### Promotion to stable
 
-1. Bump `version` in `package.json` and cut the stable release locally from `main`, as in "Cut a
-   release". Optionally build from the exact commit of a nightly build that has been good, with
-   `HIVE_RELEASE_REUSE_ROOTFS=<that build's rootfs tarball>` set to ship exactly the rootfs the
-   nightly build already tested; otherwise the release rebuilds it.
-2. Publish with `gh release create` as before. Stable installs accept only the stable key.
+Promote a nightly that has been in use without trouble; see "Promote a nightly to stable" above.
+Stable installs accept only the stable key, so the promotion re-signs the tested content.
 
 ## What each file is
 

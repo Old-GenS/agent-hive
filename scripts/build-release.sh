@@ -3,9 +3,35 @@
 # the native pieces and a static pasta fallback, plus the VM rootfs as a separate download. Run
 # from the repo root (or via `npm run release`). Needs the release signing key; see
 # docs/RELEASING.md.
+#
+# --reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz> ships a rootfs another machine already
+# built and tested (the nightly workflow, scripts/promote.mjs) instead of rebuilding one; the
+# rootfs-info.json next to it must name this checkout's image/ tree or the build refuses.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+reuse_rootfs=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reuse-rootfs)
+      if [[ $# -lt 2 ]]; then
+        echo "build-release: --reuse-rootfs needs a rootfs tarball path" >&2
+        exit 2
+      fi
+      reuse_rootfs=$2
+      shift 2
+      ;;
+    --reuse-rootfs=*)
+      reuse_rootfs=${1#*=}
+      shift
+      ;;
+    *)
+      echo "usage: build-release.sh [--reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz>]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 version=$(node -p "require('./package.json').version")
 # HIVE_RELEASE_VERSION lets CI build a prerelease without committing a package.json bump.
@@ -44,37 +70,34 @@ fi
 
 # The rootfs is exported from the sandbox image; its directory name is the image id prefix that
 # VERSION/ROOTFS_VERSION in the bundle point at.
-if [[ "${HIVE_RELEASE_SKIP_ROOTFS:-}" == "1" ]]; then
-  rver=none
-elif [[ -n "${HIVE_RELEASE_REUSE_ROOTFS:-}" ]]; then
-  # Reuse a rootfs a previous (nightly) release already built and tested instead of building it again.
-  reuse=$HIVE_RELEASE_REUSE_ROOTFS
-  if [[ ! -f "$reuse" ]]; then
-    echo "build-release: HIVE_RELEASE_REUSE_ROOTFS=$reuse is not a file" >&2
-    exit 1
-  fi
-  reuse_name=$(basename "$reuse")
-  if [[ "$reuse_name" =~ ^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$ ]]; then
-    rver=${BASH_REMATCH[1]}
-  else
-    echo "build-release: rootfs file name must be hive-rootfs-<12 hex>-linux-x86_64.tar.gz (got \"$reuse_name\")" >&2
-    exit 1
-  fi
-  cp "$reuse" "$out/hive-rootfs-$rver-linux-x86_64.tar.gz"
+#
+# A release may only ship a rootfs it can vouch for. Either a machine that already tested one hands
+# it over (the nightly workflow, scripts/promote.mjs): then its rootfs-info.json must name this
+# checkout's image/ tree, so a release cannot be paired with a rootfs from another tree (an older
+# pi, older Fedora packages). Otherwise the rootfs is rebuilt from a freshly pulled base image with
+# podman's cache skipped, so a hand-built release never ships packages older than this checkout.
+# There is no flag to pick between a cached rootfs and these two: the only way to reuse one is to
+# hand over a rootfs this checkout's image/ tree produced.
+image_tree=$(git rev-parse HEAD:image)
+if [[ -n "$reuse_rootfs" ]]; then
+  reuse=$reuse_rootfs
   reuse_info="$(dirname "$reuse")/rootfs-info.json"
+  if [[ ! -f "$reuse" ]]; then
+    echo "build-release: --reuse-rootfs $reuse is not a file" >&2
+    exit 1
+  fi
   if [[ ! -f "$reuse_info" ]]; then
     echo "build-release: $reuse_info is missing (it names the image tree the rootfs was built from)" >&2
     exit 1
   fi
+  rver=$(node scripts/release-rootfs.mjs \
+    --reuse "$reuse" --info "$reuse_info" --image-tree "$image_tree") || exit 1
+  cp "$reuse" "$out/hive-rootfs-$rver-linux-x86_64.tar.gz"
   cp "$reuse_info" "$out/rootfs-info.json"
 else
-  # HIVE_RELEASE_FRESH_ROOTFS=1 rebuilds the image without podman's cache and with a fresh base,
-  # so Fedora and Chromium security updates get in. Users then download the new rootfs.
-  if [[ "${HIVE_RELEASE_FRESH_ROOTFS:-}" == "1" ]]; then
-    npm run build:image:fresh
-  else
-    npm run build:image
-  fi
+  # A fresh base and no podman cache: Fedora and Chromium security updates are in, and the rootfs
+  # id (the image id prefix) changes when the image really changed, so users download it only then.
+  npm run build:image:fresh
   npm run build:rootfs
   rootfs=$(realpath "${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs/current")
   rver=$(basename "$rootfs")
@@ -86,7 +109,6 @@ else
     -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
   # What the nightly channel's rootfs plan compares next time: which image tree this rootfs came from
   # and when it was built. Clients never read it, so it is not in SHA256SUMS.
-  image_tree=$(git rev-parse HEAD:image)
   built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '{"rootfs":"%s","imageTree":"%s","built":"%s"}\n' "$rver" "$image_tree" "$built" > "$out/rootfs-info.json"
 fi
