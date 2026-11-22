@@ -18,6 +18,7 @@
     "build:image:fresh": "podman build --pull=always --no-cache -t localhost/agent-hive-sandbox:latest image/",
     "build:vm": "bash vm/build.sh",
     "build:rootfs": "bash vm/build-rootfs.sh",
+    "build:rootfs-image": "bash scripts/build-rootfs-image.sh",
     "release": "bash scripts/build-release.sh",
     "test": "npm run build && node scripts/run-tests.mjs",
     "start": "node dist/index.js",

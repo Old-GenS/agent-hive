@@ -384,6 +384,18 @@ the Phase 0 negative tests). `hive run` end to end waits for the arm64 image.
 - Keep the license/source obligations current (Fedora, Chromium, node, pi; libkrunfw is already in
   `THIRD-PARTY.md`).
 
+**Status: the image build is in place; the release wiring is not.** On an arm64 Linux host (or a
+`podman machine`), `npm run build:image` then `npm run build:rootfs-image` exports the sandbox
+image into a raw ext4 image named `hive-rootfs-<rootfs-id>-linux-arm64.img`, keeps the raw file
+for `HIVE_ROOTFS`, and writes a gzipped copy plus its SHA-256. The
+[`macos-image`](../.github/workflows/macos-image.yml) workflow does the same on an
+`ubuntu-24.04-arm` runner, then mounts the image and runs Node, Chromium and pi from inside it.
+Fedora 45 ships Chromium and Node 24 for aarch64, so the image builds natively.
+
+What is left is the release side: there is no macOS app bundle yet, so `release.ts` and the
+installer have nothing to pair the image with, and `hive run` on a Mac still needs
+`HIVE_ROOTFS` pointing at a hand-built `.img`. That waits for Phase 4's bundle.
+
 ### Phase 3 — Hive platform plumbing (3–5 days)
 
 - **First, make `npm test` green on macOS.** After Phase 1, 10 tests still fail here, all for

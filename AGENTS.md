@@ -80,8 +80,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init), `hive-netd` (guest TCP → vsock relay, macOS) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh` (ad-hoc signs on macOS), `hive-vm.entitlements`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
-| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `nightly.yml` (daily signed nightly prerelease, reusing the tested rootfs when it is current); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
-| `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for releases) and `native-in-container.sh` (its manylinux_2_28 half), release build and signing |
+| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `nightly.yml` (daily signed nightly prerelease, reusing the tested rootfs when it is current), `macos-image.yml` (the arm64 macOS VM image, built and inspected on an arm64 runner); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
+| `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for releases), `native-in-container.sh` (its manylinux_2_28 half), `build-rootfs-image.sh` and `rootfs-image.mjs` (the macOS arm64 VM image and its naming), release build and signing |
 | `scripts/check-updates.mjs` | The daily bump check: newest upstream version of every pin in `versions.json` and `image/Containerfile` (`--list` as JSON, `--apply <component>`); pure parsers and `applyUpdate` are exported for tests |
 | `scripts/rootfs-plan.mjs` | The nightly build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
 | `scripts/release-rootfs.mjs` | The rootfs checks shared by the release build and `promote`: the tarball name, its `rootfs-info.json` rootfs id and `imageTree` must agree with the release's `image/` tree, and the nightly tag maps to its stable version; `build-release.sh` calls it before it reuses a rootfs |
@@ -94,7 +94,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `docs/MACOS.md` | macOS: why the Linux network path doesn't carry over, the vsock-only egress design, the Phase 0 spike and Phase 1 networking results, the remaining phases, the file map and the risks |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
-backend also `npm run build:vm` and `npm run build:rootfs`. For release-grade native builds
+backend also `npm run build:vm` and `npm run build:rootfs`; on arm64 Linux, `npm run build:rootfs-image`
+makes the macOS VM image. For release-grade native builds
 (libkrun, libkrunfw and the old-glibc launcher) use `scripts/build-native.sh`, which runs inside
 the pinned manylinux container from `versions.json`. Run the tests with `npm test`.
 

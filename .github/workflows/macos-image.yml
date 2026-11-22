@@ -1,0 +1,89 @@
+name: macOS VM image (arm64)
+
+# The macOS guest boots a raw ext4 image over virtio-blk (docs/MACOS.md, Phase 2), and macOS has
+# no mkfs, so the image is built on Linux arm64: the sandbox image natively, then the ext4 image.
+# GitHub arm64 runners cannot nest Hypervisor.framework, so this job checks the image and the
+# guest tools but does not boot the VM; a Mac does that by hand.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "image/**"
+      - "scripts/build-rootfs-image.sh"
+      - "scripts/rootfs-image.mjs"
+      - ".github/workflows/macos-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "image/**"
+      - "scripts/build-rootfs-image.sh"
+      - "scripts/rootfs-image.mjs"
+      - ".github/workflows/macos-image.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install podman when the runner image lacks it
+        run: |
+          if ! command -v podman >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y podman
+          fi
+          podman --version
+      - name: Build the sandbox image for arm64
+        run: podman build -t localhost/agent-hive-sandbox:latest image/
+      - name: Build the raw ext4 VM image
+        run: bash scripts/build-rootfs-image.sh
+      - name: Check the image and run the guest tools
+        run: |
+          set -euo pipefail
+          gzip -t build/rootfs-image/*.img.gz
+          ( cd build/rootfs-image && sha256sum -c ./*.img.gz.sha256 )
+          img=$(ls build/rootfs-image/*.img)
+          file "$img" | grep -q "ext4 filesystem data" || { file "$img"; exit 1; }
+
+          sudo mkdir -p /mnt/hive-image
+          sudo mount -o loop,ro "$img" /mnt/hive-image
+          cleanup() {
+            sudo umount /mnt/hive-image/tmp 2>/dev/null || true
+            sudo umount /mnt/hive-image/dev/shm 2>/dev/null || true
+            sudo umount /mnt/hive-image/sys 2>/dev/null || true
+            sudo umount /mnt/hive-image/proc 2>/dev/null || true
+            sudo umount /mnt/hive-image/dev 2>/dev/null || true
+            sudo umount /mnt/hive-image 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          sudo mount --bind /dev /mnt/hive-image/dev
+          sudo mkdir -p /mnt/hive-image/dev/shm
+          sudo mount -t tmpfs tmpfs /mnt/hive-image/dev/shm
+          sudo mount -t proc proc /mnt/hive-image/proc
+          sudo mount -t sysfs sys /mnt/hive-image/sys
+          sudo mount -t tmpfs tmpfs /mnt/hive-image/tmp
+
+          echo "ext4: $(sudo dumpe2fs -h "$img" 2>/dev/null | grep -m1 "^Filesystem features")"
+          echo "node: $(sudo chroot /mnt/hive-image /usr/bin/node --version)"
+          echo "chromium: $(sudo chroot /mnt/hive-image /usr/bin/chromium --no-sandbox --version)"
+          echo "pi: $(sudo chroot /mnt/hive-image /usr/bin/env HOME=/tmp PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 /usr/local/bin/pi --version)"
+          sudo chroot /mnt/hive-image /bin/bash -n /usr/local/bin/hive-vm-init
+          sudo chroot /mnt/hive-image test -x /usr/local/bin/hive-netd
+      - name: Upload the image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hive-rootfs-image-${{ github.sha }}
+          path: |
+            build/rootfs-image/*.img.gz
+            build/rootfs-image/*.img.gz.sha256
+          retention-days: 7
