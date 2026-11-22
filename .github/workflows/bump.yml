@@ -72,5 +72,5 @@ jobs:
           Merges automatically when CI passes, including the real VM test, and lands in the
           next dev build.")
             gh workflow run ci.yml --ref "$branch"
-            gh pr merge --auto --squash "$url"
+            gh pr merge --auto --merge "$url"
           done
