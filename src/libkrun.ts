@@ -29,6 +29,11 @@ export interface LibkrunChoice extends LibkrunCandidate {
   ok: boolean;
 }
 
+/** The soname the launcher dlopen()s: libkrun.so.1 on Linux, libkrun.1.dylib on macOS. */
+export function libkrunName(platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin" ? "libkrun.1.dylib" : "libkrun.so.1";
+}
+
 /**
  * The libraries to try, in order. HIVE_LIBKRUN is exclusive: when the user names one, hive does
  * not quietly fall back to another. Without it the system soname comes first, then the bundled
@@ -38,13 +43,15 @@ export function libkrunCandidates(
   env: NodeJS.ProcessEnv,
   bundle: string | undefined,
   exists: (p: string) => boolean = existsSync,
+  platform: NodeJS.Platform = process.platform,
 ): LibkrunCandidate[] {
   const custom = env.HIVE_LIBKRUN;
   if (custom) return [{ path: custom, source: "custom" }];
 
-  const candidates: LibkrunCandidate[] = [{ path: "libkrun.so.1", source: "system" }];
+  const name = libkrunName(platform);
+  const candidates: LibkrunCandidate[] = [{ path: name, source: "system" }];
   if (bundle) {
-    const bundled = join(bundle, "lib", "libkrun.so.1");
+    const bundled = join(bundle, "lib", name);
     if (exists(bundled)) candidates.push({ path: bundled, source: "bundled" });
   }
   return candidates;

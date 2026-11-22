@@ -1,14 +1,18 @@
 /**
- * Runs commands in a throwaway sandbox: a libkrun microVM launched directly by vm/hive-vm inside
- * a pasta network namespace. The sandbox gets only the mounts and env vars passed in; the host's
- * SSH keys, gh login and .env never enter it.
+ * Runs commands in a throwaway sandbox: a libkrun microVM launched directly by vm/hive-vm. On
+ * Linux the launcher runs inside a pasta network namespace that forwards exactly the egress
+ * proxy's port; on macOS there is no pasta, so the VM boots with its implicit TSI device disabled
+ * and one vsock port mapped to a socket this process serves (src/vsock.ts). Either way the VM
+ * reaches only hive's egress proxy, and the sandbox gets only the mounts and env vars passed in:
+ * the host's SSH keys, gh login and .env never enter it.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import { config } from "./config.js";
-import { sharedEgressProxy } from "./egress.js";
+import { proxyEnv, sharedEgressProxy } from "./egress.js";
+import { GUEST_PROXY_PORT, startVsockBridge, VSOCK_PORT, type VsockBridge } from "./vsock.js";
 import { followJsonl } from "./follow.js";
 import { fixFor, hostInfo } from "./fixes.js";
 import { libkrunChoice, libkrunLabel } from "./libkrun.js";
@@ -23,13 +27,29 @@ export interface RuntimeInfo {
   warning?: string;
 }
 
-function kvmUsable(): boolean {
+/**
+ * Hardware virtualization: /dev/kvm on Linux, Hypervisor.framework on macOS (Apple silicon only;
+ * sysctl kern.hv_support is 1 there and 0 when the Mac cannot run a VM).
+ */
+export function hardwareVirtualization(): boolean {
+  if (networkBackend() === "vsock") {
+    const r = spawnSync("sysctl", ["-n", "kern.hv_support"], { encoding: "utf8", timeout: 5_000 });
+    return r.status === 0 && r.stdout.trim() === "1";
+  }
   try {
     accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * How a VM's only network path is built here: pasta on Linux, one mapped vsock port on macOS.
+ * The platform is a parameter so tests can check both without running on both.
+ */
+export function networkBackend(platform: NodeJS.Platform = process.platform): "pasta" | "vsock" {
+  return platform === "darwin" ? "vsock" : "pasta";
 }
 
 /** Sandbox memory string ("512m", "1g", "768") in MiB. */
@@ -75,13 +95,22 @@ function resolvConf(): string {
   }
 }
 
-/** True when the direct libkrun backend can run: /dev/kvm, launcher, rootfs, pasta and libkrun. */
+/**
+ * True when the libkrun backend can run here: hardware virtualization, the launcher, the VM
+ * filesystem and libkrun. Linux also needs pasta; macOS needs a root disk image instead of a
+ * rootfs directory (docs/MACOS.md).
+ */
 export function libkrunAvailable(): boolean {
   try {
-    if (!kvmUsable()) return false;
+    if (!hardwareVirtualization()) return false;
     if (!existsSync(config.sandbox.vmBin)) return false;
-    if (!existsSync(join(realpathSync(config.sandbox.rootfs), "usr/local/bin/hive-vm-init"))) return false;
-    if (!pastaChoice().ok) return false;
+    const rootfs = realpathSync(config.sandbox.rootfs);
+    if (networkBackend() === "vsock") {
+      if (!statSync(rootfs).isFile()) return false;
+    } else {
+      if (!existsSync(join(rootfs, "usr/local/bin/hive-vm-init"))) return false;
+      if (!pastaChoice().ok) return false;
+    }
     return libkrunChoice().ok;
   } catch {
     return false;
@@ -100,7 +129,9 @@ export function detectRuntime(): RuntimeInfo {
     isolation: "unavailable",
     warning: problems.length
       ? problems.join(" ")
-      : "libkrun is not available: a microVM needs /dev/kvm, pasta, libkrun, the launcher and the rootfs.",
+      : networkBackend() === "vsock"
+        ? "libkrun is not available: a microVM on macOS needs Hypervisor.framework, libkrun, the launcher and the VM image."
+        : "libkrun is not available: a microVM needs /dev/kvm, pasta, libkrun, the launcher and the rootfs.",
   };
 }
 
@@ -184,6 +215,65 @@ export function buildLibkrunCommand(
   return { file: p.pastaBin ?? "pasta", args };
 }
 
+/**
+ * The launcher argv for a macOS VM: no pasta, one vsock port mapped to the bridge socket, the VM
+ * image attached read-only, and the pidfile and owner pid the launcher needs to clean up after a
+ * crashed hive. Env values still travel via the child's env, never here.
+ */
+export interface DirectLaunch {
+  vmBin: string;
+  rootfs: string;
+  cpus: number;
+  memoryMiB: number;
+  timeoutSec: number;
+  /** where the launcher sends its own stderr, including libkrun's log lines */
+  stderrFile: string;
+  /** the short UNIX socket the launcher maps the guest's proxy port to */
+  vsockSocket: string;
+  /** the hive process the launcher stops the VM for when it dies */
+  watchPid?: number;
+  /** records the launcher's pid in the run folder for a later cleanup */
+  pidFile?: string;
+}
+
+export function buildDirectCommand(opts: SandboxOptions, p: DirectLaunch): { file: string; args: string[] } {
+  const args = [
+    "--rootfs", p.rootfs,
+    "--cpus", String(p.cpus),
+    "--memory", String(p.memoryMiB),
+    "--timeout", String(p.timeoutSec),
+    "--stderr-file", p.stderrFile,
+    "--vsock", `${VSOCK_PORT}:${p.vsockSocket}`,
+  ];
+  if (p.pidFile) args.push("--pidfile", p.pidFile);
+  if (p.watchPid !== undefined) args.push("--watch-pid", String(p.watchPid));
+  for (const m of opts.mounts) args.push("--share", `${m.host}:${m.container}${m.ro ? ":ro" : ""}`);
+  for (const name of Object.keys(opts.env)) args.push("--env", name);
+  args.push("--workdir", "/work", "--", ...opts.command);
+  return { file: p.vmBin, args };
+}
+
+function spawnDirect(opts: SandboxOptions, bridge: VsockBridge) {
+  const { sandbox } = config;
+  const cmd = buildDirectCommand(opts, {
+    vmBin: sandbox.vmBin,
+    rootfs: realpathSync(sandbox.rootfs),
+    cpus: Number.parseInt(sandbox.cpus, 10),
+    memoryMiB: parseMemoryMiB(sandbox.memory),
+    timeoutSec: sandbox.timeoutMin * 60,
+    stderrFile: `${opts.ioDir}.launcher.log`,
+    vsockSocket: bridge.socketPath,
+    watchPid: process.pid,
+    pidFile: `${opts.ioDir}.vm.pid`,
+  });
+  // The launcher reads HIVE_LIBKRUN from its own env.
+  return spawn(cmd.file, cmd.args, {
+    env: { ...process.env, ...opts.env, HIVE_LIBKRUN: libkrunChoice().path },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+}
+
 function spawnLibkrun(opts: SandboxOptions, proxyPort?: number) {
   const { sandbox } = config;
   const cmd = buildLibkrunCommand(opts, {
@@ -235,15 +325,20 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   if (opts.mounts.length + 1 > MAX_SHARES) {
     throw new Error(`too many shared folders for one VM: ${opts.mounts.length + 1} (libkrun supports ${MAX_SHARES})`);
   }
-  // The proxy must be listening before pasta forwards its port, so this has to happen before the
-  // VM is spawned: that is what makes runSandbox async.
+  // The proxy must be listening before pasta forwards its port or the bridge opens its socket, so
+  // this has to happen before the VM is spawned: that is what makes runSandbox async.
+  const vsock = networkBackend() === "vsock";
   let proxyPort: number | undefined;
   let env = opts.env;
   if (sandbox.network === "proxy") {
     const proxy = await sharedEgressProxy();
     proxyPort = proxy.port;
-    // Names are passed to the launcher as --env NAME; values ride in the child's environment.
-    env = { ...opts.env, ...proxy.env };
+    // Names are passed to the launcher as --env NAME; values ride in the child's environment. On
+    // macOS the guest's proxy is on its own loopback, relayed over vsock by hive-netd.
+    env = { ...opts.env, ...(vsock ? proxyEnv(`http://127.0.0.1:${GUEST_PROXY_PORT}`) : proxy.env) };
+  }
+  if (vsock && proxyPort === undefined) {
+    throw new Error("a macOS VM's only network path is hive's egress proxy (HIVE_NETWORK=direct is not supported)");
   }
   resetIoDir(ioDir);
   const launch: SandboxOptions = {
@@ -263,7 +358,16 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
       }
     });
   }
-  const child = spawnLibkrun(launch, proxyPort);
+  // The bridge listens before the launcher starts, so the guest's first connection is never
+  // refused. It lives only as long as the VM.
+  const bridge = vsock ? await startVsockBridge(proxyPort as number) : undefined;
+  let child: ReturnType<typeof spawnLibkrun>;
+  try {
+    child = vsock ? spawnDirect(launch, bridge as VsockBridge) : spawnLibkrun(launch, proxyPort);
+  } catch (err) {
+    await bridge?.close();
+    throw err;
+  }
 
   // Stdout and stderr are only kept as a tail for error messages; events come from io/events.jsonl.
   let stdoutTail = "";
@@ -287,12 +391,14 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
     child.on("error", (err) => {
       clearTimeout(timer);
       follower?.stop();
+      void bridge?.close();
       resolve({ code: 127, stdout: stdoutTail, stderr: `${stderrTail}\n${err.message}`, timedOut: false });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
       // stop() does a last poll, so events written just before exit still arrive.
       follower?.stop();
+      void bridge?.close();
       // The launcher's own errors come first: when the VM never booted, they are the only clue.
       // Its log lives outside io/, so this is host-trusted text, then the VM's stderr.log.
       const parts = [
@@ -307,18 +413,20 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   });
 
   const stop = async () => {
-    if (child.exitCode !== null) return;
-    killGroup(child.pid, "SIGTERM");
-    await new Promise<void>((resolve) => {
-      const t = setTimeout(() => {
-        if (child.exitCode === null) killGroup(child.pid, "SIGKILL");
-        resolve();
-      }, 3000);
-      child.once("close", () => {
-        clearTimeout(t);
-        resolve();
+    if (child.exitCode === null) {
+      killGroup(child.pid, "SIGTERM");
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(() => {
+          if (child.exitCode === null) killGroup(child.pid, "SIGKILL");
+          resolve();
+        }, 3000);
+        child.once("close", () => {
+          clearTimeout(t);
+          resolve();
+        });
       });
-    });
+    }
+    await bridge?.close();
   };
 
   return { done, stop };
@@ -365,18 +473,28 @@ export function systemInfo(): {
   checks: SystemCheck[];
 } {
   const checks: SystemCheck[] = [];
-  let kvm = "ok";
-  try {
-    accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
-  } catch (err) {
-    kvm = (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "no access";
+  if (networkBackend() === "vsock") {
+    const hvf = hardwareVirtualization();
+    checks.push({
+      name: "Hardware virtualization",
+      id: "kvm",
+      ok: hvf,
+      detail: hvf ? "Hypervisor.framework (HVF)" : "Hypervisor.framework is not available (kern.hv_support is not 1)",
+    });
+  } else {
+    let kvm = "ok";
+    try {
+      accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
+    } catch (err) {
+      kvm = (err as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "no access";
+    }
+    checks.push({
+      name: "Hardware virtualization",
+      id: "kvm",
+      ok: kvm === "ok",
+      detail: kvm === "ok" ? "/dev/kvm" : `/dev/kvm: ${kvm}`,
+    });
   }
-  checks.push({
-    name: "Hardware virtualization",
-    id: "kvm",
-    ok: kvm === "ok",
-    detail: kvm === "ok" ? "/dev/kvm" : `/dev/kvm: ${kvm}`,
-  });
   const launcher = existsSync(config.sandbox.vmBin);
   const libkrun = libkrunChoice();
   checks.push({
@@ -389,19 +507,32 @@ export function systemInfo(): {
     config.sandbox.network === "proxy"
       ? "VMs reach the internet through hive's proxy, not this computer or the local network"
       : "VMs reach the internet and the local network, not this computer (HIVE_NETWORK=direct)";
-  const pasta = pastaChoice();
-  checks.push({
-    name: "pasta (network isolation)",
-    id: "pasta",
-    ok: pasta.ok,
-    detail: pasta.ok ? `${pastaLabel(pasta)} (${pasta.path}): ${networkText}` : networkText,
-  });
+  if (networkBackend() === "vsock") {
+    checks.push({
+      name: "vsock egress (network isolation)",
+      id: "network",
+      ok: true,
+      detail:
+        "one vsock port to hive's proxy: the VM has no IP network and no DNS, and reaches only the proxy (HIVE_NETWORK=proxy)",
+    });
+  } else {
+    const pasta = pastaChoice();
+    checks.push({
+      name: "pasta (network isolation)",
+      id: "pasta",
+      ok: pasta.ok,
+      detail: pasta.ok ? `${pastaLabel(pasta)} (${pasta.path}): ${networkText}` : networkText,
+    });
+  }
   checks.push({ name: "VM launcher", id: "launcher", ok: launcher, detail: config.sandbox.vmBin });
   let rootfs = config.sandbox.rootfs;
   let rootfsOk = false;
   try {
     rootfs = realpathSync(config.sandbox.rootfs);
-    rootfsOk = existsSync(join(rootfs, "usr/local/bin/hive-vm-init"));
+    rootfsOk =
+      networkBackend() === "vsock"
+        ? statSync(rootfs).isFile()
+        : existsSync(join(rootfs, "usr/local/bin/hive-vm-init"));
   } catch {
     rootfsOk = false;
   }
@@ -420,7 +551,11 @@ export function checkSandbox(): string[] {
     problems.push(`libkrun launcher ${config.sandbox.vmBin} not found; build it with: npm run build:vm`);
   }
   if (!existsSync(config.sandbox.rootfs)) {
-    problems.push(`libkrun rootfs ${config.sandbox.rootfs} not found; create it with: npm run build:rootfs`);
+    problems.push(
+      networkBackend() === "vsock"
+        ? `VM image ${config.sandbox.rootfs} not found; see docs/MACOS.md`
+        : `libkrun rootfs ${config.sandbox.rootfs} not found; create it with: npm run build:rootfs`,
+    );
   }
   return problems;
 }

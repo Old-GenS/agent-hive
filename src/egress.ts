@@ -371,17 +371,7 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
 
   const { port } = server.address() as AddressInfo;
   const url = `http://127.0.0.1:${port}`;
-  const noProxy = "localhost,127.0.0.1,::1";
-  const env: Record<string, string> = {
-    HTTP_PROXY: url,
-    HTTPS_PROXY: url,
-    http_proxy: url,
-    https_proxy: url,
-    NO_PROXY: noProxy,
-    no_proxy: noProxy,
-    // Node 24's fetch and http honour the proxy variables only with this set; pi runs on Node 24.
-    NODE_USE_ENV_PROXY: "1",
-  };
+  const env = proxyEnv(url);
 
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -395,6 +385,25 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
   };
 
   return { port, url, env, close };
+}
+
+/**
+ * The proxy variables every tool in a VM gets, for a proxy at `url`. On Linux that is the host's
+ * own port (pasta forwards exactly that one); on macOS it is the guest's side of the vsock bridge
+ * (hive-netd listens on 127.0.0.1:3128 inside the VM).
+ */
+export function proxyEnv(url: string): Record<string, string> {
+  const noProxy = "localhost,127.0.0.1,::1";
+  return {
+    HTTP_PROXY: url,
+    HTTPS_PROXY: url,
+    http_proxy: url,
+    https_proxy: url,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    // Node 24's fetch and http honour the proxy variables only with this set; pi runs on Node 24.
+    NODE_USE_ENV_PROXY: "1",
+  };
 }
 
 let shared: Promise<EgressProxy> | undefined;

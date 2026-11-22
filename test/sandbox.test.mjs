@@ -4,7 +4,15 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MAX_SHARES, buildLibkrunCommand, hostNameserver, parseMemoryMiB, runSandbox } from "../dist/sandbox.js";
+import {
+  MAX_SHARES,
+  buildDirectCommand,
+  buildLibkrunCommand,
+  hostNameserver,
+  networkBackend,
+  parseMemoryMiB,
+  runSandbox,
+} from "../dist/sandbox.js";
 
 test("parseMemoryMiB", () => {
   assert.equal(parseMemoryMiB("512m"), 512);
@@ -112,6 +120,75 @@ test("buildLibkrunCommand runs the pasta binary it is given", () => {
     },
   );
   assert.equal(cmd.file, "/b/libexec/pasta");
+});
+
+test("buildDirectCommand builds the macOS launcher argv without pasta or DNS", () => {
+  const cmd = buildDirectCommand(
+    {
+      name: "hive-test",
+      mounts: [
+        { host: "/h/work", container: "/work" },
+        { host: "/h/s", container: "/session", ro: true },
+      ],
+      env: { OPENROUTER_API_KEY: "sk-or-secret" },
+      command: ["hive-agent", "--model", "m"],
+      ioDir: "/runs/io",
+    },
+    {
+      vmBin: "/opt/hive-vm",
+      rootfs: "/img/rootfs-test.img",
+      cpus: 2,
+      memoryMiB: 2048,
+      timeoutSec: 3600,
+      stderrFile: "/runs/io.launcher.log",
+      vsockSocket: "/tmp/hv-abcdef.sock",
+      watchPid: 4242,
+      pidFile: "/runs/io.vm.pid",
+    },
+  );
+  assert.equal(cmd.file, "/opt/hive-vm");
+  assert.deepEqual(cmd.args, [
+    "--rootfs", "/img/rootfs-test.img",
+    "--cpus", "2",
+    "--memory", "2048",
+    "--timeout", "3600",
+    "--stderr-file", "/runs/io.launcher.log",
+    "--vsock", "1024:/tmp/hv-abcdef.sock",
+    "--pidfile", "/runs/io.vm.pid",
+    "--watch-pid", "4242",
+    "--share", "/h/work:/work",
+    "--share", "/h/s:/session:ro",
+    "--env", "OPENROUTER_API_KEY",
+    "--workdir", "/work",
+    "--", "hive-agent", "--model", "m",
+  ]);
+  // No pasta and no DNS: the guest's only path is the mapped vsock port.
+  assert.ok(!cmd.args.join(" ").includes("pasta"));
+  assert.ok(!cmd.args.includes("--dns"));
+  // Env values still travel in the child's env, never in argv.
+  assert.ok(!cmd.args.join(" ").includes("sk-or-secret"));
+});
+
+test("buildDirectCommand leaves out the pidfile and owner pid when not given", () => {
+  const cmd = buildDirectCommand(
+    { name: "t", mounts: [], env: {}, command: ["true"], ioDir: "/runs/io" },
+    {
+      vmBin: "/opt/hive-vm",
+      rootfs: "/img/root.img",
+      cpus: 1,
+      memoryMiB: 1024,
+      timeoutSec: 60,
+      stderrFile: "/runs/io.launcher.log",
+      vsockSocket: "/tmp/hv-abcdef.sock",
+    },
+  );
+  assert.ok(!cmd.args.includes("--pidfile"));
+  assert.ok(!cmd.args.includes("--watch-pid"));
+});
+
+test("networkBackend picks vsock only on macOS", () => {
+  assert.equal(networkBackend("darwin"), "vsock");
+  assert.equal(networkBackend("linux"), "pasta");
 });
 
 test("buildLibkrunCommand leaves out --dns-host for a pasta without it", async () => {

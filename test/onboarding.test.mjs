@@ -44,10 +44,11 @@ test("GET /api/onboarding: a bare machine needs setup and has no key", async () 
   assert.equal(body.host.bundle, false);
   assert.equal(typeof body.host.distro, "string");
   assert.equal(typeof body.host.wsl, "boolean");
-  // The five checks, each with an id; a failing one carries its distro-aware fix.
+  // The five checks, each with an id; a failing one carries its distro-aware fix. The network
+  // check is pasta on Linux and one vsock port on macOS.
   assert.deepEqual(
     body.checks.map((check) => check.id),
-    ["kvm", "libkrun", "pasta", "launcher", "rootfs"],
+    ["kvm", "libkrun", process.platform === "darwin" ? "network" : "pasta", "launcher", "rootfs"],
   );
   for (const check of body.checks) {
     assert.equal(typeof check.name, "string");

@@ -13,29 +13,29 @@ const { libkrunCandidates, libkrunLabel, pickLibkrun } = await import("../dist/l
 const BUNDLE = "/opt/hive";
 
 test("libkrunCandidates: HIVE_LIBKRUN is the only candidate when set", () => {
-  assert.deepEqual(libkrunCandidates({ HIVE_LIBKRUN: "/custom/libkrun.so.1" }, BUNDLE, () => true), [
+  assert.deepEqual(libkrunCandidates({ HIVE_LIBKRUN: "/custom/libkrun.so.1" }, BUNDLE, () => true, "linux"), [
     { path: "/custom/libkrun.so.1", source: "custom" },
   ]);
 });
 
 test("libkrunCandidates: without a bundle the system libkrun is the only one", () => {
-  assert.deepEqual(libkrunCandidates({}, undefined), [{ path: "libkrun.so.1", source: "system" }]);
+  assert.deepEqual(libkrunCandidates({}, undefined, undefined, "linux"), [{ path: "libkrun.so.1", source: "system" }]);
 });
 
 test("libkrunCandidates: a bundle whose libkrun exists comes after the system one", () => {
   const bundled = join(BUNDLE, "lib", "libkrun.so.1");
-  assert.deepEqual(libkrunCandidates({}, BUNDLE, (p) => p === bundled), [
+  assert.deepEqual(libkrunCandidates({}, BUNDLE, (p) => p === bundled, "linux"), [
     { path: "libkrun.so.1", source: "system" },
     { path: bundled, source: "bundled" },
   ]);
 });
 
 test("libkrunCandidates: a bundle without libkrun is skipped", () => {
-  assert.deepEqual(libkrunCandidates({}, BUNDLE, () => false), [{ path: "libkrun.so.1", source: "system" }]);
+  assert.deepEqual(libkrunCandidates({}, BUNDLE, () => false, "linux"), [{ path: "libkrun.so.1", source: "system" }]);
 });
 
 test("pickLibkrun takes the first candidate the launcher accepts", () => {
-  const candidates = libkrunCandidates({}, BUNDLE, () => true);
+  const candidates = libkrunCandidates({}, BUNDLE, () => true, "linux");
   assert.deepEqual(pickLibkrun(candidates, (p) => p === "libkrun.so.1"), {
     path: "libkrun.so.1",
     source: "system",
@@ -49,12 +49,23 @@ test("pickLibkrun takes the first candidate the launcher accepts", () => {
 });
 
 test("pickLibkrun: none accepted gives the first candidate with ok false", () => {
-  const candidates = libkrunCandidates({}, BUNDLE, () => true);
+  const candidates = libkrunCandidates({}, BUNDLE, () => true, "linux");
   assert.deepEqual(pickLibkrun(candidates, () => false), {
     path: "libkrun.so.1",
     source: "system",
     ok: false,
   });
+});
+
+test("libkrunCandidates: macOS uses libkrun.1.dylib, system and bundled", () => {
+  assert.deepEqual(libkrunCandidates({}, undefined, () => false, "darwin"), [
+    { path: "libkrun.1.dylib", source: "system" },
+  ]);
+  const bundled = join(BUNDLE, "lib", "libkrun.1.dylib");
+  assert.deepEqual(libkrunCandidates({}, BUNDLE, (p) => p === bundled, "darwin"), [
+    { path: "libkrun.1.dylib", source: "system" },
+    { path: bundled, source: "bundled" },
+  ]);
 });
 
 test("libkrunLabel names every source", () => {
