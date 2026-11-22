@@ -71,7 +71,7 @@ jobs:
             fi
           done
           if [ -n "$reuse_tag" ]; then
-            gh release download "$reuse_tag" --repo "$repo" --pattern "rootfs-info.json" --dir "$prev"
+            gh release download "$reuse_tag" --repo "$repo" --pattern "rootfs-info.json" --dir "$prev" --clobber
           fi
 
           image_tree=$(git rev-parse HEAD:image)
