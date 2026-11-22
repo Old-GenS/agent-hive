@@ -9,7 +9,7 @@
 import { parseArgs } from "node:util";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, join } from "node:path";
 import { renderEvent, renderEventStyled, addUsage, emptyUsage } from "./render.js";
@@ -288,7 +288,7 @@ async function cmdRun(args: string[]): Promise<number> {
     console.error("hive: can't start a VM:");
     for (const problem of checkSandbox()) console.error(problem);
     console.error(
-      "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)",
+      sandboxRequirements(),
     );
     const rootfs = process.env.HIVE_ROOTFS;
     if (bundleRoot() && rootfs !== undefined && !existsSync(rootfs)) {
@@ -425,7 +425,7 @@ async function cmdNew(args: string[]): Promise<number> {
     console.error("hive: can't start a VM:");
     for (const problem of checkSandbox()) console.error(problem);
     console.error(
-      "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)",
+      sandboxRequirements(),
     );
     return 1;
   }
@@ -556,7 +556,7 @@ async function cmdContinue(args: string[]): Promise<number> {
     console.error("hive: can't start a VM:");
     for (const problem of checkSandbox()) console.error(problem);
     console.error(
-      "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)",
+      sandboxRequirements(),
     );
     return 1;
   }
@@ -1367,6 +1367,13 @@ async function cmdUninstall(args: string[]): Promise<number> {
   return finish(plan);
 }
 
+/** What a working sandbox needs on this platform, for the "can't start a VM" message. */
+function sandboxRequirements(): string {
+  return process.platform === "darwin"
+    ? "hive needs Hypervisor.framework (Apple silicon, macOS 14 or newer), libkrun, the launcher (npm run build:vm) and the VM image (docs/MACOS.md)"
+    : "hive needs /dev/kvm, pasta, libkrun, the launcher (npm run build:vm) and the rootfs (npm run build:rootfs)";
+}
+
 function kvmState(): "ok" | "missing" | "no access" {
   try {
     accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
@@ -1379,7 +1386,7 @@ function kvmState(): "ok" | "missing" | "no access" {
 async function cmdDoctor(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { config, providerInfo } = await import("./config.js");
-  const { libkrunAvailable } = await import("./sandbox.js");
+  const { hardwareVirtualization, libkrunAvailable, networkBackend } = await import("./sandbox.js");
   const { libkrunChoice, libkrunLabel } = await import("./libkrun.js");
   const { pastaChoice, pastaLabel } = await import("./pasta.js");
   const { currentVersion, readChannel } = await import("./release.js");
@@ -1395,9 +1402,15 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const checks: { ok: boolean; label: string; detail: string; id?: CheckId }[] = [];
   const notes: string[] = [];
 
-  const kvm = kvmState();
-  checks.push({ ok: kvm === "ok", id: "kvm", label: "/dev/kvm", detail: kvm });
-  if (kvm !== "ok") allOk = false;
+  if (networkBackend() === "vsock") {
+    const hvf = hardwareVirtualization();
+    checks.push({ ok: hvf, id: "kvm", label: "Hypervisor.framework", detail: hvf ? "ok" : "unavailable" });
+    if (!hvf) allOk = false;
+  } else {
+    const kvm = kvmState();
+    checks.push({ ok: kvm === "ok", id: "kvm", label: "/dev/kvm", detail: kvm });
+    if (kvm !== "ok") allOk = false;
+  }
 
   const libkrun = libkrunChoice();
   checks.push({
@@ -1408,14 +1421,19 @@ async function cmdDoctor(args: string[]): Promise<number> {
   });
   if (!libkrun.ok) allOk = false;
 
-  const pasta = pastaChoice();
-  checks.push({
-    ok: pasta.ok,
-    id: "pasta",
-    label: "pasta",
-    detail: pasta.ok ? `ok (${pastaLabel(pasta)}: ${pasta.path})` : "not found",
-  });
-  if (!pasta.ok) allOk = false;
+  if (networkBackend() === "vsock") {
+    // Nothing separate to install: the bridge lives in hive and the launcher maps the one port.
+    checks.push({ ok: true, id: "network", label: "vsock egress", detail: "ok (one port to hive's egress proxy)" });
+  } else {
+    const pasta = pastaChoice();
+    checks.push({
+      ok: pasta.ok,
+      id: "pasta",
+      label: "pasta",
+      detail: pasta.ok ? `ok (${pastaLabel(pasta)}: ${pasta.path})` : "not found",
+    });
+    if (!pasta.ok) allOk = false;
+  }
 
   const launcherOk = existsSync(config.sandbox.vmBin);
   checks.push({
@@ -1430,7 +1448,10 @@ async function cmdDoctor(args: string[]): Promise<number> {
   let rootfsPath = config.sandbox.rootfs;
   try {
     rootfsPath = realpathSync(config.sandbox.rootfs);
-    rootfsOk = existsSync(join(rootfsPath, "usr/local/bin/hive-vm-init"));
+    rootfsOk =
+      networkBackend() === "vsock"
+        ? statSync(rootfsPath).isFile()
+        : existsSync(join(rootfsPath, "usr/local/bin/hive-vm-init"));
   } catch {
     rootfsOk = false;
   }

@@ -1,9 +1,11 @@
 # macOS (Apple silicon)
 
-**Status: Phase 0 spike passed in November 2026; Phase 1 not started.** The networking piece
-was proven on an M4: libkrun boots a read-only ext4 image over virtio-blk with TSI disabled and one
-vsock port wired to hive's egress proxy, and the negative network tests hold. The rest of this
-document is still the plan. See [Phase 0 results](#phase-0-results) and
+**Status: Phase 0 (the spike) and Phase 1 (the product's networking) are done, both in November
+2026; Phase 2 (the arm64 VM image) and Phase 3 (platform plumbing) have not started.** On an M4,
+hive's own launcher boots a read-only ext4 image with the implicit vsock disabled and one vsock
+port wired to hive's egress proxy, and a real `runSandbox` run passes the negative network tests.
+The gap to `hive run` on a Mac is the arm64 Fedora image. See [Phase 0
+results](#phase-0-results), [Phase 1 results](#phase-1-results) and
 [`scripts/macos-spike/`](../scripts/macos-spike/README.md).
 
 hive runs the agent inside a libkrun microVM. On Linux the VM reaches the internet only through
@@ -45,10 +47,10 @@ macOS 27):
   account (US$99/year).
 - libkrunfw's aarch64 kernel has `EXT4_FS`, `EROFS_FS`, `SQUASHFS` and `VIRTIO_BLK` built in,
   and libkrun 1.19.8 has `krun_add_disk(..., read_only)`, so a read-only rootfs image is supported.
-- Current code assumptions that need a platform branch: `/dev/kvm` (`src/sandbox.ts:28`),
-  pasta (`src/pasta.ts`), `/proc` in `recoverRuns` (`src/runs.ts:258`), `du -B1`
-  (`src/diskwatch.ts:17`, GNU-only), and the `linux-x86_64` release asset names
-  (`src/release.ts:344`).
+- Phase 1 added the platform branches for `/dev/kvm` versus `kern.hv_support`, pasta versus
+  vsock, the dylib name and the VM image. Still open: `/proc` in `recoverRuns`
+  (`src/runs.ts:258`), `du -B1` (`src/diskwatch.ts:17`, GNU-only), the run-image lifecycle and
+  the `linux-x86_64` release asset names (`src/release.ts:344`) — Phase 3 and Phase 4.
 
 ## Why not pasta or gvproxy
 
@@ -313,6 +315,62 @@ not an implementation detail.
 **Exit criteria:** `hive run` on this Mac completes a real task from the read-only rootfs image,
 and the Phase 0 negative network tests still hold inside a hive run.
 
+### Phase 1 results
+
+Verified on the same M4 (macOS 27.0.1, build 26A434) with the Phase 0 Alpine image, extended with
+`hive-vm-init` and `hive-netd`. The arm64 Fedora image is Phase 2, so `hive run` itself has not run
+end to end yet; everything else is the product path. `runSandbox()` from `dist/sandbox.js` started
+`startEgressProxy()` → the vsock bridge → `vm/hive-vm --vsock 1024:/tmp/hv-….sock` →
+`hive-vm-init` → `hive-netd` → `curl -x http://127.0.0.1:3128`.
+
+| Check | Result |
+|---|---|
+| Boot | TSI off (`/proc/cmdline` has no `tsi_hijack`); only `lo` and a down `dummy0`; `/` is the ext4 image from `/dev/vda`, attached read-only |
+| Launcher | `kern.hv_support` = 1; ad-hoc signed with `com.apple.security.hypervisor` and `com.apple.security.cs.disable-library-validation` |
+| vsock | port 1024 → the host socket; `hive-netd` listens on 127.0.0.1:3128 inside the VM |
+| proxy | HTTP and HTTPS `example.com` → 200; `192.168.1.1` and `169.254.169.254` → 403 |
+| direct | LAN, public IP, hostname and ping all fail ("Could not connect", "Could not resolve host", "Network unreachable") |
+| cleanup | the bridge socket and the launcher's pidfile are gone when the VM exits |
+
+**What changed**
+
+- `vm/hive-vm.c`: `__APPLE__` guards for the virtualization check (`kern.hv_support` instead of
+  `/dev/kvm`) and the default dylib name (`libkrun.1.dylib`); `--rootfs` accepts a raw disk image,
+  attached read-only with `krun_add_disk` and mounted `ro` through `krun_set_root_disk_remount`;
+  `--vsock PORT:SOCKET` disables the implicit vsock, adds a TSI-free device and maps the port;
+  `--pidfile`; no port map on macOS. On macOS the launcher refuses a folder rootfs and refuses to
+  boot without `--vsock`, so the TSI path cannot be reached by accident.
+- `image/hive-netd.c` (new) and `image/hive-vm-init`: the guest listens on 127.0.0.1:3128 and
+  relays each connection over vsock; the launcher passes `HIVE_VSOCK_PORT`, and the init starts
+  netd only when it is set. `image/Containerfile` builds it static (`glibc-static`).
+- `src/vsock.ts` (new): a short `/tmp/hv-….sock` (0600) and a server that pipes each connection to
+  the egress proxy. `runSandbox` starts it for the VM's lifetime and closes it on exit, abort,
+  stall and timeout.
+- `src/sandbox.ts`: `networkBackend()` (pasta or vsock), `buildDirectCommand()`, the macOS spawn
+  path, `--watch-pid` (hive's own pid) and `--pidfile`, and the checks `systemInfo()` reports.
+- `src/egress.ts`: `proxyEnv(url)` builds the proxy variables for either path (the guest's own
+  port on macOS, the forwarded host port on Linux).
+- `src/libkrun.ts`, `src/config.ts`, `src/fixes.ts`: the macOS dylib name, `current.img`, no
+  `HIVE_NETWORK=direct` on macOS, and macOS wording for every failed check.
+- `src/cli.ts`: `hive doctor` shows Hypervisor.framework, the vsock egress and the VM image on a
+  Mac, and the "can't start a VM" message names what this platform needs.
+
+**Deviations and things Phase 2/3 must know**
+
+- libkrun loads its kernel bundle with `dlopen("libkrunfw.5.dylib")`, and dyld searches the system
+  paths only. The launcher now preloads `libkrunfw.5.dylib` from libkrun's own directory (or
+  `HIVE_LIBKRUNFW`), so the release bundle must keep the two dylibs together. Phase 4 still owns
+  `install_name_tool` and the re-sign.
+- `vm/build.sh` ad-hoc signs the launcher on macOS with `vm/hive-vm.entitlements`. A release build
+  needs the same two keys, and distribution needs a Developer ID (Phase 4).
+- `hive-vm-init` needs GNU coreutils' `env --chdir`; Fedora has it, Alpine's busybox does not. The
+  test image installed `coreutils`.
+- The launchd service, `recoverRuns` without `/proc`, a portable `du`, the case-sensitive run
+  image and the arm64 asset names are still Phase 3/4, and `hive run` waits for Phase 2's image.
+
+**Exit criteria:** met for the networking half (a real `runSandbox` VM with proxy-only egress and
+the Phase 0 negative tests). `hive run` end to end waits for the arm64 image.
+
 ### Phase 2 — arm64 rootfs image (2–3 days)
 
 - Build `image/` for `linux/arm64` (a `podman machine` or an `ubuntu-24.04-arm` CI job) and check
@@ -327,10 +385,11 @@ and the Phase 0 negative network tests still hold inside a hive run.
 
 ### Phase 3 — Hive platform plumbing (3–5 days)
 
-- **First, make `npm test` green on macOS.** Today 17 tests fail on this machine for four reasons:
-  `vm/hive-vm` is not built (skip instead of fail), `du -B1` (use `-k`), `/private/var` vs
-  `/var` in one test, and `rmSync` on a symlink to a directory (`ERR_FS_EISDIR`; use
-  `unlinkSync`). A red suite hides every macOS regression.
+- **First, make `npm test` green on macOS.** After Phase 1, 10 tests still fail here, all for
+  Phase 3/4 reasons: `du -B1` (four tests; use `-k` and multiply), `/private/var` vs `/var`
+  (two push tests), `rmSync` on a symlink to a directory (`ERR_FS_EISDIR`; use `unlinkSync`),
+  the uninstall test's systemd file name where macOS uses launchd, and two `install-cli.sh` tests
+  (the Linux installer refuses to run on macOS). A red suite hides every macOS regression.
 - `src/config.ts`: default network mode per platform; accept `HIVE_RUNTIME=auto` (the CLI
   currently rejects the documented default, `src/cli.ts:1743`).
 - `src/sandbox.ts` `libkrunAvailable()`/`systemInfo()`: HVF check, no pasta requirement, macOS
@@ -371,23 +430,29 @@ almost all of the risk; Phases 2–4 are packaging and filesystem plumbing.
 
 ## Changes by file
 
+Done in Phase 1 unless the row says otherwise.
+
 | File | Change |
 |---|---|
-| `vm/hive-vm.c` | HVF/dylib guards, vsock-only network mode, read-only rootfs image, pidfile, macOS flags |
+| `vm/hive-vm.c` | HVF/dylib guards, vsock-only network mode, read-only rootfs image, pidfile, macOS-safe flags |
+| `vm/hive-vm.entitlements` (new), `vm/build.sh` | the two HVF/library-validation entitlements, and an ad-hoc signature on macOS |
 | `image/hive-vm-init` | build the overlay over the read-only root image; start `hive-netd` |
 | `image/hive-netd.c` (new) | TCP `127.0.0.1:3128` → `AF_VSOCK` cid 2 |
-| `image/Containerfile` | build and install `hive-netd` for the guest architecture |
-| `vm/build-rootfs.sh`, `scripts/build-rootfs-image.sh` (new) | Linux folder rootfs unchanged; build and compress the macOS raw image |
-| `src/sandbox.ts` | macOS spawn path, unix-socket bridge, HVF check, rootfs image, disk accounting, labels |
-| `src/pasta.ts`, `src/libkrun.ts` | backend/dylib selection per platform |
-| `src/runs.ts` | `recoverRuns` without `/proc`; launcher pid |
-| `src/diskwatch.ts` | portable `du`; host free space while runs live on the image |
-| `src/config.ts`, `src/usage.ts`, `src/service.ts`, `src/uninstall.ts`, `src/release.ts` | platform branches, run-image attach/detach, image asset |
-| `src/cli.ts` | doctor/checks, `HIVE_RUNTIME` validation |
-| `install-cli.sh` / `install.sh` | macOS install and `update` path |
-| `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | build and sign |
-| `versions.json`, `scripts/check-updates.mjs` | arm64 pins |
-| `.github/workflows/` | macOS unit/build job; arm64 rootfs image; release assets |
+| `image/Containerfile` | build and install `hive-netd` (static) for the guest architecture |
+| `src/sandbox.ts` | macOS spawn path, HVF check, rootfs image, labels; `systemInfo()` checks |
+| `src/vsock.ts` (new) | the short host socket and the bridge to the egress proxy |
+| `src/egress.ts` | `proxyEnv()` for the guest's vsock port as well as the forwarded host port |
+| `src/pasta.ts`, `src/libkrun.ts` | dylib selection per platform (the pasta choice is only used on Linux) |
+| `src/config.ts`, `src/fixes.ts` | `current.img`, no `HIVE_NETWORK=direct` on macOS, macOS check wording |
+| `vm/build-rootfs.sh`, `scripts/build-rootfs-image.sh` (new) | **Phase 2:** Linux folder rootfs unchanged; build and compress the macOS raw image |
+| `src/runs.ts` | **Phase 3:** `recoverRuns` without `/proc`; launcher pid |
+| `src/diskwatch.ts` | **Phase 3:** portable `du`; host free space while runs live on the image |
+| `src/usage.ts`, `src/service.ts`, `src/uninstall.ts` | **Phase 3:** platform branches, run-image attach/detach; `hive uninstall` detaches it |
+| `src/release.ts`, `src/cli.ts` | **Phase 3/4:** image asset, macOS asset names, doctor/checks, `HIVE_RUNTIME` validation |
+| `install-cli.sh` / `install.sh` | **Phase 4:** macOS install and `update` path |
+| `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | **Phase 4:** build and sign |
+| `versions.json`, `scripts/check-updates.mjs` | **Phase 4:** arm64 pins |
+| `.github/workflows/` | **Phase 4:** macOS unit/build job; arm64 rootfs image; release assets |
 
 ## Risks
 

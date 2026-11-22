@@ -23,6 +23,17 @@ mount -t tmpfs -o mode=0755,size="${HIVE_TMPFS_SIZE:-50%}" hive-tmp /run/hive
 mkdir -p /run/hive/upper /run/hive/work "$R"
 mount -t overlay overlay -o "lowerdir=/,upperdir=/run/hive/upper,workdir=/run/hive/work" "$R"
 
+# A vsock-only VM (macOS) has no IP network and no DNS. hive-netd is its only way out: it listens
+# on 127.0.0.1:3128 and relays every connection over AF_VSOCK to the egress proxy the launcher
+# mapped. Started before the chroot because it needs no file from the new root.
+if [[ -n "${HIVE_VSOCK_PORT:-}" ]]; then
+  if [[ ! -x /usr/local/bin/hive-netd ]]; then
+    echo "hive-vm-init: HIVE_VSOCK_PORT is set but /usr/local/bin/hive-netd is missing" >&2
+    exit 1
+  fi
+  /usr/local/bin/hive-netd >>/run/hive/netd.log 2>&1 &
+fi
+
 for d in proc sys dev; do
   mount --rbind "/$d" "$R/$d"
 done

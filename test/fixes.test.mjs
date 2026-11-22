@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 // Before any dist module loads: hostInfo()'s bundle default must not pick up the test runner's env.
 delete process.env.HIVE_BUNDLE_ROOT;
 
-const { fixFor, hostInfo } = await import("../dist/fixes.js");
+const { fixFor, hostInfo: hostInfoOn } = await import("../dist/fixes.js");
+
+// These fixtures describe Linux hosts; the platform flag is what fixFor() branches on, and on a
+// macOS checkout hostInfo() would otherwise default to this computer's platform.
+const hostInfo = (o = {}) => hostInfoOn({ macos: false, ...o });
 
 const FEDORA = `NAME="Fedora Linux"\nID=fedora\nVERSION_ID=41\n`;
 const UBUNTU = `NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n`;
@@ -132,4 +136,18 @@ test("fixFor rootfs: a bundle downloads it, a checkout builds it", () => {
   const bundle = fixFor("rootfs", { ...fedora, bundle: true });
   assert.equal(bundle.command, "hive setup");
   assert.equal(fixFor("rootfs", { ...fedora, bundle: false }).command, "npm run build:image && npm run build:rootfs");
+});
+
+test("fixFor on macOS: Hypervisor.framework, libkrun, the VM image and the vsock bridge", () => {
+  const mac = hostInfoOn({ osRelease: "", procVersion: "", bundle: false, macos: true });
+  assert.match(fixFor("kvm", mac).text, /Apple silicon and macOS 14 or newer/);
+  assert.match(fixFor("libkrun", mac).command ?? "", /build-libkrun\.sh/);
+  assert.match(fixFor("libkrun", { ...mac, bundle: true }).text, /Reinstall hive|reinstall hive/);
+  const image = fixFor("rootfs", mac);
+  assert.equal(image.command, undefined);
+  assert.match(image.text, /arm64 ext4 disk image/);
+  assert.match(image.text, /cannot boot a rootfs folder/);
+  assert.equal(fixFor("rootfs", { ...mac, bundle: true }).command, "hive setup");
+  assert.match(fixFor("network", mac).text, /vsock egress bridge/);
+  assert.equal(fixFor("launcher", mac).command, "npm run build:vm");
 });

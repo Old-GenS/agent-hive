@@ -5,8 +5,9 @@
 A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 
 - **The main interface is the `hive` CLI** (`src/cli.ts`, `src/runs.ts`). It clones the current
-  repo, or a remote with `--repo`, and boots a libkrun VM with `vm/hive-vm` under pasta. The
-  prompt goes in as a file, the agent's events come out as a log file, and its commits come back
+  repo, or a remote with `--repo`, and boots a libkrun VM with `vm/hive-vm` under pasta (on
+  Linux; on macOS the VM has no IP network and one vsock port to the egress proxy). The prompt
+  goes in as a file, the agent's events come out as a log file, and its commits come back
   as patches. You then apply them, or push a branch and open a PR.
 - **The same engine also runs behind an optional HTTP server** (`hive serve`: `src/index.ts`,
   `src/web-runs.ts`) with a REST API and a web UI at `/ui/`. There is one run engine
@@ -53,8 +54,9 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/diskwatch.ts` | Disk watchdog: `du`-based size measurement and free-space checks that stop an agent step past `HIVE_RUN_DISK_MAX_GB` / below `HIVE_MIN_FREE_DISK_GB` |
 | `src/vmcache.ts` | Per-repo VM cache buckets: the repo identity key, the bucket a run mounts at `/root/.cache`, the `.used` markers and pruning of old buckets |
 | `src/openrouter.ts` | OpenRouter runs: pi's `models.json` from OpenRouter's model data, and a fixed provider order (maker first, then uptime, then price; low-precision endpoints skipped) |
-| `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
-| `src/egress.ts` | The egress proxy, the VM's only network path: pasta forwards its port to the host's loopback, and it resolves destinations itself and refuses non-public addresses (this computer, the local network) |
+| `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); on macOS the same wrapper starts the VM directly with one vsock port to `src/vsock.ts`; the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
+| `src/vsock.ts` | The macOS host side of vsock-only egress: a short `/tmp/hv-*.sock` (0600) that the launcher maps one guest vsock port to, piping every connection to the egress proxy; started and closed by `runSandbox` |
+| `src/egress.ts` | The egress proxy, the VM's only network path: pasta forwards its port to the host's loopback (or the vsock bridge does on macOS), and it resolves destinations itself and refuses non-public addresses (this computer, the local network) |
 | `src/libkrun.ts` | Which libkrun the launcher loads: `HIVE_LIBKRUN`, then the system one when `hive-vm --check` passes, then the bundled one; the label every isolation report uses |
 | `src/pasta.ts` | Which pasta each VM runs under: the system one when `pasta --version` works, else the static copy bundled in a release; the label every network-isolation report uses |
 | `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, URL, SHA-256, source), passt (version, URL, SHA-256), Rust, the manylinux build image digest and the bundled Node version |
@@ -75,8 +77,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/routes/keys.ts` | `/api/keys`: list (masked), add (tested first), test, remove and make-default provider keys for Settings › API keys |
 | `src/routes/settings.ts` | `/api/settings`: read the run settings and this computer, save a patch (400 field errors, 409 for env values), reset one setting to its default, for Settings › Runs |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
-| `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
-| `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
+| `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init), `hive-netd` (guest TCP → vsock relay, macOS) |
+| `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh` (ad-hoc signs on macOS), `hive-vm.entitlements`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
 | `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `nightly.yml` (daily signed nightly prerelease, reusing the tested rootfs when it is current); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
 | `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for releases) and `native-in-container.sh` (its manylinux_2_28 half), release build and signing |
@@ -89,7 +91,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `scripts/macos-spike/` | The Phase 0 macOS harness: libkrun build recipe, throwaway launcher, vsock/egress bridge and guest probes; not used by the product build |
 | `docs/INSTALL.md` | Every install route (Linux release, Windows, from source), what's needed, after installing, updating and uninstalling; the README keeps only the two one-liners |
 | `docs/WINDOWS.md` | The Windows/WSL2 guide: requirements, what `install.ps1` does, the env vars, `hive` from PowerShell versus inside WSL, where projects live, GitHub and the web UI, updating, uninstalling, troubleshooting and the manual install route |
-| `docs/MACOS.md` | The macOS plan: why the Linux network path doesn't carry over, the vsock-only egress design, the Phase 0 spike and its results, the phases, the file map and the risks |
+| `docs/MACOS.md` | macOS: why the Linux network path doesn't carry over, the vsock-only egress design, the Phase 0 spike and Phase 1 networking results, the remaining phases, the file map and the risks |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
 backend also `npm run build:vm` and `npm run build:rootfs`. For release-grade native builds
@@ -103,8 +105,9 @@ the pinned manylinux container from `versions.json`. Run the tests with `npm tes
    holds `origin/`, which the host pushes from). Keys are passed with `-e NAME` from the child env, never
    on the command line. Don't add host mounts or env vars casually. A VM can have at most 5 shared
    folders (libkrun's interrupt slots); `runSandbox` refuses more. The libkrun backend maps no guest ports to the
-   host and runs in a pasta namespace that cannot reach the host's loopback, gateway or own
-   addresses; its root is a read-only export of the image with an in-RAM overlay.
+   host. On Linux it runs in a pasta namespace that cannot reach the host's loopback, gateway or
+   own addresses; on macOS the VM has no IP network at all, and its one vsock port leads only to a
+   socket that pipes to the egress proxy. Its root is read-only with an in-RAM overlay.
 2. **The host never runs git in `work/`.** The agent controls `work/.git` (hooks, config,
    filters, fsmonitor). Host git runs only in `origin/`, which no sandbox mounts, with hooks
    disabled. Changes cross over only as patch files applied with `git am`. Exports (`exportRun`,
@@ -140,19 +143,21 @@ the pinned manylinux container from `versions.json`. Run the tests with `npm tes
     written so it cannot inject another `NAME=value` line.
 11. **A VM never outlives its time limit, and a crashed hive leaves no VM behind.** The launcher
     (`vm/hive-vm`) gets the time limit (`--timeout`) and stops the VM itself when it passes, even if
-    the CLI or server died. Its owner check (`--watch-pid`) exists but isn't used: under pasta the
-    launcher is in its own PID namespace and can't see the owner. Instead, at start the server and
-    the CLI run `recoverRuns()`: a run still marked running whose owner is gone has its leftover
-    `hive-vm` stopped and is marked "interrupted". The stall watchdog stops a run that makes no
-    progress for `HIVE_STALL_MIN` minutes.
+    the CLI or server died. Its owner check (`--watch-pid`) is used on macOS, where the launcher can
+    see hive; under pasta it is not, because the launcher is in its own PID namespace. Instead, at
+    start the server and the CLI run `recoverRuns()`: a run still marked running whose owner is gone
+    has its leftover `hive-vm` stopped and is marked "interrupted". The stall watchdog stops a run
+    that makes no progress for `HIVE_STALL_MIN` minutes.
 12. **A run's disk use is bounded.** `src/diskwatch.ts` stops an agent step once the run folder plus
     its cache bucket passes `HIVE_RUN_DISK_MAX_GB` or the disk holding the runs has less than
     `HIVE_MIN_FREE_DISK_GB` free. It measures with `du` without following symlinks.
 13. **The VM's only network path is hive's egress proxy** (`src/egress.ts`). pasta runs without
-    `--config-net` and forwards a single port to the proxy on the host's loopback; the proxy
-    resolves each destination, allows public addresses only (checked after resolving and connected
-    by address, so DNS rebinding cannot get around it) and carries HTTP/HTTPS only. `HIVE_NETWORK=direct`
-    is the explicit opt-out.
+    `--config-net` and forwards a single port to the proxy on the host's loopback. On macOS there
+    is no pasta: the launcher disables libkrun's implicit vsock device, maps one port to a short
+    `/tmp/hv-*.sock` that only pipes to the proxy (`src/vsock.ts`), and the guest's `hive-netd` is
+    the only forwarder. The proxy resolves each destination, allows public addresses only (checked
+    after resolving and connected by address, so DNS rebinding cannot get around it) and carries
+    HTTP/HTTPS only. `HIVE_NETWORK=direct` is the explicit opt-out, and only exists on Linux.
 
 ## GitHub access (server)
 
@@ -242,5 +247,5 @@ opens tested pin-bump PRs; Dependabot; a daily nightly prerelease (`.github/work
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
 - a VM size per run
-- macOS: Phase 0 passed (read-only ext4 image, TSI off, one vsock port to hive's egress proxy); the launcher build and the product plumbing are Phase 1
+- macOS: Phase 0 (the spike) and Phase 1 (launcher, `hive-netd`, the vsock bridge, platform checks) are done and verified on an M4; the arm64 VM image is Phase 2, and the platform plumbing (portable `du`, `/proc`-free recovery, the case-sensitive run image) is Phase 3
 - a per-run network allowlist

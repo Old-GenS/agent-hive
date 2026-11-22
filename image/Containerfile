@@ -12,7 +12,7 @@ RUN dnf -y install --setopt=install_weak_deps=False \
       nodejs24 nodejs24-bin nodejs24-npm nodejs24-npm-bin \
       chromium git-core findutils procps-ng which diffutils \
       ripgrep fd-find jq curl unzip tar gzip xz patch less file tree python3 \
-      gcc gcc-c++ make \
+      gcc gcc-c++ make glibc-static \
     && dnf clean all
 
 # pi runs as root in the VM, so it can dnf install what a task needs. That root is your own
@@ -26,6 +26,11 @@ RUN echo 'CHROMIUM_FLAGS+=" --no-sandbox"' >> /etc/chromium/chromium.conf
 # everything in the VM falls back to IPv4. hive-vm-init starts every command through it.
 COPY no-ipv6.c /tmp/no-ipv6.c
 RUN gcc -O2 -o /usr/local/bin/no-ipv6 /tmp/no-ipv6.c && rm /tmp/no-ipv6.c
+
+# The guest's only network path on a vsock-only VM (macOS): 127.0.0.1:3128 over AF_VSOCK to the
+# egress proxy. Static so it works before anything from the image is mounted or overlay-mounted.
+COPY hive-netd.c /tmp/hive-netd.c
+RUN gcc -O2 -static -o /usr/local/bin/hive-netd /tmp/hive-netd.c && rm /tmp/hive-netd.c
 
 # Pinned so a pi release can't change behaviour under a running deployment; bump deliberately.
 ARG PI_VERSION=1.6.0

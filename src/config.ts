@@ -115,6 +115,10 @@ export function resolveProvider(explicit?: string): string | undefined {
 function networkMode(): "proxy" | "direct" {
   const raw = process.env.HIVE_NETWORK || "proxy";
   if (raw !== "proxy" && raw !== "direct") throw new Error(`HIVE_NETWORK must be proxy or direct, got "${raw}"`);
+  // macOS has no pasta and no TSI: the VM's only path is one vsock port to the egress proxy.
+  if (process.platform === "darwin" && raw === "direct") {
+    throw new Error("HIVE_NETWORK=direct is not available on macOS: the VM's only network path is hive's egress proxy");
+  }
   return raw;
 }
 
@@ -155,7 +159,8 @@ export const config = {
     // minutes. 0 turns it off.
     stallMin: savedInt("HIVE_STALL_MIN", 15, 0),
     vmBin: process.env.HIVE_VM_BIN || resolve(repoRoot, "vm/hive-vm"),
-    rootfs: process.env.HIVE_ROOTFS || join(dataHome, "agent-hive/rootfs/current"),
+    // Linux mounts the rootfs folder; macOS attaches a read-only disk image (docs/MACOS.md).
+    rootfs: process.env.HIVE_ROOTFS || join(dataHome, `agent-hive/rootfs/current${process.platform === "darwin" ? ".img" : ""}`),
     // The value of HIVE_LIBKRUN, if the user forced one. The effective library is picked by
     // libkrunChoice() in src/libkrun.ts (custom, then a working system libkrun, then the bundled
     // one).

@@ -17,9 +17,11 @@ export interface HostInfo {
   wsl: boolean;
   /** Running from an installed release bundle rather than a source checkout. */
   bundle: boolean;
+  /** macOS (Apple silicon): different checks, different fixes (docs/MACOS.md). */
+  macos: boolean;
 }
 
-export type CheckId = "kvm" | "libkrun" | "pasta" | "launcher" | "rootfs";
+export type CheckId = "kvm" | "libkrun" | "pasta" | "network" | "launcher" | "rootfs";
 
 export interface Fix {
   /** One plain sentence: what to do. */
@@ -52,7 +54,9 @@ function osReleaseField(text: string, key: string): string | undefined {
  * whether hive is an installed release. Missing files give distro "unknown" and wsl false. Passing
  * the file contents in overrides the real files, so tests can use sample strings.
  */
-export function hostInfo(o: { osRelease?: string; procVersion?: string; bundle?: boolean } = {}): HostInfo {
+export function hostInfo(
+  o: { osRelease?: string; procVersion?: string; bundle?: boolean; macos?: boolean } = {},
+): HostInfo {
   let osRelease = o.osRelease;
   if (osRelease === undefined) {
     try {
@@ -79,6 +83,7 @@ export function hostInfo(o: { osRelease?: string; procVersion?: string; bundle?:
     distroLike,
     wsl: /microsoft|wsl/i.test(procVersion),
     bundle: o.bundle ?? bundleRoot() !== undefined,
+    macos: o.macos ?? process.platform === "darwin",
   };
 }
 
@@ -112,6 +117,11 @@ function pastaInstall(host: HostInfo): Fix {
 export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
   switch (check) {
     case "kvm":
+      if (host.macos) {
+        return {
+          text: "Hypervisor.framework is not available: hive needs Apple silicon and macOS 14 or newer (Intel Macs are out of scope).",
+        };
+      }
       if (host.wsl) {
         return {
           text: "Turn on nested virtualization: in %UserProfile%\\.wslconfig put nestedVirtualization=true under [wsl2], then run wsl --shutdown in Windows.",
@@ -126,6 +136,15 @@ export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
       };
 
     case "libkrun":
+      if (host.macos) {
+        if (host.bundle) {
+          return { text: "The libkrun bundled with hive didn't load; reinstall hive.", command: INSTALL_CLI };
+        }
+        return {
+          text: "Build libkrun 1.19.8 and libkrunfw for macOS, or install hive's release, which bundles them.",
+          command: "scripts/macos-spike/build-libkrun.sh",
+        };
+      }
       if (host.bundle) {
         // A release ships libkrun, so a failed load means the installation itself is broken.
         return { text: "The libkrun bundled with hive didn't load; reinstall hive.", command: INSTALL_CLI };
@@ -153,6 +172,11 @@ export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
       }
       return pastaInstall(host);
 
+    case "network":
+      return {
+        text: "The vsock egress bridge could not start; check that /tmp is writable and that libkrun 1.19.8 is installed.",
+      };
+
     case "launcher":
       if (host.bundle) {
         return { text: "Reinstall hive with the installer line from the README.", command: INSTALL_CLI };
@@ -160,6 +184,14 @@ export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
       return { text: "Build the VM launcher from this checkout.", command: "npm run build:vm" };
 
     case "rootfs":
+      if (host.macos) {
+        if (host.bundle) {
+          return { text: "Download the VM image with hive setup.", command: "hive setup" };
+        }
+        return {
+          text: "Build the macOS VM image (an arm64 ext4 disk image); macOS cannot boot a rootfs folder. See docs/MACOS.md, Phase 2.",
+        };
+      }
       if (host.bundle) {
         return { text: "Download the VM filesystem with hive setup.", command: "hive setup" };
       }
