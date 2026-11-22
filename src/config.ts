@@ -10,7 +10,12 @@ export { keysFilePath } from "./keys.js";
 // They win over saved keys and over .env values.
 export const shellEnv: Readonly<Record<string, string | undefined>> = { ...process.env };
 
-dotenv.config(process.env.HIVE_DOTENV_PATH ? { path: process.env.HIVE_DOTENV_PATH } : undefined);
+// dotenv 17+ logs every load (`◇ injected env (n) from .env`) to stderr by default; 16 was quiet
+// by default, so keep the server and CLI output as they were.
+dotenv.config({
+  quiet: true,
+  ...(process.env.HIVE_DOTENV_PATH ? { path: process.env.HIVE_DOTENV_PATH } : {}),
+});
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
