@@ -79,7 +79,8 @@ function Invoke-Program {
     $ErrorActionPreference = 'Continue'
     try {
         if ($Attached) {
-            & $FilePath @ArgumentList
+            # Shown live; Out-Host keeps it out of this function's return value.
+            & $FilePath @ArgumentList | Out-Host
             $lines = @()
         } else {
             $lines = @(& $FilePath @ArgumentList 2>&1)
