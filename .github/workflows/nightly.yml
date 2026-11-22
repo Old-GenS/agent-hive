@@ -2,8 +2,8 @@ name: Nightly prerelease
 
 on:
   schedule:
-    # TEMP: moved for one test run; restore to "41 5 * * *" (05:41 UTC) once it has fired.
-    - cron: "39 17 * * *"
+    # 19:00 America/Vancouver (03:00 UTC).
+    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       fresh_rootfs:
