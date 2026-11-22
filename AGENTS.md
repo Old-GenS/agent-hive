@@ -192,7 +192,7 @@ issue; follow-ups and a Continue button on failed or stopped runs; run managemen
 keep them, delete a finished run after a warning about unpushed commits, and Clear… finished runs
 in one go) and Settings (API keys: Add, Test, Make default, Remove; Runs: VM CPUs and memory, runs
 at once, time limit, stall time, disk limit and finished-run retention, saved to the keys file and
-applied without a restart; This computer, with the checks, GitHub, a live Resources section and
+applied without a restart; This computer, with the checks, a live Resources section and
 limits). First-run onboarding (`#setup`). Checked by
 `scripts/ui-smoke.mjs`.
 

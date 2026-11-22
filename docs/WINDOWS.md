@@ -90,7 +90,7 @@ once inside WSL:
 hive login github
 ```
 
-Or press **Connect GitHub** in the web UI's first-run setup (step 4) or Settings › This computer,
+Or press **Connect GitHub** in the web UI's first-run setup (step 4) or Settings › API keys,
 which shows the one-time code on the page. `gh auth login` inside WSL works too.
 
 (Your Windows `gh` login is not shared; see [GitHub access](SERVER.md#github-access) for the

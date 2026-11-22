@@ -466,7 +466,7 @@ try {
   assert(usageTiles === 5, `the Right now section has five tiles (got ${usageTiles})`);
   const cpuValue = await page.$eval("#usageSection .usage-tile .usage-value", (node) => (node.textContent ?? "").trim());
   assert(/^\d+(\.\d)?%$/.test(cpuValue), `the CPU tile shows a percentage (got ${JSON.stringify(cpuValue)})`);
-  await page.waitForSelector("#githubCard");
+  assert((await page.$$("#githubCard")).length === 0, "the GitHub login moved to Settings › API keys");
   await page.screenshot({ path: join(repoRoot, ".handoff", "ui-computer.png") });
 
   // ── theme toggle: light <-> dark, remembered; the user name is a tooltip on Log out ──

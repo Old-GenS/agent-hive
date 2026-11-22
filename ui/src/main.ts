@@ -2135,7 +2135,7 @@ function buildKeysPage(): HTMLElement {
   const formSlot = el("div");
   const tableSlot = el("div");
   const storageSlot = el("div");
-  content.append(head, lead, errorSlot, formSlot, tableSlot, storageSlot);
+  content.append(head, lead, errorSlot, formSlot, tableSlot, githubSection(), storageSlot);
 
   let data: KeysResponse | null = null;
   let failed = false;
@@ -2923,7 +2923,7 @@ function buildComputerPage(): HTMLElement {
     try {
       const res = await api("/api/system");
       if (!res.ok) throw new Error(String(res.status));
-      body.replaceChildren(...computerSections((await res.json()) as SystemInfo, () => void load()));
+      body.replaceChildren(...computerSections((await res.json()) as SystemInfo));
       const section = body.querySelector<HTMLElement>("#usageSection");
       if (section) startUsagePolling(section);
     } catch {
@@ -2933,7 +2933,67 @@ function buildComputerPage(): HTMLElement {
   return content;
 }
 
-function computerSections(info: SystemInfo, refreshGithub: () => void): HTMLElement[] {
+/**
+ * Settings › API keys' GitHub section: the server's gh login, or Connect GitHub. It loads
+ * /api/system itself (the login and the git protocol) and reloads after connecting.
+ */
+function githubSection(): HTMLElement {
+  const slot = el("div", { id: "githubSection" }, el("p", { class: "cell-muted" }, "Checking GitHub…"));
+  const load = async (): Promise<void> => {
+    try {
+      const res = await api("/api/system");
+      if (!res.ok) throw new Error(String(res.status));
+      slot.replaceChildren(githubCard((await res.json()) as SystemInfo, () => void load()));
+    } catch {
+      slot.replaceChildren(el("p", { class: "alert alert-danger" }, "Couldn't check the GitHub login."));
+    }
+  };
+  void load();
+  return el("div", {}, el("h2", { class: "section-title" }, "GitHub"), slot);
+}
+
+function githubCard(info: SystemInfo, refreshGithub: () => void): HTMLElement {
+  const gh = info.github;
+  const ghCard = el(
+    "div",
+    { class: "card github-card", id: "githubCard" },
+    el(
+      "div",
+      { class: "github-head" },
+      el("span", { class: "github-account" }, gh?.connected && gh.login ? gh.login : "Not connected"),
+      el("span", { class: `pill ${gh?.connected ? "pill-ok" : "pill-danger"}` }, gh?.connected ? "Connected" : "Not connected"),
+    ),
+  );
+  if (gh?.connected) {
+    ghCard.append(
+      el(
+        "p",
+        { class: "github-detail" },
+        `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`,
+      ),
+    );
+  } else {
+    ghCard.append(
+      el(
+        "p",
+        { class: "github-detail" },
+        "Connect GitHub so runs can clone private repos, push branches and open pull requests.",
+      ),
+      githubConnect({ refresh: refreshGithub }),
+    );
+  }
+  ghCard.append(
+    el(
+      "p",
+      { class: "github-detail" },
+      el("a", { href: "https://www.githubstatus.com/", target: "_blank", rel: "noopener noreferrer" }, "GitHub service status"),
+    ),
+  );
+
+  return ghCard;
+}
+
+function computerSections(info: SystemInfo): HTMLElement[] {
   const strong = info.isolation === "microvm";
   const summary = el(
     "div",
@@ -2988,47 +3048,8 @@ function computerSections(info: SystemInfo, refreshGithub: () => void): HTMLElem
   const list = el("dl", { class: "facts" });
   for (const [term, value] of facts) list.append(el("div", { class: "fact" }, el("dt", {}, term), el("dd", {}, value)));
 
-  const gh = info.github;
-  const ghCard = el(
-    "div",
-    { class: "card github-card", id: "githubCard" },
-    el(
-      "div",
-      { class: "github-head" },
-      el("span", { class: "github-account" }, gh?.connected && gh.login ? gh.login : "Not connected"),
-      el("span", { class: `pill ${gh?.connected ? "pill-ok" : "pill-danger"}` }, gh?.connected ? "Connected" : "Not connected"),
-    ),
-  );
-  if (gh?.connected) {
-    ghCard.append(
-      el(
-        "p",
-        { class: "github-detail" },
-        `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`,
-      ),
-    );
-  } else {
-    ghCard.append(
-      el(
-        "p",
-        { class: "github-detail" },
-        "Connect GitHub so runs can clone private repos, push branches and open pull requests.",
-      ),
-      githubConnect({ refresh: refreshGithub }),
-    );
-  }
-  ghCard.append(
-    el(
-      "p",
-      { class: "github-detail" },
-      el("a", { href: "https://www.githubstatus.com/", target: "_blank", rel: "noopener noreferrer" }, "GitHub service status"),
-    ),
-  );
-
   return [
     summary,
-    el("h2", { class: "section-title" }, "GitHub"),
-    ghCard,
     el("h2", { class: "section-title" }, "Checks"),
     el("div", { class: "table-wrap" }, table),
     usageSection(),
