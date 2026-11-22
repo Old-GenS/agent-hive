@@ -70,9 +70,6 @@ jobs:
           - \`$name\`: $current → $latest
           - Source: $source
 
-          Merges automatically when CI passes, including the real VM test, and lands in the
-          next dev build.")
+          CI (including the real VM test) runs on it; merge it by hand when it's green.")
             gh workflow run ci.yml --ref "$branch"
-            gh label create automerge --color 0e8a16 --description "Merged by automerge.yml once CI passes" --force
-            gh pr edit "$url" --add-label automerge
           done

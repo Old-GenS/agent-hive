@@ -27,8 +27,8 @@ Every pinned version lives in one place (`versions.json`, `image/Containerfile`,
 - **Every change is tested on a real VM before it merges.** CI builds the whole release, boots it
   with KVM and checks HTTPS through the egress proxy, that the local network and cloud metadata
   addresses are refused, that headless Chromium loads a page, that DNS works, and that a run
-  reaches the model API. Updates that pass merge by themselves; major versions wait for the
-  maintainer; anything that fails stays open.
+  reaches the model API. Nothing merges by itself: the maintainer merges each update once its
+  checks are green; anything that fails stays open.
 - **The VM filesystem is refreshed when it needs it:** the daily build checks the current one for
   pending Fedora updates and rebuilds it straight away for security fixes, or after 14 days for
   other updates. Otherwise it is reused, so you don't download 660 MB for nothing.

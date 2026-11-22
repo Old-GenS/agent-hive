@@ -102,7 +102,7 @@ until a newer one passes that check.
 `.github/workflows/` keeps `main` at the newest upstream pins and publishes a signed dev
 prerelease every day. Stable releases stay manual. The GitHub side is already set up: the
 `beta-release` environment (kept under its old name) holding the `BETA_SIGNING_KEY` secret,
-auto-merge enabled, and Actions allowed to create pull requests.
+and Actions allowed to create pull requests.
 
 ### Two signing keys
 
@@ -123,16 +123,14 @@ installs keep trusting the previous prerelease key until they update.
 
 ### Branches and pull requests
 
-- `main` is the only branch. Every change — yours, the daily update check's pull requests,
-  Dependabot's — lands on `main` through a pull request that merges automatically once the required
-  `test` and `vm` checks pass.
-- Dependabot's major updates wait for a human (`dependabot-automerge.yml` skips
-  `version-update:semver-major`).
+- `main` is the only branch. The maintainer pushes to it directly; CI (`test`, `vm`,
+  `windows-installer`) runs on every push afterwards.
+- The daily update check and Dependabot open pull requests against `main`. Nothing merges
+  automatically: the maintainer merges each one by hand once its checks are green.
 - Pull requests opened with `GITHUB_TOKEN` don't start workflows on their own, so the bump workflow
-  dispatches `ci.yml` on its branch before enabling auto-merge; that run's checks land on the same
-  commit.
-- The maintainer sets `main` branch protection: required checks `test` and `vm`, auto-merge
-  allowed.
+  dispatches `ci.yml` on its branch; that run's checks show on the pull request.
+- A `main` ruleset blocks deleting the branch and force-pushes; it does not require checks, so
+  every account with write access can push.
 
 ### The daily bump check
 
