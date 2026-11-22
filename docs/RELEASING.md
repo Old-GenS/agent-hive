@@ -124,9 +124,11 @@ nightly installs keep trusting the previous prerelease key until they update.
 
 ### Branches and pull requests
 
-- `main` is the only branch. The repository's `main` ruleset requires the `test`, `vm` and
-  `windows-installer` checks and blocks force-pushes and deletion; repository admins bypass it, so
-  the maintainer pushes directly from either machine.
+- `main` is the only branch, and nobody pushes to it directly: the `main` ruleset requires a pull
+  request plus the `test`, `vm` and `windows-installer` checks, and blocks force-pushes and
+  deletion. It has no bypass list, so the maintainer's own changes take the same route. Pull
+  requests need no approval (the checks are the gate) and merge through GitHub's auto-merge as
+  merge commits.
 - The update automation goes through pull requests, merged by **GitHub's auto-merge** (the
   repository setting, enabled per pull request with `gh pr merge --auto`): GitHub waits for the
   required checks and merges. There is no merge workflow of our own.
