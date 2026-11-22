@@ -1804,6 +1804,37 @@ a.btn {
   font-weight: 600;
 }
 
+/* Push again, inside the result banner after a failed push */
+.push-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  color: var(--text);
+}
+
+.push-actions .alert {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.push-actions .btn {
+  min-height: 44px;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.push-actions .github-connect,
+.github-scope-fix {
+  flex-basis: 100%;
+}
+
+.github-card .alert {
+  margin: 0;
+}
+
 /* Theme toggle in the header */
 .theme-btn {
   display: inline-flex;

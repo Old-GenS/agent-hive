@@ -135,6 +135,8 @@ export interface RunMeta {
   summary?: string;
   /** where `hive push` put the run's commits */
   pushed?: { branch: string; url: string; at: number };
+  /** the last automatic or manual push failed: `error` is its message */
+  pushError?: boolean;
   /** starred: never deleted by retention or Clear (the UI's ★, `hive keep`) */
   kept?: boolean;
   prUrl?: string;
@@ -761,7 +763,7 @@ export async function pushRun(
   try {
     commits = await applyAndPush(dir, meta.base, branch, false);
   } catch (err) {
-    throw new Error(`${(err as Error).message} (check your git credentials for ${url})`);
+    throw new Error(pushErrorText(err as Error, url));
   }
   meta.pushed = { branch, url, at: Date.now() };
   writeMeta(dir, meta);

@@ -78,9 +78,12 @@ the same fixes in the terminal.
   as Markdown, and each tool step. **Stop** ends the run.
 - **Follow-ups:** the message box under a finished run continues the same session.
 - **When it's done:** the agent's final message, the commits and files changed, and buttons for
-  **Open pull request**, **Download zip** and **Download report**. **Delete** removes a finished
-  run and its folder after a confirmation that also warns when its commits were never pushed.
-  Nothing is opened on GitHub until you click.
+  **Open pull request**, **Download zip** and **Download report**. If the push failed, the run's
+  banner says so and offers **Push again** (it retries the same host-side push, never the agent);
+  when GitHub refused it for the missing `workflow` scope, **Fix GitHub permission** starts the
+  device-code refresh right there. **Delete** removes a finished run and its folder after a
+  confirmation that also warns when its commits were never pushed. Nothing is opened on GitHub
+  until you click.
 - **Starring:** the ☆ button on any run stars it (★). Starred runs are skipped by retention,
   **Clear…** and `hive clean --all`; they can still be deleted one by one.
 - **Run list:** every run, from the web UI or the terminal, newest first, with its status and
@@ -101,7 +104,9 @@ repository.
 - **API keys:** each provider's key (masked), where it comes from, its default model, and which
   provider is the default. **Add key** tests a key before saving it; saved keys can be tested,
   made the default or removed. Below them, the **GitHub** login (with **Connect GitHub** when it
-  isn't connected: the same device-login flow as setup step 4).
+  isn't connected: the same device-login flow as setup step 4). A connected login that can't push
+  `.github/workflows` (it lacks the `workflow` scope) is shown with that warning and a **Fix**
+  button that refreshes the login's scopes through the same device-code flow.
 - **Runs:** the VM size (CPUs and memory per run), runs at once, the time limit, the stall time,
   the disk limit per run and how long finished runs are kept, checked against this computer's CPUs
   and RAM. Saved values apply to new runs without a restart; values set in the server's
@@ -117,7 +122,10 @@ The header has a light/dark toggle and Log out.
 By default the server clones and pushes over HTTPS with the machine's `gh` login, which also lists
 your repos, opens pull requests and creates new repositories. Log it in with **Connect GitHub** in
 the web UI (first-run setup or Settings › API keys), or with `hive login github`; each starts
-the GitHub CLI's device login and shows the one-time code. For several servers, per-repo SSH
+the GitHub CLI's device login and shows the one-time code. That login asks for the `workflow`
+scope, which GitHub requires for pushes that change `.github/workflows`; an older login without it
+can be fixed in Settings (the warning's **Fix** button, a `gh auth refresh` in the same device-code
+flow) or in a terminal with `gh auth refresh -h github.com -s workflow`. For several servers, per-repo SSH
 deploy keys and a separate bot account work too (`HIVE_GIT_PROTOCOL=ssh`); see
 [AGENTS.md](../AGENTS.md#github-access-server). The VM never gets any of these credentials.
 
@@ -134,13 +142,14 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | DELETE | `/session/:id` | Delete a finished run and its files (starred or not) |
 | PUT | `/session/:id/kept` | Star or unstar a run (`kept` boolean); returns `{sessionId, kept}`. Works on live runs |
 | POST | `/sessions/clear` | Delete finished runs in one go (`include`: `done` by default, or `finished`); skips live and starred runs; returns `{deleted, skipped}` |
+| POST | `/push/:id` | Push a finished run's commits again after a failed push (same host-side push as the end of a run); 404 unknown, 409 live or no commits, 400 with the push's error; returns `{sessionId, pushed: {branch, url, commits}}` |
 | POST | `/pr/:id` | Open a pull request from the run's branch; returns `{url}` |
 | POST | `/issue/:id` | Post a no-change run's write-up as a GitHub issue; returns `{url}` |
 | GET | `/export/:id?format=zip\|bundle\|report` | Download the result: a zip of the files, a git bundle of the commits (both built on the host from the run's patches), or a Markdown report |
 | POST | `/events/:id/ticket` | A one-time ticket (60 s) for the event stream |
 | WS | `/events/:id?ticket=…` | pi's events plus `hive_status` and `hive_done`; a finished run is replayed |
 | GET | `/capacity` | Runs running and queued |
-| GET | `/api/system` | Isolation setup, its checks, the `gh` login, limits |
+| GET | `/api/system` | Isolation setup, its checks, the `gh` login (`scopes`, and `canPushWorkflows`: true, false, or null when unknown), limits |
 | GET | `/api/system/usage` | Live CPU, memory, disk, temperature and runs |
 | GET | `/api/providers` | Default provider, model and thinking level, and which providers have a key |
 | GET | `/api/models?provider=` | Models to offer for a provider |
@@ -156,7 +165,7 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | DELETE | `/api/settings/:key` | Reset one setting to its `.env` value or default |
 | GET | `/api/github/repos` | Your repos (via `gh`) |
 | GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first |
-| POST | `/api/github/login` | Start the server's GitHub device login (200 with the state; `waiting` carries the one-time `code` and `url`) |
+| POST | `/api/github/login` | Start the server's GitHub device login (200 with the state; `waiting` carries the one-time `code` and `url`). An optional body `{"refresh": true}` runs `gh auth refresh` instead, to add the `workflow` scope |
 | GET | `/api/github/login` | The login's state: `idle`, `starting`, `waiting`, `done` (with `login`) or `error` |
 | DELETE | `/api/github/login` | Cancel a pending login and return `{state: "idle"}` |
 | GET | `/health` | Health check (no auth) |

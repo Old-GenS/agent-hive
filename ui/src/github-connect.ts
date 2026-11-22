@@ -16,10 +16,16 @@ interface GithubLoginState {
 }
 
 export interface GithubConnectOptions {
-  /** Reload the page's data after a login or **Check again**; the caller re-renders. */
-  refresh: () => void;
+  /** Reload the page's data after the flow or **Check again**; the caller re-renders. */
+  reload: () => void;
   /** id for the **Check again** button, when an existing page (or the UI smoke test) looks it up. */
   checkId?: string;
+  /**
+   * Run `gh auth refresh` for the workflow scope instead of a login: for a login that cannot push
+   * `.github/workflows`. The server needs only the body `{ "refresh": true }`, and the flow starts
+   * as soon as the control is shown (the person already clicked the warning's Fix button).
+   */
+  refresh?: boolean;
 }
 
 const DEVICE_URL = "https://github.com/login/device";
@@ -63,6 +69,7 @@ export function githubConnect(options: GithubConnectOptions): HTMLElement {
   }
 
   function terminalAlternative(): HTMLElement {
+    const command = options.refresh ? "gh auth refresh -h github.com -s workflow" : "gh auth login";
     return el(
       "div",
       { class: "github-terminal" },
@@ -70,19 +77,23 @@ export function githubConnect(options: GithubConnectOptions): HTMLElement {
       el(
         "div",
         { class: "setup-command" },
-        el("code", { class: "setup-command-text" }, "gh auth login"),
-        copyButton("gh auth login", "Copy"),
+        el("code", { class: "setup-command-text" }, command),
+        copyButton(command, "Copy"),
       ),
     );
   }
 
   function idleView(): void {
     stopPolling();
-    const connect = el("button", { class: "btn btn-primary github-connect-btn", type: "button" }, "Connect GitHub");
+    const connect = el(
+      "button",
+      { class: "btn btn-primary github-connect-btn", type: "button" },
+      options.refresh ? "Refresh GitHub permission" : "Connect GitHub",
+    );
     connect.onclick = () => void start();
     const again = el("button", { class: "btn github-connect-check", id: options.checkId, type: "button" }, "Check again");
     again.onclick = () => {
-      if (!busy) options.refresh();
+      if (!busy) options.reload();
     };
     box.replaceChildren(
       el("div", { class: "setup-actions" }, connect),
@@ -139,7 +150,7 @@ export function githubConnect(options: GithubConnectOptions): HTMLElement {
         return;
       case "done":
         stopPolling();
-        options.refresh();
+        options.reload();
         return;
       case "error":
         errorView(state.error || "The GitHub login failed.");
@@ -177,7 +188,10 @@ export function githubConnect(options: GithubConnectOptions): HTMLElement {
     busy = true;
     startingView();
     try {
-      const res = await api("/api/github/login", { method: "POST" });
+      const res = await api("/api/github/login", {
+        method: "POST",
+        ...(options.refresh ? { body: JSON.stringify({ refresh: true }) } : {}),
+      });
       const state = (await res.json().catch(() => ({}))) as GithubLoginState & { error?: string };
       if (!res.ok) {
         errorView(state.error || `Request failed (${res.status})`);
@@ -202,5 +216,7 @@ export function githubConnect(options: GithubConnectOptions): HTMLElement {
   }
 
   idleView();
+  // Opened from a Fix button: start the refresh right away.
+  if (options.refresh) void start();
   return box;
 }

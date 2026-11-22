@@ -64,6 +64,8 @@ const DEFAULT_CONTINUE_PROMPT = "Continue the task from where you left off; don'
 /** The states Continue picks up from: finished but not done. */
 const CONTINUE_STATUSES = new Set<Status>(["failed", "aborted"]);
 const CONTINUE_HINT = "Continue picks up where it stopped, in the same session.";
+/** For a run whose work is committed but whose push failed: retrying the push, not the agent. */
+const PUSH_FAILED_HINT = "The work is done and committed; only the push failed.";
 
 /** Same rule as the server's validateRepoName. */
 function validRepoName(name: string): boolean {
@@ -137,6 +139,12 @@ type RunItem =
       issue?: { state: "ready" | "opening" | "open" | "error"; url?: string; error?: string };
       /** set when the run has commits, so its result can be downloaded */
       export?: { state: "idle" | "preparing" | "error"; format?: ExportFormat; error?: string };
+      /** the run's commits are committed but unpushed because its push failed: offer Push again */
+      pushFailed?: boolean;
+      /** the Push again retry's state */
+      push?: { state: "ready" | "pushing" | "error" };
+      /** the push's error text (the original failure, or the retry's), shown inline */
+      pushError?: string;
     };
 
 /** What a run's push changed, from hive_done (agent-controlled text: render as text only). */
@@ -202,6 +210,62 @@ async function openPr(item: Extract<RunItem, { kind: "banner" }>): Promise<void>
     item.pr = { state: "error", error: err instanceof Error ? err.message : String(err) };
   }
   updateItem(item);
+}
+
+/** GitHub's refusal when the login lacks the `workflow` scope (the server's pushErrorText text). */
+const WORKFLOW_SCOPE_ERROR = /workflow/i;
+
+/** Push again (after a failed push), with the error inline and the permission fix for workflow refusals. */
+function pushElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
+  const box = el("div", { class: "push-actions" });
+  const pushing = item.push?.state === "pushing";
+  const button = el(
+    "button",
+    { class: "btn btn-primary", id: "pushAgainBtn", type: "button" },
+    pushing ? "Pushing…" : "Push again",
+  );
+  button.disabled = pushing;
+  button.onclick = () => void pushAgain(item);
+  box.append(button);
+  if (item.pushError) box.append(el("p", { class: "alert alert-danger", role: "alert" }, item.pushError));
+  if (item.pushError && WORKFLOW_SCOPE_ERROR.test(item.pushError)) {
+    const fix = el("button", { class: "btn", id: "fixGithubPermissionBtn", type: "button" }, "Fix GitHub permission");
+    const slot = el("div", { class: "github-connect-slot" });
+    fix.onclick = () => {
+      // The same device-code component as Connect GitHub, in refresh mode, inline.
+      slot.replaceChildren(
+        githubConnect({
+          refresh: true,
+          reload: () => {
+            if (run) void openRun(run.sessionId);
+          },
+        }),
+      );
+    };
+    box.append(fix, slot);
+  }
+  return box;
+}
+
+async function pushAgain(item: Extract<RunItem, { kind: "banner" }>): Promise<void> {
+  if (!run || item.push?.state === "pushing") return;
+  const sessionId = run.sessionId;
+  item.push = { state: "pushing" };
+  updateItem(item);
+  try {
+    const res = await api(`/push/${encodeURIComponent(sessionId)}`, { method: "POST" });
+    const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+    if (!res.ok) {
+      throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    }
+    // Reload the run: the replayed done banner now carries the pushed branch and repo link.
+    if (run && run.sessionId === sessionId) await openRun(sessionId);
+  } catch (err) {
+    if (!run || run.sessionId !== sessionId) return;
+    item.push = { state: "error" };
+    item.pushError = err instanceof Error ? err.message : String(err);
+    updateItem(item);
+  }
 }
 
 const ISSUE_URL = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/\d+$/;
@@ -1635,14 +1699,18 @@ function fillItem(li: HTMLElement, item: RunItem): void {
         );
       }
       const banner = el("div", { class: `item-banner item-banner-${item.tone}` }, ...children);
-      // A run that failed or stopped can be picked up again with Continue.
-      if (item.final && (item.tone === "danger" || item.tone === "warn")) {
+      // A run whose work is committed but whose push failed retries the push, not the agent.
+      if (item.pushFailed) {
+        banner.append(el("p", { class: "banner-hint" }, PUSH_FAILED_HINT));
+      } else if (item.final && (item.tone === "danger" || item.tone === "warn")) {
+        // A run that failed or stopped can be picked up again with Continue.
         banner.append(el("p", { class: "banner-hint" }, CONTINUE_HINT));
       }
       if (item.changes) banner.append(changesElement(item.changes));
       if (item.final) banner.append(exportElement(item));
       if (item.pr) banner.append(prElement(item));
       if (item.issue) banner.append(issueElement(item));
+      if (item.pushFailed) banner.append(pushElement(item));
       li.replaceChildren(banner);
       break;
     }
@@ -1960,6 +2028,8 @@ function handleEvent(event: any): void {
 function finishRun(event: any): void {
   if (!run) return;
   const status = String(event.status ?? "");
+  const pushFailed = event.pushFailed === true;
+  const pushError = pushFailed && typeof event.error === "string" ? event.error : undefined;
   if (run.currentStep) {
     run.currentStep.step = status === "idle" ? "done" : "failed";
     updateItem(run.currentStep);
@@ -1970,7 +2040,9 @@ function finishRun(event: any): void {
     const parts: string[] = [];
     let link: { href: string; label: string } | undefined;
     const createdRepo = typeof event.createdRepo === "string" && event.createdRepo ? event.createdRepo : "";
-    if (createdRepo) {
+    if (pushFailed) {
+      parts.push("The work is committed, but the push failed.");
+    } else if (createdRepo) {
       parts.push(`Created ${createdRepo} with ${event.commitsPushed ?? 0} commit(s)`);
       if (/^[A-Za-z0-9-]+\/[A-Za-z0-9_.-]+$/.test(createdRepo)) {
         link = { href: `https://github.com/${createdRepo}`, label: "Open on GitHub" };
@@ -1993,6 +2065,7 @@ function finishRun(event: any): void {
     const canPr = !createdRepo && !!event.resultBranch && typeof event.repoSlug === "string" && !!event.repoSlug;
     const wroteSomething = run.items.some((i) => i.kind === "assistant" && i.text.trim() !== "");
     const canIssue =
+      !pushFailed &&
       !run.newRepo &&
       !event.resultBranch &&
       Number(event.commitsPushed ?? 0) === 0 &&
@@ -2010,9 +2083,20 @@ function finishRun(event: any): void {
       commits: Number(event.commits ?? 0),
       pr: canPr ? { state: "ready" } : undefined,
       issue: canIssue ? { state: "ready" } : undefined,
+      ...(pushFailed ? { pushFailed: true, pushError } : {}),
     };
   } else if (status === "aborted") {
     item = { kind: "banner", tone: "warn", title: "Stopped", final: true, detail: event.error ? String(event.error) : "" };
+  } else if (pushFailed) {
+    item = {
+      kind: "banner",
+      tone: "danger",
+      title: "Failed",
+      final: true,
+      detail: "The work is committed, but the push failed.",
+      pushFailed: true,
+      pushError,
+    };
   } else {
     item = { kind: "banner", tone: "danger", title: "Failed", final: true, detail: event.error ? String(event.error) : "" };
   }
@@ -2851,7 +2935,13 @@ interface SystemInfo {
   vm: { memory: string; cpus: string; timeoutMin: number };
   capacity: { running: number; queued: number; max: number };
   gitProtocol: string;
-  github?: { connected: boolean; login?: string; error?: string };
+  github?: {
+    connected: boolean;
+    login?: string;
+    error?: string;
+    scopes?: string[];
+    canPushWorkflows?: boolean | null;
+  };
   npmCache: boolean;
   version: string;
 }
@@ -3061,6 +3151,23 @@ function githubCard(info: SystemInfo, refreshGithub: () => void): HTMLElement {
         `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`,
       ),
     );
+    // Fine-grained tokens print no scope line, so only a known-missing scope is a warning.
+    if (gh.canPushWorkflows === false) {
+      const fixSlot = el("div", { class: "github-scope-fix" });
+      const fix = el("button", { class: "btn btn-primary", id: "fixGithubScopeBtn", type: "button" }, "Fix");
+      fix.onclick = () => {
+        fixSlot.replaceChildren(githubConnect({ refresh: true, reload: refreshGithub }));
+      };
+      ghCard.append(
+        el(
+          "p",
+          { class: "alert alert-warn", id: "githubScopeWarning", role: "status" },
+          "This login can't push changes to GitHub Actions files (.github/workflows), which some runs add.",
+        ),
+        el("div", { class: "setup-actions" }, fix),
+        fixSlot,
+      );
+    }
   } else {
     ghCard.append(
       el(
@@ -3068,7 +3175,7 @@ function githubCard(info: SystemInfo, refreshGithub: () => void): HTMLElement {
         { class: "github-detail" },
         "Connect GitHub so runs can clone private repos, push branches and open pull requests.",
       ),
-      githubConnect({ refresh: refreshGithub }),
+      githubConnect({ reload: refreshGithub }),
     );
   }
   ghCard.append(

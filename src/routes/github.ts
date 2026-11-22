@@ -19,6 +19,17 @@ function gh(args: string[]) {
   });
 }
 
+/** `POST /api/github/login`: no body, or `{ "refresh": true }` to add the workflow scope. */
+const loginSchema = {
+  body: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      refresh: { type: "boolean" },
+    },
+  },
+} as const;
+
 export default async function githubRoutes(app: FastifyInstance) {
   app.get("/api/github/repos", async (_req, reply) => {
     try {
@@ -62,7 +73,21 @@ export default async function githubRoutes(app: FastifyInstance) {
   // GitHub's device login, started from the web UI's Connect GitHub button (the person enters the
   // code on their own device). Works the same with HIVE_GIT_PROTOCOL=ssh: it logs the server's own
   // `gh` in, which the bot-account setup uses for repos, pull requests and new repositories.
-  app.post("/api/github/login", async () => startGithubLogin());
+  // `{ "refresh": true }` runs `gh auth refresh` instead, to add the workflow scope to the login.
+  app.post(
+    "/api/github/login",
+    {
+      schema: loginSchema,
+      // The body is optional: an old client's POST without one means "log in", not a bad request.
+      preValidation: async (req) => {
+        if (req.body === undefined) req.body = {};
+      },
+    },
+    async (req) => {
+      const body = (req.body ?? {}) as { refresh?: boolean };
+      return startGithubLogin({ refresh: body.refresh === true });
+    },
+  );
   app.get("/api/github/login", async () => githubLoginState());
   app.delete("/api/github/login", async () => {
     cancelGithubLogin();

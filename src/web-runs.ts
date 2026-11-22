@@ -249,6 +249,14 @@ export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: Ch
     createdRepo: meta.createdRepo,
     resultBranch: meta.pushed?.branch,
     commitsPushed: meta.pushed ? meta.commits : 0,
+    /** the run's commits were never pushed because the push failed: the UI offers Push again */
+    pushFailed: Boolean(
+      meta.commits > 0 &&
+        // pushError marks runs from this version on; older runs only have the push's error text.
+        (meta.pushError === true ||
+          /GitHub refused the push|failed to push some refs|remote rejected|check your git credentials/.test(meta.error ?? "")) &&
+        (!meta.pushed || meta.pushed.at < (meta.finishedAt ?? 0)),
+    ),
     /** the run's commits that hive never pushed: what deleting it would lose */
     unpushedCommits: meta.commits > 0 && meta.pushed === undefined ? meta.commits : 0,
     /** starred: skipped by retention and Clear */
@@ -311,9 +319,17 @@ async function finishRun(id: string): Promise<void> {
     publish(id, { type: "hive_status", status: "pushing" });
     try {
       await pushRun(dir, { update: meta.pushed !== undefined });
+      // A push that worked clears an earlier failure's flag and message.
+      const pushed = metaOf(dir);
+      if (pushed?.pushError) {
+        delete pushed.pushError;
+        delete pushed.error;
+        writeMeta(dir, pushed);
+      }
     } catch (err) {
       const fresh = metaOf(dir) ?? meta;
       fresh.error = (err as Error).message;
+      fresh.pushError = true;
       writeMeta(dir, fresh);
       pushFailed = true;
     }
@@ -556,6 +572,34 @@ export default async function webRunRoutes(app: FastifyInstance) {
       deleted.push(name);
     }
     return reply.send({ deleted, skipped });
+  });
+
+  // Push a finished run's commits again, after a push that failed (the UI's Push again button).
+  // The same host-side push as the automatic one at the end of a run.
+  app.post("/push/:sessionId", async (req, reply) => {
+    const id = (req.params as any).sessionId as string;
+    const dir = runDir(id);
+    if (!dir) return notFound(reply);
+    const meta = metaOf(dir);
+    if (!meta) return notFound(reply);
+    if (liveRuns.has(id) || isLive(meta)) {
+      return reply.code(409).send({ error: "Session is still going; wait for it to finish or abort it" });
+    }
+    if (!(meta.commits > 0)) return reply.code(409).send({ error: "This run has no commits to push" });
+    try {
+      const pushed = await pushRun(dir, { update: meta.pushed !== undefined });
+      const fresh = metaOf(dir) ?? meta;
+      // The work itself was fine: the failed push is no longer the run's error.
+      if (fresh.pushError) {
+        delete fresh.pushError;
+        delete fresh.error;
+        writeMeta(dir, fresh);
+      }
+      publish(id, { type: "hive_done", ...runToJSON(id, fresh, false) });
+      return { sessionId: id, pushed };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   // Open a pull request from the run's pushed branch (only when the user clicks).

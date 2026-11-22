@@ -47,6 +47,35 @@ function ghBin(): string {
   return process.env.GH_BIN || "gh";
 }
 
+/**
+ * The token's scopes from `gh auth status` output: the `Token scopes: 'gist', 'read:org', 'repo'`
+ * line (quotes optional), or undefined when there is no such line. Fine-grained tokens print no
+ * scope line, and that is unknown rather than missing.
+ */
+export function parseScopes(statusText: string): string[] | undefined {
+  const line = /^[ \t]*(?:-[ \t]*)?Token scopes:[ \t]*(.*)$/im.exec(statusText);
+  if (!line) return undefined;
+  return line[1]
+    .split(",")
+    .map((scope) => scope.trim().replace(/^(['"])(.*)\1$/, "$2").trim())
+    .filter(Boolean);
+}
+
+/** The scopes of the server's gh token, or undefined when gh is missing, not logged in or prints none. */
+export async function githubScopes(): Promise<string[] | undefined> {
+  try {
+    // gh prints `auth status` to stderr on some versions, so read both streams.
+    const { stdout, stderr } = await execFileAsync(ghBin(), ["auth", "status", "--hostname", "github.com"], {
+      env: { ...process.env, GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" },
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return parseScopes(`${stdout}\n${stderr}`);
+  } catch {
+    return undefined;
+  }
+}
+
 /** `1A2B-3C4D` and the device URL from gh's output, or undefined while there is no code yet. */
 export function parseDeviceCode(text: string): { code: string; url: string } | undefined {
   const code = CODE_RE.exec(text);
@@ -133,12 +162,14 @@ async function completeLogin(): Promise<void> {
   }
 }
 
-function runLogin(startedAt: number): void {
+function runLogin(startedAt: number, refresh: boolean): void {
   // Only flags old gh has too (Ubuntu 24.04 ships 2.45, without --skip-ssh-key); with
   // --git-protocol https gh never asks about SSH keys anyway.
   // --scopes workflow: runs often add CI files, and GitHub refuses pushes touching
-  // .github/workflows from a login without that scope.
-  const args = ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--scopes", "workflow"];
+  // .github/workflows from a login without that scope. A refresh adds it to the existing login.
+  const args = refresh
+    ? ["auth", "refresh", "--hostname", "github.com", "--scopes", "workflow"]
+    : ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--scopes", "workflow"];
   // BROWSER=true stops gh opening a browser on the server; the person opens the link themselves.
   const proc = spawn(ghBin(), args, {
     env: { ...process.env, GH_NO_UPDATE_NOTIFIER: "1", BROWSER: "true" },
@@ -208,12 +239,13 @@ function runLogin(startedAt: number): void {
 }
 
 /**
- * Start gh's device login, or join the one already in progress. The promise resolves when there is
- * something to show (a code: `waiting`) or when the login ended (`done` / `error`); a login that
+ * Start gh's device login (or, with `refresh: true`, `gh auth refresh` for the workflow scope), or
+ * join the one already in progress. Only one flow runs at a time. The promise resolves when there
+ * is something to show (a code: `waiting`) or when the flow ended (`done` / `error`); a flow that
  * got its code keeps running in the background and its state is available from
  * `githubLoginState()`.
  */
-export function startGithubLogin(): Promise<GithubLoginState> {
+export function startGithubLogin(o: { refresh?: boolean } = {}): Promise<GithubLoginState> {
   if (child) {
     if (!startSettled && startPromise) return startPromise;
     return Promise.resolve(current);
@@ -225,7 +257,7 @@ export function startGithubLogin(): Promise<GithubLoginState> {
   startPromise = new Promise<GithubLoginState>((resolve) => {
     resolveStart = resolve;
   });
-  runLogin(startedAt);
+  runLogin(startedAt, o.refresh === true);
   return startPromise;
 }
 

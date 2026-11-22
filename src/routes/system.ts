@@ -6,19 +6,35 @@
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
 import { githubLogin } from "../git.js";
+import { githubScopes } from "../github-login.js";
 import { currentVersion } from "../release.js";
 import { systemInfo } from "../sandbox.js";
 import { usageNow } from "../usage.js";
 import { capacity } from "../web-runs.js";
 import { hostname } from "node:os";
 
-/** Whether the server's gh login works, and as whom. */
-export async function githubStatus(): Promise<{ connected: boolean; login?: string; error?: string }> {
+/** Whether the server's gh login works, as whom, and whether it may push `.github/workflows`. */
+export async function githubStatus(): Promise<{
+  connected: boolean;
+  login?: string;
+  error?: string;
+  scopes?: string[];
+  canPushWorkflows: boolean | null;
+}> {
+  let login: string;
   try {
-    return { connected: true, login: await githubLogin() };
+    login = await githubLogin();
   } catch (err) {
-    return { connected: false, error: (err as Error).message };
+    return { connected: false, error: (err as Error).message, canPushWorkflows: null };
   }
+  const scopes = await githubScopes();
+  return {
+    connected: true,
+    login,
+    ...(scopes ? { scopes } : {}),
+    // Unknown (no scope line: a fine-grained token) is not the same as missing.
+    canPushWorkflows: scopes ? scopes.includes("workflow") : null,
+  };
 }
 
 export default async function systemRoutes(app: FastifyInstance) {

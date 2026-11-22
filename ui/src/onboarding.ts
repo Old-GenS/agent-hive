@@ -639,7 +639,7 @@ export function buildSetupPage(options: SetupOptions): HTMLElement {
       body.append(
         el("p", { class: "setup-lead" }, "GitHub is optional: local repos and the terminal still work."),
         el("p", {}, "Sign in with the GitHub CLI so hive can list your repos, push branches and open pull requests."),
-        githubConnect({ refresh: () => void loadData(), checkId: "setup-github-check" }),
+        githubConnect({ reload: () => void loadData(), checkId: "setup-github-check" }),
       );
     }
     return body;

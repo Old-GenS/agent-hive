@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";
 import fWebSocket from "@fastify/websocket";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -373,4 +373,146 @@ test("POST /sessions/clear deletes done runs, then every finished one, and keeps
 
   rmSync(keptDir, { recursive: true, force: true });
   rmSync(liveDir, { recursive: true, force: true });
+});
+
+// ── Push again: POST /push/:id ──
+
+const { execFileSync } = await import("node:child_process");
+const { prepareRepo } = await import("../dist/git.js");
+
+const GIT_IDENT = ["-c", "user.name=t", "-c", "user.email=t@t"];
+
+function git(cwd, ...args) {
+  return execFileSync("git", [...GIT_IDENT, ...args], { cwd, encoding: "utf8" });
+}
+
+function gitBare(dir, ...args) {
+  return execFileSync("git", ["--git-dir", dir, ...args], { encoding: "utf8" });
+}
+
+/** A finished run folder with an origin clone and one patch, pushing to a local bare repo. */
+async function makePushableRun(name, { rejectWith } = {}) {
+  const base = mkdtempSync(join(tmpdir(), "hive-web-push-"));
+  const remoteGit = join(base, "remote.git");
+  const seed = join(base, "seed");
+  git(base, "init", "-q", "--bare", "remote.git");
+  git(base, "clone", "-q", remoteGit, "seed");
+  writeFileSync(join(seed, "f.txt"), "one\n");
+  git(seed, "add", ".");
+  git(seed, "commit", "-q", "-m", "init");
+  git(seed, "push", "-q", "origin", "HEAD:refs/heads/main");
+  execFileSync("git", ["--git-dir", remoteGit, "symbolic-ref", "HEAD", "refs/heads/main"]);
+  if (rejectWith) {
+    const hook = join(remoteGit, "hooks", "pre-receive");
+    // Single-quoted so the shell leaves the backticks in GitHub's message alone.
+    writeFileSync(hook, `#!/bin/sh\necho '${rejectWith}' >&2\nexit 1\n`);
+    chmodSync(hook, 0o755);
+  }
+  const dir = join(root, name);
+  mkdirSync(join(dir, "out"), { recursive: true });
+  const baseSha = await prepareRepo(dir, remoteGit);
+  const agent = join(base, "agent");
+  git(base, "clone", "-q", remoteGit, agent);
+  writeFileSync(join(agent, "f.txt"), "two\n");
+  git(agent, "add", ".");
+  git(agent, "commit", "-q", "-m", "agent change");
+  git(agent, "format-patch", "-q", "-o", join(dir, "out"), `${baseSha}..HEAD`);
+  writeFileSync(
+    join(dir, "meta.json"),
+    JSON.stringify(
+      {
+        ...meta,
+        source: "remote",
+        repo: remoteGit,
+        base: baseSha,
+        status: "done",
+        commits: 1,
+        pid: 2147483646,
+        finishedAt: Date.now(),
+        error: "GitHub refused the push",
+        pushError: true,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  return { dir, remoteGit, name };
+}
+
+test("runToJSON reports a push that failed, and not one that succeeded", () => {
+  const failed = runToJSON(ID, { ...meta, commits: 3, pushError: true, finishedAt: 1_000, error: "refused" }, false);
+  assert.equal(failed.pushFailed, true);
+
+  // A follow-up step after an older push: the push is older than the last step.
+  const stale = runToJSON(
+    ID,
+    { ...meta, commits: 3, pushError: true, finishedAt: 1_000, pushed: { branch: "hive/x", url: "u", at: 900 } },
+    false,
+  );
+  assert.equal(stale.pushFailed, true);
+
+  // A push that happened after the last step clears the offer.
+  const pushed = runToJSON(
+    ID,
+    { ...meta, commits: 3, pushError: true, finishedAt: 1_000, pushed: { branch: "hive/x", url: "u", at: 1_001 } },
+    false,
+  );
+  assert.equal(pushed.pushFailed, false);
+
+  // No flagged push error, or no commits: nothing to retry.
+  assert.equal(runToJSON(ID, { ...meta, commits: 3, finishedAt: 1_000 }, false).pushFailed, false);
+  assert.equal(runToJSON(ID, { ...meta, commits: 0, pushError: true, finishedAt: 1_000 }, false).pushFailed, false);
+});
+
+test("POST /push/:id is 404 for an unknown run and 409 for a live run or one with no commits", async () => {
+  const missing = await app.inject({ method: "POST", url: "/push/nope" });
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(missing.json(), { error: "Session not found" });
+
+  const liveDir = makeRun("push-live", { status: "running", pid: process.pid, commits: 1 });
+  const live = await app.inject({ method: "POST", url: "/push/push-live" });
+  assert.equal(live.statusCode, 409);
+  assert.match(live.json().error, /still going/);
+
+  const emptyDir = makeRun("push-empty", { status: "done", pid: 2147483646, commits: 0 });
+  const empty = await app.inject({ method: "POST", url: "/push/push-empty" });
+  assert.equal(empty.statusCode, 409);
+  assert.match(empty.json().error, /no commits/);
+
+  rmSync(liveDir, { recursive: true, force: true });
+  rmSync(emptyDir, { recursive: true, force: true });
+});
+
+test("POST /push/:id pushes a finished run again and clears the failed push's error", async () => {
+  const { dir, remoteGit, name } = await makePushableRun("push-retry");
+  try {
+    const res = await app.inject({ method: "POST", url: `/push/${name}` });
+    assert.equal(res.statusCode, 200, res.body);
+    const body = res.json();
+    assert.equal(body.sessionId, name);
+    assert.deepEqual(body.pushed, { branch: `hive/${name}`, url: remoteGit, commits: 1 });
+    assert.equal(gitBare(remoteGit, "log", "-1", "--format=%s", `hive/${name}`).trim(), "agent change");
+
+    const fresh = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+    assert.equal(fresh.pushError, undefined);
+    assert.equal(fresh.error, undefined);
+    assert.equal(fresh.pushed.branch, `hive/${name}`);
+    assert.equal(runToJSON(name, fresh, false).pushFailed, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /push/:id returns 400 with the workflow message when the push is refused", async () => {
+  const refusal =
+    "refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope";
+  const { dir, name } = await makePushableRun("push-refused", { rejectWith: refusal });
+  try {
+    const res = await app.inject({ method: "POST", url: `/push/${name}` });
+    assert.equal(res.statusCode, 400, res.body);
+    assert.match(res.json().error, /GitHub refused the push/);
+    assert.match(res.json().error, /workflow permission/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
