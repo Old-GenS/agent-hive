@@ -8,3 +8,6 @@ vm/hive-vm
 build/
 __pycache__/
 release/
+
+# libkrun/libkrunfw builds, VM images and spike logs (scripts/macos-spike)
+.scratch/

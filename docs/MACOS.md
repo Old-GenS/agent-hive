@@ -1,8 +1,10 @@
 # macOS (Apple silicon)
 
-**Status: plan, not implemented.** This is the design for running hive natively on a Mac. Nothing
-below is built yet, and the spike in [Phase 0](#phase-0--spike-23-days) decides the networking
-piece before the rest is worth starting.
+**Status: Phase 0 spike passed in November 2026; Phase 1 not started.** The networking piece
+was proven on an M4: libkrun boots a read-only ext4 image over virtio-blk with TSI disabled and one
+vsock port wired to hive's egress proxy, and the negative network tests hold. The rest of this
+document is still the plan. See [Phase 0 results](#phase-0-results) and
+[`scripts/macos-spike/`](../scripts/macos-spike/README.md).
 
 hive runs the agent inside a libkrun microVM. On Linux the VM reaches the internet only through
 hive's egress proxy: pasta gives the VMM a network namespace, TSI carries the guest's socket calls
@@ -198,6 +200,96 @@ Goal: answer the unknowns that decide the design, on real hardware, before touch
    two paths that differ only by case into a case-sensitive APFS sparse image shared over
    virtio-fs, and confirm `git status` is clean.
 
+### Phase 0 results
+
+Run on an Apple M4 (macOS 27.0.1, build 26A434, arm64, `sysctl -n kern.hv_support` = 1), Apple
+clang 21.0.0 and Rust 1.99.1, with no podman/docker/lima and no Homebrew writes. Reproducer:
+[`scripts/macos-spike/`](../scripts/macos-spike/README.md).
+
+**Verdict: the Phase 0 gate passed.** A libkrun 1.19.8 VM booted from a raw ext4 image attached
+read-only with virtio-blk, with the implicit vsock disabled (`krun_add_vsock(ctx, 0)`) and one
+vsock port mapped to a host UNIX socket. Hive's unmodified egress proxy answered HTTP and HTTPS
+through that socket, and every direct network attempt failed. Phase 1 has not been started.
+
+| What | Result |
+|---|---|
+| libkrun | v1.19.8, commit `c4d283c`, `BLK=1 NET=1`; `libkrun.1.19.8.dylib` 5.4 MiB, SHA-256 `c20c89af…f0b353095` |
+| libkrunfw | 5.6.2, prebuilt aarch64 tarball SHA-256 `adef6739…0e7984e86`; `libkrunfw.5.dylib` 24 MiB, SHA-256 `12b2d22c…fd1bb41e6` |
+| Rootfs image | Alpine 3.22.8 aarch64, ext4, 1.5 GiB nominal / 104 MiB allocated / 39 MiB gzip; SHA-256 `abb3ab05…acb0529c6` |
+| Boot time (5 runs) | guest `/proc/uptime` median **0.070 s** (0.05–0.07 s); host wall median **0.128 s** (0.113–0.138 s), including two virtio-fs shares and the vsock device |
+| virtio-fs on `work/` | 256 MiB write **0.144–0.170 s (1.5–1.7 GiB/s)**; read **0.066–0.070 s (3.6–3.8 GiB/s, page-cache warm)**; 2000 small files **0.410–0.500 s (~4,000–4,900 files/s)**; small npm install **0.180 s** |
+| vsock | 128 MiB to the host in **0.130–0.160 s**, **842–955 MiB/s** (three runs) |
+
+**Checklist**
+
+1. **Boot from the raw image over virtio-blk.** Pass. The launcher uses
+   `krun_add_disk(ctx, "root", image, true)` and
+   `krun_set_root_disk_remount(ctx, "/dev/vda", "ext4", "ro")`. The guest sees
+   `/dev/vda / ext4 ro,relatime`; `touch /rotest` fails with "Read-only file system", and
+   `mount -o remount,rw /` fails with EACCES. The `"ro"` option is required: without it the guest
+   tries an rw mount on the read-only block device and fails at boot.
+2. **Shared folders.** Pass. virtio-fs shares are visible and usable; the case-sensitive APFS
+   share held a git checkout with `a.txt` and `A.txt`, `git status` was clean, and a clone into
+   the guest's tmpfs kept both paths. The throughput numbers above are the virtio-fs answer.
+3. **AF_VSOCK to cid 2, port 1024.** Pass. `printf 'hello-vsock\n' | socat - VSOCK-CONNECT:2:1024`
+   returned `hello-vsock` from a host UNIX-socket echo server; 128 MiB one-way measured
+   842–955 MiB/s.
+4. **`curl` through hive's egress proxy.** Pass. `scripts/macos-spike/host-bridge.mjs` starts
+   `startEgressProxy()` from `dist/egress.js`, listens on a short `/tmp/hv-*.sock` (0600) and pipes
+   each accepted connection to the proxy's loopback port. In the guest,
+   `socat TCP-LISTEN:3128,bind=127.0.0.1,fork VSOCK-CONNECT:2:1024` is the forwarder. HTTP and
+   HTTPS to `example.com` both returned 200; the proxy returned 403 for `192.168.1.1` and
+   `169.254.169.254`, logging both denials on the host.
+5. **Negative test, the security gate.** Pass. With `--vsock` (implicit vsock disabled and
+   `krun_add_vsock(ctx, 0)`), the kernel command line has no `tsi_hijack`, the guest has no
+   `eth0`, and only `lo` plus a down `dummy0` exist. `curl --noproxy '*'` to the LAN
+   (192.168.1.1:80) and to a public IP (1.1.1.1:80) fails with "Could not connect"; a hostname
+   (example.com) fails with "Could not resolve host"; `ping 1.1.1.1` fails with
+   "Network unreachable".
+6. **Ad-hoc signing.** Pass. The launcher is signed `codesign --force --sign -` with
+   `com.apple.security.hypervisor` and `com.apple.security.cs.disable-library-validation`; it
+   boots and loads the locally built dylibs.
+7. **Filesystems.** Pass with one deviation. A raw ext4 image keeps `a.txt` and `A.txt` as
+   distinct files; `getcap /bin/busybox` shows `cap_net_raw=p` after setting
+   `security.capability` with `debugfs ea_set` on an image copy; the root cannot be remounted
+   rw. The Fedora terminfo `a/`/`A/` pair was not available (see below), so the equivalent
+   case-colliding pair was tested in the image and on the case-sensitive APFS share.
+
+**Deviations, decisions and things Phase 1 must know**
+
+- **The test image is Alpine, not Fedora.** No podman/docker/lima is available on this Mac, so the
+  Fedora arm64 rootfs could not be exported locally. The image was built in two libkrun boots (the
+  first with TSI, for `apk add`; the second running `mke2fs -d` inside the guest). A minimal image
+  is enough for the transport tests; the full Fedora image remains Phase 2 and belongs on an
+  `ubuntu-24.04-arm` runner.
+- **ext4 is the format Phase 0 chose.** It keeps file capabilities, `mke2fs -d` works without a
+  Linux host, and the 1.5 GiB image is 104 MiB allocated / 39 MiB gzipped. erofs/squashfs were not
+  compared; if Phase 2 wants a smaller download, revisit them there.
+- **`krun_set_root_disk_remount` needs the `"ro"` option**, not just the read-only virtio-blk
+  device. Without it the ext4 rw mount is refused with EACCES.
+- **Never pass `NULL` as `krun_set_exec`'s envp.** libkrun then puts the host's entire
+  environment on the kernel command line and the VM fails with a `TooLarge` panic. Pass a minimal
+  env (`PATH`, `HOME`, `TERM`, plus what the run needs).
+- **macOS 27's `hdiutil create -type SPARSE` fails** with "Directory not empty"; the new
+  `diskutil image create` (ASIF) works, and `newfs_apfs -o case=sensitive` on a temporary RAM disk
+  proved case-sensitive APFS over virtio-fs. The persistent run-image lifecycle (ASIF image +
+  APFSX volume, `diskutil apfs createContainer`/`addVolume`, attach/detach) is Phase 3 work and
+  needs raw-device permission; it was not validated end to end.
+- **The libkrunfw "prebuilt" tarball contains `kernel.c` and a Makefile, not a prebuilt dylib.**
+  Building `libkrunfw.5.dylib` is one `cc -shared` step, which is fine.
+- **bindgen's build scripts need an rpath workaround.** A symlink at
+  `libkrun/target/release/libclang.dylib` is enough; setting `LIBCLANG_PATH` only is not, and
+  `DYLD_FALLBACK_LIBRARY_PATH` is stripped by this environment.
+- **A read-only rootfs has a read-only `/tmp`.** The guest init mounts `/dev/shm` as tmpfs, so
+  the spike's forwarder logs and downloads go there. `hive-vm-init` should mount a tmpfs on
+  `/tmp` (or tools must use `/dev/shm`) in Phase 1.
+- **The guest sees a down `dummy0`** even with TSI off. It has no route and is not a network
+  path; the negative tests pass.
+- **The first attempt's constraints all held.** `rust-lld` symlinked as `ld.lld`, a workspace
+  `CARGO_HOME`, `CC_LINUX` pointing at the downloaded Debian sysroot, and `LIBCLANG_PATH` plus
+  the `target/release/libclang.dylib` symlink were exactly what the build needed. One correction
+  to those notes: the libkrunfw "prebuilt" tarball contains `kernel.c`, not a dylib (see above).
+
 **Exit criteria:** a booting macOS VM with proxy-only networking, and numbers for boot time,
 virtio-fs throughput on `work/`, vsock throughput and the image size. If step 4 or 5 fails, stop:
 the fallback is gvproxy with an explicit "reduced isolation" label, and that is a product decision,
@@ -319,10 +411,13 @@ almost all of the risk; Phases 2–4 are packaging and filesystem plumbing.
 3. **Source build first**, signed/notarized installer later.
 4. **arm64 rootfs image in CI** (`ubuntu-24.04-arm`) or a local `podman machine`.
 5. **Linux stays on pasta** until macOS ships; unify later.
-6. **Rootfs image format:** ext4, erofs or squashfs (all three are in libkrunfw's aarch64 kernel);
-   chosen on size and boot time in Phase 0.
+6. **Rootfs image format:** **ext4** (Phase 0: 104 MiB allocated, 39 MiB gzipped, boot in ~0.07 s,
+   and it keeps file capabilities). erofs and squashfs were not compared; revisit only if Phase 2
+   needs a smaller download.
 7. **Run folders on a case-sensitive image by default** (recommended) rather than detecting and
-   refusing case collisions.
+   refusing case collisions. Phase 0 proved that case-sensitive APFS survives over virtio-fs, but
+   the persistent image lifecycle is still open: macOS 27's `hdiutil create -type SPARSE` fails,
+   and the ASIF/APFSX replacement needs a raw-device step (Phase 3).
 
 ## Sources
 
