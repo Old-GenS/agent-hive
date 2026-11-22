@@ -13,6 +13,7 @@ import { accessSync, constants, existsSync, readFileSync, realpathSync } from "n
 import { homedir, networkInterfaces } from "node:os";
 import { basename, join } from "node:path";
 import { renderEvent, renderEventStyled, addUsage, emptyUsage } from "./render.js";
+import type { UninstallPlan } from "./uninstall.js";
 import {
   StatusLine,
   ask,
@@ -52,6 +53,7 @@ hive keys default <provider>
 hive login github
 hive serve [--host <addr>] [--port <n>] [--open | --no-open]
 hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>] [--dry-run]
+hive uninstall [--yes] [--all] [--dry-run]
 hive setup
 hive doctor
 hive update [--check | --rollback | --channel stable|beta]
@@ -1236,6 +1238,135 @@ async function cmdService(args: string[]): Promise<number> {
   }
 }
 
+/** A path with the home folder shortened to `~`, for the uninstall plan. */
+function tildePath(path: string): string {
+  const home = homedir();
+  if (path === home) return "~";
+  return path.startsWith(home + "/") ? "~" + path.slice(home.length) : path;
+}
+
+type UninstallModule = typeof import("./uninstall.js");
+
+/** Print the paths an uninstall would remove, one per line, with sizes where they are known. */
+function printUninstallPlan(plan: UninstallPlan, u: UninstallModule): void {
+  const { uninstallEntries, sizeLabel } = u;
+  const rows = uninstallEntries(plan).filter((entry) => entry.exists);
+  const labelWidth = Math.max(0, ...rows.map((row) => row.label.length));
+  const pathWidth = Math.max(0, ...rows.map((row) => tildePath(row.path).length));
+  const lines = ["hive: this will remove:"];
+  if (rows.length === 0) lines.push("  (no installed hive files found)");
+  for (const row of rows) {
+    const label = row.label.padEnd(labelWidth);
+    const path = tildePath(row.path).padEnd(pathWidth);
+    const size = row.bytes === undefined ? "" : `  ${sizeLabel(row.bytes)}`;
+    lines.push(`  ${label}  ${path}${size}`.trimEnd());
+  }
+  for (const lineFile of plan.pathLines) {
+    lines.push(`  ${"the PATH line it added".padEnd(labelWidth)}  ${tildePath(lineFile.file)}`);
+  }
+  if (plan.service) lines.push(`  ${"the background service".padEnd(labelWidth)}`);
+  if (plan.sourceInstall) {
+    lines.push("  (the hive command comes from a source checkout and is left alone)");
+  }
+  process.stdout.write(lines.join("\n") + "\n");
+}
+
+/**
+ * `hive uninstall`: show what goes, ask (unless --yes), delete it. Runs and saved keys/settings
+ * are kept by default. Nothing that is needed after deleting is imported or read at that point:
+ * every line printed afterwards was built before the first file went.
+ */
+async function cmdUninstall(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      yes: { type: "boolean" },
+      all: { type: "boolean" },
+      "keep-runs": { type: "boolean" },
+      "keep-config": { type: "boolean" },
+      "dry-run": { type: "boolean" },
+    },
+  });
+  if (positionals.length > 0) throw new Error(`unexpected argument: ${positionals[0]}`);
+
+  const u = await import("./uninstall.js");
+  const { uninstallPlan, runUninstall, sizeLabel } = u;
+  const yes = values.yes === true;
+  const all = values.all === true;
+  const keepRunsFlag = values["keep-runs"] === true;
+  const keepConfigFlag = values["keep-config"] === true;
+  const dryRun = values["dry-run"] === true;
+  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const wsl = isWsl();
+  // The default: `--all` (or the interactive answers) removes runs and keys too; --keep-* wins.
+  const keepRuns = keepRunsFlag || !all;
+  const keepConfig = keepConfigFlag || !all;
+
+  const finish = (plan: UninstallPlan): number => {
+    const lines = runUninstall(plan, { dryRun });
+    for (const line of lines) process.stdout.write(`hive: ${line}\n`);
+    if (dryRun) return 0;
+    if (plan.sourceInstall) {
+      process.stdout.write(
+        "hive: this copy runs from a source checkout; remove the checkout yourself (and run npm unlink in it)\n",
+      );
+    }
+    if (wsl) {
+      const distro = process.env.WSL_DISTRO_NAME || "agent-hive";
+      process.stdout.write(
+        `hive: to remove the whole WSL distro too, run in Windows: wsl --unregister ${distro}\n`,
+      );
+    }
+    process.stdout.write("hive: uninstalled. Open a new terminal so your PATH no longer has ~/.local/bin/hive.\n");
+    return 0;
+  };
+
+  if (interactive && !yes && !dryRun) {
+    const base = uninstallPlan({ keepRuns, keepConfig });
+    printUninstallPlan(base, u);
+
+    // The sizes and run count for the questions: what a full uninstall would remove.
+    const full = uninstallPlan({ keepRuns: false, keepConfig: false });
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const askYesNo = async (question: string): Promise<boolean> =>
+      /^y(es)?$/i.test((await rl.question(question)).trim());
+    try {
+      let deleteRuns = all && !keepRunsFlag;
+      if (!keepRunsFlag && !all && full.runsCount > 0) {
+        const size = sizeLabel(full.runs === undefined ? undefined : full.sizes[full.runs]);
+        deleteRuns = await askYesNo(
+          `Also delete your runs (${full.runsCount} run${full.runsCount === 1 ? "" : "s"}, ${size})? [y/N] `,
+        );
+      }
+      let deleteConfig = all && !keepConfigFlag;
+      if (!keepConfigFlag && !all && full.config !== undefined && existsSync(full.config)) {
+        deleteConfig = await askYesNo(
+          `Also delete saved API keys and settings (${tildePath(full.config)})? [y/N] `,
+        );
+      }
+      if (!(await askYesNo("Uninstall hive? [y/N] "))) {
+        process.stdout.write("hive: cancelled\n");
+        return 1;
+      }
+      return finish(uninstallPlan({ keepRuns: !deleteRuns, keepConfig: !deleteConfig }));
+    } finally {
+      rl.close();
+    }
+  }
+
+  const plan = uninstallPlan({ keepRuns, keepConfig });
+  printUninstallPlan(plan, u);
+  if (!yes && !dryRun) {
+    process.stderr.write(
+      "hive: run hive uninstall --yes to remove it (add --all to also remove runs and keys)\n",
+    );
+    return 1;
+  }
+  return finish(plan);
+}
+
 function kvmState(): "ok" | "missing" | "no access" {
   try {
     accessSync("/dev/kvm", constants.R_OK | constants.W_OK);
@@ -1696,6 +1827,9 @@ async function main(): Promise<void> {
       return;
     case "service":
       process.exitCode = await cmdService(rest);
+      return;
+    case "uninstall":
+      process.exitCode = await cmdUninstall(rest);
       return;
     case "setup":
       process.exitCode = await cmdSetup(rest);

@@ -113,9 +113,13 @@ Updating works the same as on Linux:
 hive update
 ```
 
-To uninstall, run the installer again with `-Uninstall`, or set `HIVE_UNINSTALL=1` before piping
-it. It asks for confirmation, then deletes the `agent-hive` distro and everything in it (projects,
-keys, runs), removes `%LOCALAPPDATA%\agent-hive\bin` and its user `PATH` entry. It leaves
+To remove hive from inside WSL but keep the distro, run `hive uninstall` (it asks first, and keeps
+runs and saved keys unless you pass `--all`; `--dry-run` only shows what would go).
+
+To uninstall the whole thing, run the installer again with `-Uninstall`, or set
+`HIVE_UNINSTALL=1` before piping it. It asks for confirmation, then deletes the `agent-hive`
+distro and everything in it (projects, keys, runs), removes `%LOCALAPPDATA%\agent-hive\bin` and
+its user `PATH` entry. It leaves
 `%UserProfile%\.wslconfig` alone; if this install changed it, the backup is
 `%UserProfile%\.wslconfig.hive-backup`.
 

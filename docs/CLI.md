@@ -82,6 +82,7 @@ credential helper or `gh` login; none of these ever enter the VM. Commits use yo
 | `hive doctor` | Check `/dev/kvm`, libkrun, pasta, the launcher, the VM filesystem, and show the default provider and model. |
 | `hive setup` | Download the VM filesystem an installed release needs. |
 | `hive update` | Install the latest release after checking its signature (`--check` only reports, `--rollback` goes back). `--channel stable\|beta` switches the update channel: `beta` follows the daily signed prereleases. A beta install moving to stable never downgrades; it waits for the next stable release. |
+| `hive uninstall` | Remove an installed hive: show the plan, ask, then stop the background service and delete the app, the VM filesystem and the caches. Runs and saved keys/settings are kept unless you agree to remove them or pass `--all`; `--keep-runs` / `--keep-config` always keep them, and `--dry-run` only shows the plan. A source checkout is left alone. |
 | `hive --version` | Print the installed version (`-V` and `hive version` work too). |
 
 ## Server

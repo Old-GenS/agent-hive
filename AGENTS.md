@@ -37,8 +37,9 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `install.ps1` | The Windows one-line installer: a dedicated WSL2 Ubuntu distro with no first-launch prompts (user, password over stdin, `/etc/wsl.conf`), passt/gh/wslu, nested virtualization when `/dev/kvm` is missing, `install-cli.sh` as the user, and `hive.cmd` on the Windows `PATH`; `-Uninstall` / `HIVE_UNINSTALL=1` removes it |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
 | `src/github-login.ts` | GitHub device login for the server's `gh` (the UI's **Connect GitHub**): one login at a time, the one-time code read from gh's output, state and cancel; the output is never logged |
-| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keep/keys/login/serve/service); sets the commit identity from the user's git config |
+| `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keep/keys/login/serve/service/uninstall); sets the commit identity from the user's git config |
 | `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
+| `src/uninstall.ts` | `hive uninstall`: `uninstallPlan` (a pure description of the app data dir, the `~/.local/bin/hive` symlink when it is ours, the caches, and optionally the runs and keys folders, with sizes) and `runUninstall` (the same plan as `would …` lines with `--dry-run`, else the real removal, refusing while a run is going and only ever deleting under the home or configured XDG/runs folders) |
 | `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; downloadable results (`exportRun`: a zip of the files or a git bundle of the commits); push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; starred runs (`setKept`, skipped by retention and Clear); startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
@@ -182,7 +183,8 @@ VM cache (`~/.cache`, npm inside it); the Fedora VM image with headless Chromium
 
 **Done, CLI:** `run`, `new`, `continue`, `log`, `diff`, `apply`, `push` (a new branch, never
 forced; updates the run's own branch after a follow-up), `push --pr`, `list`, `clean`, `keys`,
-`serve` and `service`. Settings come from env vars or `~/.config/agent-hive/env`.
+`serve`, `service` and `uninstall` (asks first; runs and saved keys/settings are kept unless you
+say otherwise). Settings come from env vars or `~/.config/agent-hive/env`.
 
 **Done, server and web UI:** `hive serve` over the same engine, so runs survive restarts and the web
 run list shows CLI runs too. The new design (light and dark): Runs (new-run form with repo and

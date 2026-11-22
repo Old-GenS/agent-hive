@@ -98,7 +98,21 @@ VM filesystem is only downloaded again when a release changes it.
 
 ## Uninstalling
 
-There is no `hive uninstall` command yet. On Linux (or inside WSL):
+```bash
+hive uninstall             # shows the plan, then asks before removing anything
+hive uninstall --yes       # no questions; runs and saved keys/settings are kept
+hive uninstall --yes --all # also remove runs and saved keys/settings
+hive uninstall --dry-run   # only show what would be removed
+```
+
+It stops and removes the background service, the app and its VM filesystem
+(`~/.local/share/agent-hive`), the download cache and the VM cache (`~/.cache/agent-hive`), and
+the `~/.local/bin/hive` symlink. Your runs (`~/.cache/agent-hive/runs`, or `HIVE_RUNS_DIR`) and
+saved API keys and settings (`~/.config/agent-hive`) are kept unless you answer yes to their
+questions or pass `--all`; `--keep-runs` / `--keep-config` always keep them. A copy that runs from
+a source checkout is left where it is.
+
+If hive can no longer run, or you want to remove it by hand:
 
 ```bash
 hive service uninstall 2>/dev/null    # if you installed the background service
