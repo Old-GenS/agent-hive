@@ -188,3 +188,12 @@ test("install.ps1 sends the Linux password to chpasswd over stdin", () => {
   assert.ok(line, "install.ps1 runs chpasswd");
   assert.match(line, /\|\s*wsl\.exe\b/, "chpasswd is fed by a pipeline into wsl.exe");
 });
+
+test("install.ps1 never calls exit (under irm | iex it would close the PowerShell window)", () => {
+  const text = readFileSync(join(repoRoot, "install.ps1"), "utf8");
+  const exits = text
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .filter((line) => /(^|[\s;{])exit(\s+\d+|\s*$)/.test(line));
+  assert.deepEqual(exits, []);
+});

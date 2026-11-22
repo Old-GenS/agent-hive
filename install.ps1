@@ -22,6 +22,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
+# Never `exit` in this script: run as `irm ... | iex` it would close the user's PowerShell window.
 $ErrorActionPreference = 'Stop'
 
 # Both names end up in Linux commands, so only plain names are accepted.
@@ -228,7 +229,7 @@ if ($Distro -notmatch '^[A-Za-z0-9._-]+$') {
 
 if ($remove) {
     Invoke-Uninstall -DistroName $Distro -BinPath $BinDir -ConfigBackup $WslConfigBackup
-    exit 0
+    return
 }
 
 Write-Step 'Checking WSL'
@@ -237,7 +238,7 @@ if (-not (Test-WslPresent)) {
     Write-Host 'hive: run this once in an Administrator PowerShell, then restart Windows:'
     Write-Host '    wsl --install --no-distribution'
     Write-Host 'hive: after the restart, run this installer again.'
-    exit 1
+    throw 'hive: setup stopped (see above)'
 }
 $update = Invoke-Program -FilePath 'wsl.exe' -ArgumentList @('--update') -AllowFailure
 if ($update.ExitCode -ne 0) {
@@ -253,7 +254,7 @@ if (-not $distroPresent) {
     if (-not $distroPresent) {
         Write-Host "hive: WSL did not register the distro '$Distro'."
         Write-Host "hive: try: wsl --install Ubuntu-24.04 --name $Distro --no-launch"
-        exit 1
+        throw 'hive: setup stopped (see above)'
     }
 } else {
     Write-Note 'reusing the existing distro'
@@ -356,7 +357,7 @@ if ($kvm.ExitCode -ne 0) {
         Write-Host 'hive: virtualization is probably off in the BIOS/UEFI, or the CPU does not support it.'
         Write-Host 'hive: to back out, remove the distro with:'
         Write-Host "hive:   wsl --unregister $Distro"
-        exit 1
+        throw 'hive: setup stopped (see above)'
     }
     Write-Note '/dev/kvm is available now'
 }
@@ -367,7 +368,7 @@ $installResult = Invoke-Program -FilePath 'wsl.exe' -ArgumentList @('-d', $Distr
 if ($installResult.ExitCode -ne 0) {
     Write-Host "hive: installing hive inside WSL failed (exit code $($installResult.ExitCode))."
     Write-Host "hive: the command was: wsl -d $Distro -u $User -- sh -c '$installCommand'"
-    exit 1
+    throw 'hive: setup stopped (see above)'
 }
 
 Write-Step 'Adding the hive command to Windows'
