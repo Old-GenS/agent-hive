@@ -178,7 +178,14 @@ jobs:
         env:
           HIVE_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
           HIVE_SIGNING_KEY: ${{ runner.temp }}/prerelease.pem
-        run: npm run release
+        run: |
+          set -euo pipefail
+          # Hand the tested rootfs over explicitly; without one the build makes a fresh rootfs.
+          if [[ -n "${HIVE_RELEASE_REUSE_ROOTFS:-}" ]]; then
+            npm run release -- --reuse-rootfs "$HIVE_RELEASE_REUSE_ROOTFS"
+          else
+            npm run release
+          fi
       - name: Verify the prerelease signature
         env:
           VERSION: ${{ needs.plan.outputs.version }}
