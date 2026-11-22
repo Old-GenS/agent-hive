@@ -423,7 +423,15 @@ function parseRunSummary(raw: unknown): RunSummary | null {
     model: typeof r.model === "string" ? r.model : "",
     provider: typeof r.provider === "string" ? r.provider : "",
     createdAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
-    lastActivity: typeof r.lastActivity === "number" ? r.lastActivity : Date.now(),
+    // The server sends no lastActivity; a finished run's age counts from when it finished.
+    lastActivity:
+      typeof r.lastActivity === "number"
+        ? r.lastActivity
+        : typeof r.finishedAt === "number"
+          ? r.finishedAt
+          : typeof r.createdAt === "number"
+            ? r.createdAt
+            : Date.now(),
     stepStartedAt: typeof r.stepStartedAt === "number" ? r.stepStartedAt : undefined,
     finishedAt: typeof r.finishedAt === "number" ? r.finishedAt : undefined,
     kept: r.kept === true,
@@ -452,8 +460,25 @@ function formatElapsed(ms: number): string {
 
 function runTimeLabel(summary: RunSummary): string {
   if (BUSY_STATUS.has(summary.status)) return formatElapsed(Date.now() - (summary.stepStartedAt ?? summary.createdAt));
-  const minutes = Math.max(0, Math.floor((Date.now() - summary.lastActivity) / 60000));
-  return `${minutes} min ago`;
+  return timeAgo(Date.now() - summary.lastActivity, summary.lastActivity);
+}
+
+/**
+ * "just now", "5 min ago", "3 h ago" (the same day), then by calendar day: "yesterday",
+ * "4 days ago", else the date.
+ */
+function timeAgo(ms: number, at: number): string {
+  const minutes = Math.max(0, Math.floor(ms / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const then = new Date(at);
+  const now = new Date();
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(now) - dayStart(then)) / 86_400_000);
+  if (days <= 0) return `${Math.floor(minutes / 60)} h ago`;
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  return then.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 interface RunUi {
@@ -941,9 +966,12 @@ async function refreshRuns(): Promise<void> {
 
 function runItemElement(summary: RunSummary, index: number): HTMLElement {
   const selected = run?.sessionId === summary.sessionId;
+  // The card is a link; the star is a button next to it (a button inside a link is invalid HTML),
+  // placed over the card's bottom-right corner.
+  const wrap = el("div", { class: "run-item-wrap" });
+  if (index >= MAX_VISIBLE_RUNS) wrap.classList.add("run-item-extra");
   const item = el("a", { class: "run-item", href: `#runs/${encodeURIComponent(summary.sessionId)}` });
   if (selected) item.setAttribute("aria-current", "page");
-  if (index >= MAX_VISIBLE_RUNS) item.classList.add("run-item-extra");
   const status = summary.status;
   const pill = el(
     "span",
@@ -956,16 +984,58 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
     el("span", { class: "run-item-icon" }, miniHive(BEE_STATE[status]?.state ?? "idle")),
     el("span", { class: "run-item-title" }, summary.title || "Untitled run"),
   );
-  if (summary.kept) {
-    top.append(el("span", { class: "run-item-star", role: "img", "aria-label": "Starred", title: "Starred: skipped by cleanup" }, "\u2605"));
-  }
   const meta = el(
     "span",
     { class: "run-item-meta" },
     `${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"} \u00b7 ${runTimeLabel(summary)}`,
   );
+  meta.title = summary.finishedAt !== undefined
+    ? `Started ${dateTime(summary.createdAt)}, finished ${dateTime(summary.finishedAt)}`
+    : `Started ${dateTime(summary.createdAt)}`;
   item.append(top, meta, pill);
-  return item;
+  const kept = Boolean(summary.kept);
+  const star = el(
+    "button",
+    {
+      class: `run-item-star-btn${kept ? " is-kept" : ""}`,
+      type: "button",
+      "aria-pressed": kept ? "true" : "false",
+      "aria-label": kept ? "Starred: skipped by cleanup. Unstar" : "Star this run to keep it",
+      title: kept ? "Starred: skipped by cleanup" : "Star to keep this run",
+    },
+    kept ? "\u2605" : "\u2606",
+  );
+  star.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void setRunKept(summary.sessionId, !kept, star);
+  };
+  wrap.append(item, star);
+  return wrap;
+}
+
+/** Star or unstar any run from the run list (PUT /session/:id/kept), keeping the open run in step. */
+async function setRunKept(sessionId: string, next: boolean, button: HTMLButtonElement): Promise<void> {
+  button.disabled = true;
+  try {
+    const res = await api(`/session/${encodeURIComponent(sessionId)}/kept`, {
+      method: "PUT",
+      body: JSON.stringify({ kept: next }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { kept?: unknown; error?: unknown };
+    if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    const kept = data.kept === true;
+    runList = (runList ?? []).map((summary) => (summary.sessionId === sessionId ? { ...summary, kept } : summary));
+    if (run && run.sessionId === sessionId) {
+      run.kept = kept;
+      syncRunUi();
+    }
+    renderRunsList(true);
+  } catch (err) {
+    button.disabled = false;
+    runListNotice = `Couldn't change the star: ${err instanceof Error ? err.message : String(err)}`;
+    renderRunsList(true);
+  }
 }
 
 /**
@@ -1711,7 +1781,26 @@ function updateRunMeta(): void {
   if (!run || !runUi) return;
   const parts = [repoLabel(run.repo, run.newRepo), run.providerLabel || "provider", run.model || "default model"];
   if (run.cost > 0) parts.push(`$${run.cost.toFixed(4)}`);
+  const started = run.stepStartedAt;
+  if (started !== undefined) {
+    parts.push(
+      run.finishedAt !== undefined && !run.busy
+        ? `${dateTime(started)} – ${clockTime(run.finishedAt, started)}`
+        : `started ${dateTime(started)}`,
+    );
+  }
   runUi.meta.textContent = parts.join(" · ");
+}
+
+/** "Nov 21, 1:42 PM" in the viewer's locale and time zone. */
+function dateTime(at: number): string {
+  return new Date(at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/** The end of a time range: just the clock time when it's the same day as `from`, else the date too. */
+function clockTime(at: number, from: number): string {
+  const sameDay = new Date(at).toDateString() === new Date(from).toDateString();
+  return sameDay ? new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : dateTime(at);
 }
 
 function syncRunUi(): void {
@@ -2135,7 +2224,7 @@ function buildKeysPage(): HTMLElement {
   const formSlot = el("div");
   const tableSlot = el("div");
   const storageSlot = el("div");
-  content.append(head, lead, errorSlot, formSlot, tableSlot, storageSlot);
+  content.append(head, lead, errorSlot, formSlot, tableSlot, githubSection(), storageSlot);
 
   let data: KeysResponse | null = null;
   let failed = false;
@@ -2923,7 +3012,7 @@ function buildComputerPage(): HTMLElement {
     try {
       const res = await api("/api/system");
       if (!res.ok) throw new Error(String(res.status));
-      body.replaceChildren(...computerSections((await res.json()) as SystemInfo, () => void load()));
+      body.replaceChildren(...computerSections((await res.json()) as SystemInfo));
       const section = body.querySelector<HTMLElement>("#usageSection");
       if (section) startUsagePolling(section);
     } catch {
@@ -2933,7 +3022,67 @@ function buildComputerPage(): HTMLElement {
   return content;
 }
 
-function computerSections(info: SystemInfo, refreshGithub: () => void): HTMLElement[] {
+/**
+ * Settings › API keys' GitHub section: the server's gh login, or Connect GitHub. It loads
+ * /api/system itself (the login and the git protocol) and reloads after connecting.
+ */
+function githubSection(): HTMLElement {
+  const slot = el("div", { id: "githubSection" }, el("p", { class: "cell-muted" }, "Checking GitHub…"));
+  const load = async (): Promise<void> => {
+    try {
+      const res = await api("/api/system");
+      if (!res.ok) throw new Error(String(res.status));
+      slot.replaceChildren(githubCard((await res.json()) as SystemInfo, () => void load()));
+    } catch {
+      slot.replaceChildren(el("p", { class: "alert alert-danger" }, "Couldn't check the GitHub login."));
+    }
+  };
+  void load();
+  return el("div", {}, el("h2", { class: "section-title" }, "GitHub"), slot);
+}
+
+function githubCard(info: SystemInfo, refreshGithub: () => void): HTMLElement {
+  const gh = info.github;
+  const ghCard = el(
+    "div",
+    { class: "card github-card", id: "githubCard" },
+    el(
+      "div",
+      { class: "github-head" },
+      el("span", { class: "github-account" }, gh?.connected && gh.login ? gh.login : "Not connected"),
+      el("span", { class: `pill ${gh?.connected ? "pill-ok" : "pill-danger"}` }, gh?.connected ? "Connected" : "Not connected"),
+    ),
+  );
+  if (gh?.connected) {
+    ghCard.append(
+      el(
+        "p",
+        { class: "github-detail" },
+        `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`,
+      ),
+    );
+  } else {
+    ghCard.append(
+      el(
+        "p",
+        { class: "github-detail" },
+        "Connect GitHub so runs can clone private repos, push branches and open pull requests.",
+      ),
+      githubConnect({ refresh: refreshGithub }),
+    );
+  }
+  ghCard.append(
+    el(
+      "p",
+      { class: "github-detail" },
+      el("a", { href: "https://www.githubstatus.com/", target: "_blank", rel: "noopener noreferrer" }, "GitHub service status"),
+    ),
+  );
+
+  return ghCard;
+}
+
+function computerSections(info: SystemInfo): HTMLElement[] {
   const strong = info.isolation === "microvm";
   const summary = el(
     "div",
@@ -2988,47 +3137,8 @@ function computerSections(info: SystemInfo, refreshGithub: () => void): HTMLElem
   const list = el("dl", { class: "facts" });
   for (const [term, value] of facts) list.append(el("div", { class: "fact" }, el("dt", {}, term), el("dd", {}, value)));
 
-  const gh = info.github;
-  const ghCard = el(
-    "div",
-    { class: "card github-card", id: "githubCard" },
-    el(
-      "div",
-      { class: "github-head" },
-      el("span", { class: "github-account" }, gh?.connected && gh.login ? gh.login : "Not connected"),
-      el("span", { class: `pill ${gh?.connected ? "pill-ok" : "pill-danger"}` }, gh?.connected ? "Connected" : "Not connected"),
-    ),
-  );
-  if (gh?.connected) {
-    ghCard.append(
-      el(
-        "p",
-        { class: "github-detail" },
-        `Runs clone and push over ${info.gitProtocol === "ssh" ? "SSH with deploy keys" : "HTTPS with this login"}. Pull requests and new repositories are created as ${gh.login}.`,
-      ),
-    );
-  } else {
-    ghCard.append(
-      el(
-        "p",
-        { class: "github-detail" },
-        "Connect GitHub so runs can clone private repos, push branches and open pull requests.",
-      ),
-      githubConnect({ refresh: refreshGithub }),
-    );
-  }
-  ghCard.append(
-    el(
-      "p",
-      { class: "github-detail" },
-      el("a", { href: "https://www.githubstatus.com/", target: "_blank", rel: "noopener noreferrer" }, "GitHub service status"),
-    ),
-  );
-
   return [
     summary,
-    el("h2", { class: "section-title" }, "GitHub"),
-    ghCard,
     el("h2", { class: "section-title" }, "Checks"),
     el("div", { class: "table-wrap" }, table),
     usageSection(),

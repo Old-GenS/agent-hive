@@ -100,14 +100,14 @@ repository.
 
 - **API keys:** each provider's key (masked), where it comes from, its default model, and which
   provider is the default. **Add key** tests a key before saving it; saved keys can be tested,
-  made the default or removed.
+  made the default or removed. Below them, the **GitHub** login (with **Connect GitHub** when it
+  isn't connected: the same device-login flow as setup step 4).
 - **Runs:** the VM size (CPUs and memory per run), runs at once, the time limit, the stall time,
   the disk limit per run and how long finished runs are kept, checked against this computer's CPUs
   and RAM. Saved values apply to new runs without a restart; values set in the server's
   environment are shown read-only.
 - **This computer:** how runs are isolated, the checks behind it (KVM, libkrun, pasta, launcher,
-  VM filesystem), the GitHub login (with **Connect GitHub** when it isn't connected: the same
-  device-login flow as setup step 4), a live **Resources** section (CPU, memory, disk, temperature,
+  VM filesystem), a live **Resources** section (CPU, memory, disk, temperature,
   runs) and the limits, with a link to **Settings › Runs**.
 
 The header has a light/dark toggle and Log out.
@@ -116,7 +116,7 @@ The header has a light/dark toggle and Log out.
 
 By default the server clones and pushes over HTTPS with the machine's `gh` login, which also lists
 your repos, opens pull requests and creates new repositories. Log it in with **Connect GitHub** in
-the web UI (first-run setup or Settings › This computer), or with `hive login github`; each starts
+the web UI (first-run setup or Settings › API keys), or with `hive login github`; each starts
 the GitHub CLI's device login and shows the one-time code. For several servers, per-repo SSH
 deploy keys and a separate bot account work too (`HIVE_GIT_PROTOCOL=ssh`); see
 [AGENTS.md](../AGENTS.md#github-access-server). The VM never gets any of these credentials.
