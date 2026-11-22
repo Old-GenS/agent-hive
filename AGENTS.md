@@ -61,6 +61,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
 | `docs/INSTALL.md` | Every install route (Linux release, Windows, from source), what's needed, after installing, updating and uninstalling; the README keeps only the two one-liners |
 | `docs/WINDOWS.md` | The Windows/WSL2 guide: requirements, what `install.ps1` does, the env vars, `hive` from PowerShell versus inside WSL, where projects live, GitHub and the web UI, updating, uninstalling, troubleshooting and the manual install route |
+| `docs/MACOS.md` | The macOS plan (not built yet): why the Linux network path doesn't carry over, the vsock-only egress design, the spike that gates it, the phases, the file map and the risks |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
 backend also `npm run build:vm` and `npm run build:rootfs`. For release-grade native builds

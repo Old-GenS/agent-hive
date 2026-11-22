@@ -228,10 +228,11 @@ virtualization off in the firmware.
   (`src/web-runs.ts` over `src/runs.ts`), so web runs and `hive run` runs share one engine and one
   run list. `hive service install|status|restart|logs|uninstall` keeps it running as a systemd user
   unit (Linux) or a launchd agent (macOS).
-- **macOS:**
+- **macOS** *(plan: [MACOS.md](MACOS.md))*:
   - libkrun on Apple's Hypervisor.framework;
   - a launcher build for Apple silicon (arm64), plus an arm64 rootfs;
-  - network isolation without pasta (pasta is Linux-only);
+  - network isolation without pasta (pasta is Linux-only): a vsock-only path to the egress proxy,
+    so the VM has no IP network at all;
   - code signing with the hypervisor entitlement: an ad-hoc signature (free) is enough to run it on
     your own Mac; a notarized download for other people needs an Apple Developer account (US$99/year).
 - **Packages:** `.rpm` and `.deb` for system updates; a signed `.pkg` or Homebrew on macOS.
@@ -276,7 +277,7 @@ When libkrun isn't available there are two different cases:
 
 | Option | Needs KVM | Boundary | Bundling | Shared folders | Rootless networking | Platforms | Verdict |
 |---|---|---|---|---|---|---|---|
-| libkrun | yes (HVF on macOS) | hardware VM, own kernel | build from source | built in (virtiofs) | with pasta | Linux, macOS, WSL2 | main backend |
+| libkrun | yes (HVF on macOS) | hardware VM, own kernel | build from source | built in (virtiofs) | pasta on Linux, vsock to the proxy on macOS | Linux, macOS, WSL2 | main backend |
 | gVisor (`runsc`) | no | user-space kernel: the agent's system calls never reach the host kernel directly | one static file | yes (bind mounts) | untested with pasta (step 3 spike) | Linux | fallback without KVM (step 3) |
 | Container only (bubblewrap, rootless podman) | no | namespaces only: shares the host kernel, so one kernel bug is an escape | tiny / usually installed | yes | with pasta | Linux | at most an opt-in "reduced isolation" mode, never automatic |
 | Firecracker | yes | hardware VM | one static file | no (disk images only) | needs TAP/root | Linux | would need a redesign |
@@ -289,9 +290,10 @@ available almost everywhere. But hive's promise is a real VM, so if it's ever ad
 and `hive doctor`, the run output and the web UI always say "reduced isolation".
 
 **macOS:** libkrun runs on Apple's Hypervisor.framework (Podman uses it there), so the same backend
-carries over with a Mac launcher, an arm64 rootfs and a network setup without pasta. Apple's
-`container` tool (one small VM per container on Virtualization.framework) is worth watching as an
-alternative. **Windows without WSL** would mean QEMU or Hyper-V; not worth it while WSL exists.
+carries over with a Mac launcher, an arm64 rootfs and a network setup without pasta: vsock to the
+egress proxy, with TSI disabled. The full plan, phases and risks are in [MACOS.md](MACOS.md).
+Apple's `container` tool (one small VM per container on Virtualization.framework) is worth watching
+as an alternative. **Windows without WSL** would mean QEMU or Hyper-V; not worth it while WSL exists.
 
 Networking: libkrun's built-in TSI networking gives the guest the host's network as it is, with
 nothing blocked. A TAP device needs root plus firewall rules. pasta blocks this computer (its
