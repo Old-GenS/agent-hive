@@ -33,6 +33,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/libkrun.ts` | Which libkrun the launcher loads: `HIVE_LIBKRUN`, then the system one when `hive-vm --check` passes, then the bundled one; the label every isolation report uses |
 | `src/pasta.ts` | Which pasta each VM runs under: the system one when `pasta --version` works, else the static copy bundled in a release; the label every network-isolation report uses |
 | `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, URL, SHA-256, source), passt (version, URL, SHA-256), Rust, the manylinux build image digest and the bundled Node version |
+| `install-cli.sh` | The Linux release installer: downloads the latest release over HTTPS, checks it against `SHA256SUMS`, links `~/.local/bin/hive`, puts it on `PATH` (and says what to fix for KVM or pasta), downloads the VM filesystem with progress, and ends with `next: hive doctor` |
+| `install.ps1` | The Windows one-line installer: a dedicated WSL2 Ubuntu distro with no first-launch prompts (user, password over stdin, `/etc/wsl.conf`), passt/gh/wslu, nested virtualization when `/dev/kvm` is missing, `install-cli.sh` as the user, and `hive.cmd` on the Windows `PATH`; `-Uninstall` / `HIVE_UNINSTALL=1` removes it |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
 | `src/cli.ts` | `hive` CLI: argument parsing and command dispatch (run/new/continue/log/diff/apply/push/list/clean/keep/keys/serve/service); sets the commit identity from the user's git config |
 | `src/service.ts` | `hive service`: systemd user unit (Linux) or launchd agent (macOS) that runs `hive serve` at login/boot. Pure file builders (`systemdUnit`, `launchdPlist`, `servicePaths`), plus thin runners for `systemctl` / `launchctl`; tests set `HIVE_SERVICE_DIR` and never touch the real system |
@@ -55,6 +57,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `scripts/rootfs-plan.mjs` | The beta build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
 | `scripts/vm-smoke.mjs` | The real-VM release check: HTTPS through the egress proxy, LAN and metadata addresses refused, headless Chromium renders a page, and a run with a fake OpenRouter key gets a 401 and no network error |
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
+| `docs/WINDOWS.md` | The Windows/WSL2 guide: requirements, what `install.ps1` does, the env vars, `hive` from PowerShell versus inside WSL, where projects live, GitHub and the web UI, updating, uninstalling, troubleshooting and the manual install route |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
 backend also `npm run build:vm` and `npm run build:rootfs`. For release-grade native builds
@@ -193,15 +196,16 @@ limits). First-run onboarding (`#setup`). Checked by
 
 **Done, releases and updates:** signed releases with bundled libkrun, libkrunfw, the hardened
 launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, RHEL 8+, Mint, WSL);
-`hive update` with rollback; a beta channel signed by a separate CI key; CI that boots a real VM
-for every change; a daily check that opens tested pin-bump PRs; Dependabot; a daily beta
-prerelease (`.github/workflows/`, `docs/RELEASING.md`).
+the Windows one-line installer (`install.ps1`: a dedicated WSL2 Ubuntu distro, `hive.cmd` on the
+Windows `PATH`, guide in `docs/WINDOWS.md`), still awaiting its first test on a real machine;
+`install-cli.sh` VM-filesystem download progress and KVM/pasta/PATH advice; `hive update` with
+rollback; a beta channel signed by a separate CI key; CI that boots a real VM for every change and
+parses/analyses `install.ps1`; a daily check that opens tested pin-bump PRs; Dependabot; a daily
+beta prerelease (`.github/workflows/`, `docs/RELEASING.md`).
 
 **Not built yet:**
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
-- Windows: an `install.ps1` that sets up WSL2 and installs hive inside it (`docs/ROADMAP.md`
-  step 1b)
 - a VM size per run
 - macOS: the launcher build for Apple silicon, and network isolation without pasta
 - a per-run network allowlist

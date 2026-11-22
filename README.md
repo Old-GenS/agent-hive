@@ -39,8 +39,7 @@ hive push --pr     # or push a branch and open a pull request
 
 Tested on Fedora 45 and Linux Mint 22.1, and in Ubuntu 22.04 and 24.04 containers.
 
-Windows: WSL2 (any distro, with nested virtualization) should work with the release, but hasn't
-been tested yet; a one-line PowerShell installer is next on the [roadmap](docs/ROADMAP.md#step-1b--windows-through-wsl2-next).
+Windows 11: WSL2 (tested with Ubuntu 24.04), see [docs/WINDOWS.md](docs/WINDOWS.md).
 macOS is on the roadmap too.
 
 ## Install
@@ -54,6 +53,15 @@ curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli
 The release brings its own Node.js and downloads the VM filesystem. `hive update` installs newer
 releases after checking their signature. `hive update --channel beta` follows the daily signed
 prereleases instead.
+
+**On Windows 11** (WSL2, one line in PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
+```
+
+It installs a dedicated WSL distro and hive inside it, with no Linux prompts. See
+[docs/WINDOWS.md](docs/WINDOWS.md).
 
 **From source** (also needs Node.js 20+, git and podman):
 

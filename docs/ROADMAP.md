@@ -31,38 +31,41 @@ release.
 - **libkrun and pasta come from the system** in this step (Fedora: the `libkrun` and `passt`
   packages).
 
-## Step 1b — Windows through WSL2 *(next)*
+## Step 1b — Windows through WSL2 *(done, installer awaiting its first test on a real machine)*
 
-Done before step 2, because it needs no bundling: Fedora packages libkrun, and WSL2 passes
-`/dev/kvm` through with nested virtualization (on by default on Windows 11). Other WSL distros
-(Ubuntu) wait for step 2's bundled libkrun; Windows without KVM waits for step 3.
+WSL2 passes `/dev/kvm` through with nested virtualization (on by default on Windows 11), and the
+release bundles libkrun and a static pasta, so any distro can host hive. Windows without KVM still
+waits for step 3.
 
-**1. Manual test first.** Nobody has tried libkrun and pasta inside WSL yet; if nested KVM or pasta
-networking fails there, the installer below has nothing to stand on. Done by hand in a distro
-named `agent-hive`, so it is also a dry run of what the installer automates:
+**1. Manual test first.** Done by hand on Windows 11 (WSL 2.6 after `wsl --update`, kernel
+6.18.58.1-microsoft-standard-WSL2, Ubuntu 24.04) in a distro named `agent-hive`:
 
 ```powershell
 wsl --update
-wsl --list --online                                   # newest FedoraLinux-<version>
-wsl --install FedoraLinux-<version> --name agent-hive
+wsl --install Ubuntu-24.04 --name agent-hive
 ```
 
 ```bash
-ls -l /dev/kvm                       # must exist; if not, nestedVirtualization=true below
-sudo usermod -aG kvm $USER           # if /dev/kvm isn't readable; then wsl --shutdown
-sudo dnf install -y libkrun passt
+ls -l /dev/kvm                       # crw-rw---- root kvm
+sudo usermod -aG kvm $USER           # then wsl --shutdown from Windows
+sudo apt install -y passt
 curl -fsSL https://raw.githubusercontent.com/ogsapps/agent-hive/main/install-cli.sh | sh
 hive doctor && hive keys add openrouter
 cd ~ && hive new wsl-test "a hello world web page in one HTML file"
 hive serve                           # then http://127.0.0.1:8080/ui/ in the Windows browser
 ```
 
-Projects belong in the Linux home folder, not `/mnt/c` (much slower). `hive serve` opens the Windows
-browser (`wslview`, else `cmd.exe /c start`); untested so far. `hive service install` needs
-systemd in WSL; plain `hive serve` is enough for the test. Whatever breaks feeds the setup
-screens (`src/fixes.ts` already has WSL advice) and the installer.
+It worked: every `hive doctor` check passes (bundled libkrun, system pasta) and a real run works,
+including the web UI. Problems hit, all fixed in the installer and `install-cli.sh`: a silent
+multi-minute wait while the VM filesystem downloaded; `~/.local/bin` not on `PATH` until
+`source ~/.profile`; the `kvm` group needed `sudo`; `gh` and `wslu` (for `wslview`) are not
+installed by default.
 
-**2. `install.ps1`, a one-line Windows installer** (the same pattern as Bun, Deno and uv):
+Projects belong in the Linux home folder, not `/mnt/c` (much slower). `hive service install` needs
+systemd in WSL; plain `hive serve` is enough, and `wslu`'s `wslview` opens the Windows browser.
+
+**2. `install.ps1`, a one-line Windows installer** (the same pattern as Bun, Deno and uv) —
+written, awaiting its first test on a real machine:
 
 ```powershell
 irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
@@ -70,10 +73,11 @@ irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
 
 1. **WSL:** if missing, `wsl --install --no-distribution` (needs admin and a reboot; the script
    says so and asks to be run again afterwards).
-2. **A dedicated `agent-hive` distro** from the official Fedora WSL image. It sits next to the
-   user's own distros and never touches them; uninstalling is `wsl --unregister agent-hive`.
+2. **A dedicated `agent-hive` distro** from Ubuntu 24.04. It sits next to the user's own distros
+   and never touches them; uninstalling is `wsl --unregister agent-hive`.
 3. **Setup without the first-launch questions:** as root in the distro, create the user, add it
-   to `kvm`, `dnf install libkrun passt`, turn on systemd in `/etc/wsl.conf`, then run
+   to `kvm` and `sudo`, set its password over stdin, write systemd and the default user to
+   `/etc/wsl.conf`, `apt-get install passt gh wslu git curl ca-certificates`, then run
    `install-cli.sh` as the user.
 4. **`/dev/kvm`:** if missing, add `nestedVirtualization=true` under `[wsl2]` in
    `%UserProfile%\.wslconfig` (keeping a backup and the existing settings), `wsl --shutdown`, and
@@ -81,11 +85,11 @@ irm https://raw.githubusercontent.com/ogsapps/agent-hive/main/install.ps1 | iex
 5. **`hive` in PowerShell:** a `hive.cmd` on the Windows `PATH` that forwards to
    `wsl -d agent-hive -- hive ...`, so `hive serve` gives the web UI in the Windows browser.
 
-The script is written once the manual test works, and tested on a real Windows machine (CI can
-only check its syntax). The README then gets a Windows install line.
+CI parses the file with PowerShell 7 and Windows PowerShell 5.1 and runs PSScriptAnalyzer on it;
+the real test is on a Windows machine. `docs/WINDOWS.md` is the user guide.
 
 **3. Later, maybe: a ready-made WSL image.** Newer WSL installs a distro from a file
-(`wsl --install --from-file`). An `agent-hive.wsl` image with Fedora, libkrun and hive already
+(`wsl --install --from-file`). An `agent-hive.wsl` image with Ubuntu, libkrun and hive already
 inside would be one download with no package installs, but it is another large file to rebuild
 for every security update, so only once the script has proven itself.
 
