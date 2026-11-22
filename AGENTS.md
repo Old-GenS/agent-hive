@@ -25,9 +25,14 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 - **Doing that without leaving a mess:**
   1. Start from GitHub's `main`: `git fetch origin && git switch -c <short-branch-name> origin/main`.
   2. Commit only on that branch. **Never commit on local `main`.**
-  3. `git push -u origin <branch>` and open the pull request (`gh pr create --base main`).
-  4. After it merges (a merge commit; the repo allows no squash or rebase merging), go back:
-     `git switch main && git pull`, and delete the branch.
+  3. `git push -u origin <branch>` and open the pull request (`gh pr create --base main`), then
+     merge it yourself once the checks pass.
+  4. **Clean up in the same breath:** `git switch main && git pull --ff-only`, then
+     `git branch -d <branch>` (and `git push origin --delete <branch>` if GitHub still has it).
+     `git branch` must show only `main` before the next change starts.
+  5. **A branch whose pull request has merged is finished.** Never commit to it or push it again —
+     a push to a deleted branch name recreates it with no pull request, and that work silently
+     never merges. Start the next change from `main`.
 - **Update local `main` with `git pull --ff-only`** (or VS Code's Sync, which is the same thing when
   there is nothing to push). Set it once per clone: `git config pull.ff only`. If it refuses, a
   commit slipped onto local `main`; move it to a branch rather than merging.
