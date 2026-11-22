@@ -1,4 +1,4 @@
-name: Beta release
+name: Dev prerelease
 
 on:
   schedule:
@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: beta-release
+  group: dev-release
   cancel-in-progress: false
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: beta
+          ref: main
           fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -54,13 +54,14 @@ jobs:
           info_file="$prev/rootfs-info.json"
           : > "$info_file"
 
-          # The newest beta prerelease tag, through the API like the rest.
-          beta_tag=$(gh release list --repo "$repo" --limit 100 \
+          # The newest dev prerelease tag, through the API like the rest. The old v*-beta.*
+          # tags (the channel's previous name) count as previous prereleases too.
+          dev_tag=$(gh release list --repo "$repo" --limit 100 \
             --json tagName,isPrerelease,isDraft \
             --jq '[.[] | select(.isDraft == false and .isPrerelease == true)
-                       | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[0-9]+$"))][0].tagName // ""')
+                       | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(dev|beta)\\.[0-9]+$"))][0].tagName // ""')
 
-          # The newest release, stable or beta, that carries a rootfs-info.json asset.
+          # The newest release, stable or prerelease, that carries a rootfs-info.json asset.
           reuse_tag=""
           for tag in $(gh release list --repo "$repo" --limit 100 --json tagName,isDraft \
             --jq '.[] | select(.isDraft == false) | .tagName'); do
@@ -103,12 +104,12 @@ jobs:
           action=$(printf '%s' "$plan" | jq -r .action)
           reason=$(printf '%s' "$plan" | jq -r .reason)
 
-          # Rebuild when beta moved (new commits), when the rootfs plan says so, or on the first
-          # beta release ever.
+          # Rebuild when main moved (new commits), when the rootfs plan says so, or on the first
+          # dev release ever.
           head=$(git rev-parse HEAD)
-          if [ -z "$beta_tag" ]; then
+          if [ -z "$dev_tag" ]; then
             build=true
-          elif [ "$head" != "$(git rev-parse "refs/tags/$beta_tag^{commit}")" ]; then
+          elif [ "$head" != "$(git rev-parse "refs/tags/$dev_tag^{commit}")" ]; then
             build=true
           elif [ "$action" = "rebuild" ]; then
             build=true
@@ -116,14 +117,14 @@ jobs:
             build=false
           fi
 
-          version=$(RUN_NUMBER="${{ github.run_number }}" node -e 'const v=require("./package.json").version.split("."); console.log([v[0],v[1],Number(v[2])+1].join(".")+"-beta."+process.env.RUN_NUMBER)')
+          version=$(RUN_NUMBER="${{ github.run_number }}" node -e 'const v=require("./package.json").version.split("."); console.log([v[0],v[1],Number(v[2])+1].join(".")+"-dev."+process.env.RUN_NUMBER)')
 
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "rootfs=$action" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
           echo "reuse_tag=$reuse_tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "beta tag: ${beta_tag:-none}; rootfs: $action ($reason); version: $version"
+          echo "dev tag: ${dev_tag:-none}; rootfs: $action ($reason); version: $version"
 
   release:
     needs: plan
@@ -136,7 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: beta
+          ref: main
           fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -153,12 +154,12 @@ jobs:
         with:
           path: build/native
           key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
-      - name: Write the beta signing key
+      - name: Write the prerelease signing key
         env:
           BETA_SIGNING_KEY: ${{ secrets.BETA_SIGNING_KEY }}
         run: |
           umask 077
-          printf '%s\n' "$BETA_SIGNING_KEY" > "$RUNNER_TEMP/beta.pem"
+          printf '%s\n' "$BETA_SIGNING_KEY" > "$RUNNER_TEMP/prerelease.pem"
       - name: Download the tested rootfs
         if: needs.plan.outputs.rootfs == 'reuse'
         env:
@@ -171,27 +172,27 @@ jobs:
             --pattern "rootfs-info.json" \
             --dir "$RUNNER_TEMP/reuse"
           echo "HIVE_RELEASE_REUSE_ROOTFS=$(ls "$RUNNER_TEMP/reuse"/hive-rootfs-*-linux-x86_64.tar.gz)" >> "$GITHUB_ENV"
-      - name: Build the beta release
+      - name: Build the dev prerelease
         env:
           HIVE_RELEASE_VERSION: ${{ needs.plan.outputs.version }}
-          HIVE_SIGNING_KEY: ${{ runner.temp }}/beta.pem
+          HIVE_SIGNING_KEY: ${{ runner.temp }}/prerelease.pem
         run: npm run release
-      - name: Verify the beta signature
+      - name: Verify the prerelease signature
         env:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
-            import { BETA_RELEASE_PUBLIC_KEY } from "./dist/release-key.js";
+            import { PRERELEASE_PUBLIC_KEY } from "./dist/release-key.js";
             import { verifySums } from "./dist/release.js";
             const dir = "release/" + process.env.VERSION;
             const sums = readFileSync(dir + "/SHA256SUMS");
             const sig = readFileSync(dir + "/SHA256SUMS.sig", "utf8");
-            if (!verifySums(sums, sig, BETA_RELEASE_PUBLIC_KEY)) {
-              console.error("SHA256SUMS.sig was not signed by the beta key");
+            if (!verifySums(sums, sig, PRERELEASE_PUBLIC_KEY)) {
+              console.error("SHA256SUMS.sig was not signed by the prerelease key");
               process.exit(1);
             }
-            console.log("beta signature ok");
+            console.log("prerelease signature ok");
           '
       - name: Extract the app bundle and its rootfs
         env:
@@ -218,7 +219,7 @@ jobs:
           REUSE_TAG: ${{ needs.plan.outputs.reuse_tag }}
         run: |
           set -euo pipefail
-          prev_tag=$(git tag --list 'v*-beta.*' --sort=-v:refname | head -n1)
+          prev_tag=$(git tag --list 'v*-dev.*' 'v*-beta.*' --sort=-v:refname | head -n1)
           if [ -n "$prev_tag" ]; then
             commits=$(git log --oneline "$prev_tag..HEAD")
           else
@@ -230,7 +231,7 @@ jobs:
             rootfs_line="rootfs rebuilt: $ROOTFS_REASON"
           fi
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          Daily beta build of $GITHUB_SHA.
+          Daily dev build of $GITHUB_SHA.
 
           ## Commits
           \`\`\`
@@ -242,7 +243,7 @@ jobs:
 
           ## Try it
           \`\`\`bash
-          hive update --channel beta
+          hive update --channel dev
           \`\`\`
           EOF
       - name: Publish the prerelease
@@ -258,6 +259,6 @@ jobs:
             --title "v$VERSION" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             release/"$VERSION"/*
-      - name: Delete the beta signing key
+      - name: Delete the prerelease signing key
         if: always()
-        run: rm -f "$RUNNER_TEMP/beta.pem"
+        run: rm -f "$RUNNER_TEMP/prerelease.pem"

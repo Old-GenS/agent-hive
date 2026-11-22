@@ -8,11 +8,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 version=$(node -p "require('./package.json').version")
-# HIVE_RELEASE_VERSION lets CI build a beta prerelease without committing a package.json bump.
+# HIVE_RELEASE_VERSION lets CI build a prerelease without committing a package.json bump.
 if [[ -n "${HIVE_RELEASE_VERSION:-}" ]]; then
   version=$HIVE_RELEASE_VERSION
-  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
-    echo "build-release: HIVE_RELEASE_VERSION must look like 1.2.3 or 1.2.3-beta.4 (got \"$version\")" >&2
+  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(dev|beta)\.[0-9]+)?$ ]]; then
+    echo "build-release: HIVE_RELEASE_VERSION must look like 1.2.3 or 1.2.3-dev.4 (got \"$version\")" >&2
     exit 1
   fi
 fi
@@ -47,7 +47,7 @@ fi
 if [[ "${HIVE_RELEASE_SKIP_ROOTFS:-}" == "1" ]]; then
   rver=none
 elif [[ -n "${HIVE_RELEASE_REUSE_ROOTFS:-}" ]]; then
-  # Reuse a rootfs a previous (beta) release already built and tested instead of building it again.
+  # Reuse a rootfs a previous (dev) release already built and tested instead of building it again.
   reuse=$HIVE_RELEASE_REUSE_ROOTFS
   if [[ ! -f "$reuse" ]]; then
     echo "build-release: HIVE_RELEASE_REUSE_ROOTFS=$reuse is not a file" >&2
@@ -84,7 +84,7 @@ else
   # /run at boot, and the export can leave unreadable mount points there.
   podman unshare tar -C "$rootfs" --exclude=./.complete --exclude='./run/*' \
     -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
-  # What the beta channel's rootfs plan compares next time: which image tree this rootfs came from
+  # What the dev channel's rootfs plan compares next time: which image tree this rootfs came from
   # and when it was built. Clients never read it, so it is not in SHA256SUMS.
   image_tree=$(git rev-parse HEAD:image)
   built=$(date -u +%Y-%m-%dT%H:%M:%SZ)

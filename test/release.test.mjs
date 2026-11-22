@@ -86,7 +86,7 @@ function makeRelease(version, rver, { tamper } = {}) {
 
 // The release the local API currently serves.
 let current = null;
-// The releases the beta channel's list endpoint serves: [{ version, files, draft }].
+// The releases the dev channel's list endpoint serves: [{ version, files, draft }].
 let releaseList = null;
 let baseUrl = "";
 const requestCounts = new Map();
@@ -175,36 +175,44 @@ test("compareVersions compares dotted numbers numerically", () => {
   assert.throws(() => release.compareVersions("1.x", "1.0.0"), /bad version: 1\.x/);
 });
 
-test("compareVersions orders beta prereleases below their release", () => {
-  assert.equal(release.compareVersions("0.5.1-beta.2", "0.5.1-beta.10"), -1);
-  assert.equal(release.compareVersions("0.5.1-beta.10", "0.5.1"), -1);
-  assert.equal(release.compareVersions("0.5.1", "0.5.1-beta.10"), 1);
-  assert.equal(release.compareVersions("0.5.0", "0.5.1-beta.1"), -1);
-  assert.equal(release.compareVersions("v0.5.1-beta.3", "0.5.1-beta.3"), 0);
+test("compareVersions orders prereleases below their release", () => {
+  assert.equal(release.compareVersions("0.5.1-dev.2", "0.5.1-dev.10"), -1);
+  assert.equal(release.compareVersions("0.5.1-dev.10", "0.5.1"), -1);
+  assert.equal(release.compareVersions("0.5.1", "0.5.1-dev.10"), 1);
+  assert.equal(release.compareVersions("0.5.0", "0.5.1-dev.1"), -1);
+  assert.equal(release.compareVersions("v0.5.1-dev.3", "0.5.1-dev.3"), 0);
+  // The old beta suffix still orders, and mixes with dev by N.
+  assert.equal(release.compareVersions("0.5.6-beta.3", "0.5.6-dev.4"), -1);
+  assert.equal(release.compareVersions("0.5.6-dev.4", "0.5.6-beta.3"), 1);
+  assert.equal(release.compareVersions("0.5.6-beta.3", "0.5.6-beta.3"), 0);
   assert.throws(() => release.compareVersions("0.5.1-rc.1", "0.5.1"), /bad version: 0\.5\.1-rc\.1/);
-  assert.equal(release.isBeta("0.5.1-beta.2"), true);
-  assert.equal(release.isBeta("v0.5.1-beta.2"), true);
-  assert.equal(release.isBeta("0.5.1"), false);
+  assert.equal(release.isPrerelease("0.5.1-dev.2"), true);
+  assert.equal(release.isPrerelease("v0.5.1-dev.2"), true);
+  assert.equal(release.isPrerelease("0.5.1-beta.2"), true);
+  assert.equal(release.isPrerelease("0.5.1"), false);
 });
 
 test("readChannel/writeChannel keep the channel in the data dir", () => {
   assert.equal(release.channelFile(), join(dataDir, "channel"));
   assert.equal(release.readChannel(), "stable");
-  release.writeChannel("beta");
-  assert.equal(release.readChannel(), "beta");
-  assert.equal(readFileSync(release.channelFile(), "utf8"), "beta\n");
+  release.writeChannel("dev");
+  assert.equal(release.readChannel(), "dev");
+  assert.equal(readFileSync(release.channelFile(), "utf8"), "dev\n");
+  // An install that saved the old channel name keeps working: beta means dev.
+  writeFileSync(release.channelFile(), "beta\n");
+  assert.equal(release.readChannel(), "dev");
   writeFileSync(release.channelFile(), "something else\n");
   assert.equal(release.readChannel(), "stable");
   release.writeChannel("stable");
 });
 
-test("trustedKeys adds the beta key only on the beta channel", () => {
+test("trustedKeys adds the prerelease key only on the dev channel", () => {
   const stable = release.trustedKeys("stable");
-  const beta = release.trustedKeys("beta");
+  const dev = release.trustedKeys("dev");
   assert.equal(stable.length, 1);
-  assert.equal(beta.length, 2);
-  assert.equal(beta[0], stable[0]);
-  assert.match(beta[1], /^-----BEGIN PUBLIC KEY-----/);
+  assert.equal(dev.length, 2);
+  assert.equal(dev[0], stable[0]);
+  assert.match(dev[1], /^-----BEGIN PUBLIC KEY-----/);
 });
 
 test("verifySums accepts only the right key and body", () => {
@@ -273,18 +281,19 @@ test("a release signed by a second key installs only when that key is trusted", 
   assert.ok(existsSync(join(dir, "VERSION")));
 });
 
-test("fetchRelease picks the newest release from the beta channel's list", async () => {
+test("fetchRelease picks the newest release from the dev channel's list", async () => {
   current = makeRelease("1.7.0", "aaaaaaaaaaaa");
   releaseList = [
     { version: "2.0.0", files: new Map(), draft: true },
     { version: "1.7.0", files: current.files },
-    { version: "1.8.0-beta.3", files: new Map() },
-    { version: "1.8.0-beta.10", files: new Map() },
+    { version: "1.8.0-dev.3", files: new Map() },
+    { version: "1.8.0-dev.10", files: new Map() },
+    { version: "1.8.0-beta.9", files: new Map() },
     { version: "not-a-version", files: new Map() },
   ];
-  const beta = await release.fetchRelease(undefined, 30_000, "beta");
-  assert.equal(beta.version, "1.8.0-beta.10");
-  assert.equal(beta.assets.length, 0);
+  const dev = await release.fetchRelease(undefined, 30_000, "dev");
+  assert.equal(dev.version, "1.8.0-dev.10");
+  assert.equal(dev.assets.length, 0);
   releaseList = null;
 
   // The stable channel still asks for /releases/latest.
@@ -340,6 +349,31 @@ test("CLI update refuses to run outside an installed release", () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /runs from source/);
+});
+
+test("CLI update accepts dev and the old beta alias, and rejects other channels", () => {
+  delete process.env.HIVE_BUNDLE_ROOT;
+  const run = (channel) =>
+    spawnSync(process.execPath, ["dist/cli.js", "update", "--channel", channel], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env },
+    });
+
+  for (const [arg, expected] of [
+    ["dev", "dev"],
+    ["beta", "dev"],
+    ["stable", "stable"],
+  ]) {
+    // The channel is written before the source-checkout refusal, so stdout still has the message.
+    const result = run(arg);
+    assert.match(result.stdout, new RegExp(`hive: update channel is now ${expected}`));
+    assert.equal(readFileSync(release.channelFile(), "utf8"), `${expected}\n`);
+  }
+
+  const bad = run("nightly");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /--channel must be stable or dev/);
 });
 
 test("CLI doctor reports a source checkout", () => {

@@ -56,7 +56,7 @@ hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>
 hive uninstall [--yes] [--all] [--dry-run]
 hive setup
 hive doctor
-hive update [--check | --rollback | --channel stable|beta]
+hive update [--check | --rollback | --channel stable|dev]
 hive --version
 `;
 
@@ -1635,8 +1635,10 @@ async function cmdUpdate(args: string[]): Promise<number> {
       channel: { type: "string" },
     },
   });
-  if (values.channel !== undefined && values.channel !== "stable" && values.channel !== "beta") {
-    throw new Error("--channel must be stable or beta");
+  // `beta` is the old channel name; it now means `dev`.
+  const wanted = values.channel === "beta" ? "dev" : values.channel;
+  if (wanted !== undefined && wanted !== "stable" && wanted !== "dev") {
+    throw new Error("--channel must be stable or dev");
   }
   const {
     activate,
@@ -1645,15 +1647,15 @@ async function cmdUpdate(args: string[]): Promise<number> {
     currentVersion,
     fetchRelease,
     installRelease,
-    isBeta,
+    isPrerelease,
     prune,
     readChannel,
     rollback,
     writeChannel,
   } = await import("./release.js");
-  if (values.channel !== undefined) {
-    writeChannel(values.channel);
-    process.stdout.write(`hive: update channel is now ${values.channel}\n`);
+  if (wanted !== undefined) {
+    writeChannel(wanted);
+    process.stdout.write(`hive: update channel is now ${wanted}\n`);
   }
   if (!bundleRoot()) {
     throw new Error(
@@ -1669,11 +1671,11 @@ async function cmdUpdate(args: string[]): Promise<number> {
   }
 
   const channel = readChannel();
-  const suffix = channel === "beta" ? " (beta channel)" : "";
+  const suffix = channel === "dev" ? " (dev channel)" : "";
   const rel = await fetchRelease(undefined, undefined, channel);
 
-  // Switching to stable must not downgrade an install that is already on a newer beta.
-  if (channel === "stable" && isBeta(cur) && compareVersions(cur, rel.version) > 0) {
+  // Switching to stable must not downgrade an install that is already on a newer prerelease.
+  if (channel === "stable" && isPrerelease(cur) && compareVersions(cur, rel.version) > 0) {
     process.stdout.write(
       `hive ${cur} is newer than the latest stable release (${rel.version}); you'll get the next stable release\n`,
     );

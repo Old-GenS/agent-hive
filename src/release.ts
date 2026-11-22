@@ -31,7 +31,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { BETA_RELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from "./release-key.js";
+import { PRERELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from "./release-key.js";
 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -73,16 +73,16 @@ export function cacheFile(): string {
 
 /**
  * Compare dotted numeric versions. A leading `v` and missing trailing parts are ignored, and an
- * optional `-beta.N` prerelease sorts below the same `X.Y.Z` without one; two betas of the same
- * version compare by N.
+ * optional `-dev.N` (or the old `-beta.N`) prerelease sorts below the same `X.Y.Z` without one;
+ * prereleases of the same version compare by N, whichever word they use.
  */
 export function compareVersions(a: string, b: string): -1 | 0 | 1 {
-  const parse = (version: string): { parts: number[]; beta: number | undefined } => {
-    const m = /^(\d+(?:\.\d+)*)(?:-beta\.(\d+))?$/.exec(version.replace(/^v/, ""));
+  const parse = (version: string): { parts: number[]; prerelease: number | undefined } => {
+    const m = /^(\d+(?:\.\d+)*)(?:-(?:dev|beta)\.(\d+))?$/.exec(version.replace(/^v/, ""));
     if (!m) throw new Error(`bad version: ${version}`);
     return {
       parts: m[1].split(".").map((part) => Number.parseInt(part, 10)),
-      beta: m[2] === undefined ? undefined : Number.parseInt(m[2], 10),
+      prerelease: m[2] === undefined ? undefined : Number.parseInt(m[2], 10),
     };
   };
   const pa = parse(a);
@@ -94,28 +94,32 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
     if (x < y) return -1;
     if (x > y) return 1;
   }
-  if (pa.beta === pb.beta) return 0;
-  if (pa.beta === undefined) return 1;
-  if (pb.beta === undefined) return -1;
-  return pa.beta < pb.beta ? -1 : 1;
+  if (pa.prerelease === pb.prerelease) return 0;
+  if (pa.prerelease === undefined) return 1;
+  if (pb.prerelease === undefined) return -1;
+  return pa.prerelease < pb.prerelease ? -1 : 1;
 }
 
-/** True when `version` is a beta prerelease (`X.Y.Z-beta.N`), with or without a leading `v`. */
-export function isBeta(version: string): boolean {
-  return /^v?\d+(?:\.\d+)*-beta\.\d+$/.test(version);
+/**
+ * True when `version` is a prerelease (`X.Y.Z-dev.N`) or uses the old `X.Y.Z-beta.N` suffix, with
+ * or without a leading `v`.
+ */
+export function isPrerelease(version: string): boolean {
+  return /^v?\d+(?:\.\d+)*-(?:dev|beta)\.\d+$/.test(version);
 }
 
-export type Channel = "stable" | "beta";
+export type Channel = "stable" | "dev";
 
 /** Where the update channel is remembered: a file in the data dir. */
 export function channelFile(): string {
   return join(dataDir(), "channel");
 }
 
-/** The channel this install follows; anything but a `beta` file means the stable channel. */
+/** The channel this install follows; a `dev` (or old `beta`) file means the dev channel. */
 export function readChannel(): Channel {
   try {
-    return readFileSync(channelFile(), "utf8").trim() === "beta" ? "beta" : "stable";
+    const saved = readFileSync(channelFile(), "utf8").trim();
+    return saved === "dev" || saved === "beta" ? "dev" : "stable";
   } catch {
     return "stable";
   }
@@ -128,7 +132,7 @@ export function writeChannel(channel: Channel): void {
 
 /** The release keys this channel trusts. Empty strings are dropped. */
 export function trustedKeys(channel: Channel): string[] {
-  return (channel === "beta" ? [RELEASE_PUBLIC_KEY, BETA_RELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]).filter(
+  return (channel === "dev" ? [RELEASE_PUBLIC_KEY, PRERELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]).filter(
     (key) => key !== "",
   );
 }
@@ -241,7 +245,7 @@ async function fetchReleaseJson(url: string, timeoutMs: number): Promise<unknown
 
 /**
  * Look up the latest release, or a specific tag, on GitHub (or HIVE_RELEASE_API). Without a tag,
- * the stable channel uses `/releases/latest`; the beta channel lists the recent releases and picks
+ * the stable channel uses `/releases/latest`; the dev channel lists the recent releases and picks
  * the highest version, prereleases included.
  */
 export async function fetchRelease(tag?: string, timeoutMs = 30_000, channel: Channel = "stable"): Promise<Release> {
@@ -421,8 +425,8 @@ export async function setupRootfs(
   const dest = join(rootfsDir(), rver);
   if (existsSync(join(dest, ".complete"))) return dest;
 
-  // A beta build trusts the beta key too, whether or not the channel file says so.
-  const channel = isBeta(currentVersion() ?? "0.0.0") ? "beta" : readChannel();
+  // A prerelease build trusts the prerelease key too, whether or not the channel file says so.
+  const channel: Channel = isPrerelease(currentVersion() ?? "0.0.0") || readChannel() === "dev" ? "dev" : "stable";
   const keys = (o.publicKeys ?? trustedKeys(channel)).filter((key) => key !== "");
   if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 

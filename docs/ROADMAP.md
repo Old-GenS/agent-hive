@@ -1,8 +1,8 @@
 # Roadmap
 
 Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine.
-`main` is stable; `beta` carries the newest dependencies before they're fully tested (see
-"Keeping it up to date").
+`main` is the one branch; the daily dev prereleases carry the newest dependencies before they're
+fully tested (see "Keeping it up to date").
 
 ## Step 1 — Releases, `hive update`, system libkrun *(done: v0.4.0)*
 
@@ -175,30 +175,32 @@ How they stay current:
    reproducible and a bump is a small change you can review. `image/Containerfile` and the release
    scripts read it.
 2. **A daily check** *(done)*. `scripts/check-updates.mjs` in `bump.yml` looks for a new upstream
-   release of each pinned piece and, when there is one, opens a pull request against `beta` that
+   release of each pinned piece and, when there is one, opens a pull request against `main` that
    bumps the pin (`scripts/rootfs-plan.mjs` decides whether the rootfs is rebuilt).
 3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
    rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`); the pull request
    merges automatically once `test` and `vm` pass.
-4. **The rootfs is reused while it is current** *(done)*. The daily beta build reuses the tested
+4. **The rootfs is reused while it is current** *(done)*. The daily dev build reuses the tested
    rootfs unless `image/` changed, it has pending security updates, it is 14+ days old with
    updates, or it was dispatched with `fresh_rootfs`.
 5. **Security fixes skip the wait** *(done)*. A libkrun, libkrunfw or Chromium security fix goes to
-   `beta` and gets a beta prerelease the same night; promotion to stable is one merge.
+   `main` and gets a dev prerelease the same night; a stable release is a manual bump from `main`.
 
-### The beta channel
+### The dev channel
 
-- **`beta` branch:** the newest of everything above. Bump pull requests merge into it automatically
-  once CI passes, so it's always the latest, but only CI-tested, not used in real work yet.
-- **Beta releases** *(done)*: every day with new commits, `beta.yml` publishes a signed GitHub
-  prerelease, `v<version>-beta.<n>`, after a real VM smoke test. `hive update --channel beta`
-  follows them; the default channel follows only full releases. `hive doctor` shows the channel.
-- **Promotion:** after a beta has run real tasks for a few days without trouble, merge `beta` into
-  `main` and publish a full release from `main`.
+- **One branch:** `main`. Bump pull requests and Dependabot updates merge into it automatically once
+  the required `test` and `vm` checks pass, so it's always the latest, but only CI-tested, not used
+  in real work yet.
+- **Dev releases** *(done)*: every day with new commits, `dev.yml` publishes a signed GitHub
+  prerelease, `v<version>-dev.<n>`, after a real VM smoke test. `hive update --channel dev` follows
+  them (`beta` is accepted as an alias); the default channel follows only full releases.
+  `hive doctor` shows the channel.
+- **Stable releases:** cut by hand from `main` after a dev build has run real tasks for a few days
+  without trouble.
 - **Rollback:** `hive update --rollback` works the same on both channels; going back to stable is
   `hive update --channel stable` (never a downgrade: it waits for the next stable release).
-- **Setup:** see "Automation and the beta channel" in [RELEASING.md](RELEASING.md) for the two
-  signing keys, the branch protection and how to rotate the beta key.
+- **Setup:** see "Automation and the dev channel" in [RELEASING.md](RELEASING.md) for the two
+  signing keys, the branch protection and how to rotate the prerelease key.
 
 ## Step 3 — gVisor fallback when there is no KVM
 

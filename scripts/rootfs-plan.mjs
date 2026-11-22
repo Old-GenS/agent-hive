@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Decide whether the daily beta build reuses the previous VM rootfs or rebuilds it.
+ * Decide whether the daily dev build reuses the previous VM rootfs or rebuilds it.
  *
- * The beta workflow keeps the previous release's `rootfs-info.json` (which image tree the rootfs
+ * The dev workflow keeps the previous release's `rootfs-info.json` (which image tree the rootfs
  * was built from and when) and the update counts it measured by booting that rootfs. Reuse is the
  * normal case: a 660 MB rootfs rebuild and download is only worth it when the image changed, when
  * there are pending security updates, or when the rootfs is old enough that the batching rule says

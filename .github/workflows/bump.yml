@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: beta
+          ref: main
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -53,7 +53,7 @@ jobs:
               pi) source="https://www.npmjs.com/package/@earendil-works/pi-coding-agent" ;;
               *) source="" ;;
             esac
-            git checkout -B "$branch" origin/beta
+            git checkout -B "$branch" origin/main
             node scripts/check-updates.mjs --apply "$name"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -61,7 +61,7 @@ jobs:
             git commit -m "Bump $name $current → $latest"
             git push origin "$branch"
             url=$(gh pr create \
-              --base beta \
+              --base main \
               --head "$branch" \
               --title "Bump $name $current → $latest" \
               --body "The daily update check found a newer \`$name\`.
@@ -69,7 +69,8 @@ jobs:
           - \`$name\`: $current → $latest
           - Source: $source
 
-          Merges automatically when CI passes, including the real VM test.")
+          Merges automatically when CI passes, including the real VM test, and lands in the
+          next dev build.")
             gh workflow run ci.yml --ref "$branch"
             gh pr merge --auto --squash "$url"
           done

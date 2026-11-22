@@ -53,10 +53,10 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
-| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one auto-merging PR per component), `beta.yml` (daily signed beta prerelease, reusing the tested rootfs when it is current), `sync-beta.yml` (auto PR from `main` to `beta`), `dependabot-automerge.yml`; `.github/dependabot.yml` groups npm and Actions updates onto `beta` |
+| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one auto-merging PR per component), `dev.yml` (daily signed dev prerelease, reusing the tested rootfs when it is current), `dependabot-automerge.yml`; `.github/dependabot.yml` groups npm and Actions updates onto `main` |
 | `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for releases) and `native-in-container.sh` (its manylinux_2_28 half), release build and signing |
 | `scripts/check-updates.mjs` | The daily bump check: newest upstream version of every pin in `versions.json` and `image/Containerfile` (`--list` as JSON, `--apply <component>`); pure parsers and `applyUpdate` are exported for tests |
-| `scripts/rootfs-plan.mjs` | The beta build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
+| `scripts/rootfs-plan.mjs` | The dev build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
 | `scripts/vm-smoke.mjs` | The real-VM release check: HTTPS through the egress proxy, LAN and metadata addresses refused, headless Chromium renders a page, and a run with a fake OpenRouter key gets a 401 and no network error |
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
 | `docs/INSTALL.md` | Every install route (Linux release, Windows, from source), what's needed, after installing, updating and uninstalling; the README keeps only the two one-liners |
@@ -203,9 +203,9 @@ launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, R
 the Windows one-line installer (`install.ps1`: a dedicated WSL2 Ubuntu distro, `hive.cmd` on the
 Windows `PATH`, guide in `docs/WINDOWS.md`), still awaiting its first test on a real machine;
 `install-cli.sh` VM-filesystem download progress and KVM/pasta/PATH advice; `hive update` with
-rollback; a beta channel signed by a separate CI key; CI that boots a real VM for every change and
-parses/analyses `install.ps1`; a daily check that opens tested pin-bump PRs; Dependabot; a daily
-beta prerelease (`.github/workflows/`, `docs/RELEASING.md`).
+rollback; a dev channel signed by a separate CI prerelease key; CI that boots a real VM for every
+change and parses/analyses `install.ps1`; a daily check that opens tested pin-bump PRs; Dependabot;
+a daily dev prerelease (`.github/workflows/`, `docs/RELEASING.md`).
 
 **Not built yet:**
 - server: refusing to restart, or finishing runs first, while runs are in progress

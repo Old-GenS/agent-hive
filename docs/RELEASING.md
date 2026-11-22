@@ -69,8 +69,8 @@ until a newer one passes that check.
 
    Set `HIVE_SIGNING_KEY` to use a key other than `~/.config/agent-hive/release-signing-key.pem`,
    and `HIVE_RELEASE_SKIP_ROOTFS=1` to skip building the rootfs (the bundle then records
-   `ROOTFS_VERSION=none`). `HIVE_RELEASE_VERSION=<x.y.z or x.y.z-beta.n>` overrides
-   `package.json`'s version (the beta workflow uses it), and
+   `ROOTFS_VERSION=none`). `HIVE_RELEASE_VERSION=<x.y.z or x.y.z-dev.n>` overrides
+   `package.json`'s version (the dev workflow uses it), and
    `HIVE_RELEASE_REUSE_ROOTFS=<path to hive-rootfs-<rver>-linux-x86_64.tar.gz>` reuses a rootfs an
    earlier release built instead of running podman: the file's name gives the rootfs version, and a
    `rootfs-info.json` next to it (which every built rootfs release has) is copied into the output.
@@ -97,41 +97,41 @@ until a newer one passes that check.
    gh release create v<version> release/<version>/* --title v<version> --notes "<notes>"
    ```
 
-## Automation and the beta channel
+## Automation and the dev channel
 
-`.github/workflows/` keeps `beta` at the newest upstream pins and publishes a signed beta
-prerelease every day. Stable releases stay manual. The GitHub side is already set up: the `beta`
-branch, the `beta-release` environment (deployments only from `beta`) holding the
-`BETA_SIGNING_KEY` secret, auto-merge enabled, and Actions allowed to create pull requests.
+`.github/workflows/` keeps `main` at the newest upstream pins and publishes a signed dev
+prerelease every day. Stable releases stay manual. The GitHub side is already set up: the
+`beta-release` environment (kept under its old name) holding the `BETA_SIGNING_KEY` secret,
+auto-merge enabled, and Actions allowed to create pull requests.
 
 ### Two signing keys
 
 - **Stable key** (`RELEASE_PUBLIC_KEY` in `src/release-key.ts`): its private half lives only on the
   release machine (see above) and never in GitHub.
-- **Beta key** (`BETA_RELEASE_PUBLIC_KEY` in `src/release-key.ts`): its private half, an ed25519
-  PKCS#8 PEM, is the `BETA_SIGNING_KEY` secret of the `beta-release` environment. The beta
-  workflow signs each prerelease with it in CI.
+- **Prerelease key** (`PRERELEASE_PUBLIC_KEY` in `src/release-key.ts`): its private half, an ed25519
+  PKCS#8 PEM, is the `BETA_SIGNING_KEY` secret of the `beta-release` environment. The dev workflow
+  signs each dev prerelease with it in CI.
 
-A stable install trusts only the stable key, so the beta key (or a GitHub compromise) cannot sign
-an update for it. The beta channel trusts both keys, so a beta install can move back to a stable
+A stable install trusts only the stable key, so the prerelease key (or a GitHub compromise) cannot
+sign an update for it. The dev channel trusts both keys, so a dev install can move back to a stable
 release.
 
-**Rotating the beta key:** generate a new keypair with `node scripts/keygen.mjs <file>`, put the
-private half in the `BETA_SIGNING_KEY` environment secret, commit the new public half as
-`BETA_RELEASE_PUBLIC_KEY`, and publish the next beta. The stable key is untouched; existing beta
-installs keep trusting the previous beta key until they update.
+**Rotating the prerelease key:** generate a new keypair with `node scripts/keygen.mjs <file>`, put
+the private half in the `BETA_SIGNING_KEY` environment secret, commit the new public half as
+`PRERELEASE_PUBLIC_KEY`, and publish the next dev build. The stable key is untouched; existing dev
+installs keep trusting the previous prerelease key until they update.
 
 ### Branches and pull requests
 
-- `main` is stable. Every push to `main` opens (or reuses) a `main` → `beta` pull request that
-  merges automatically once checks pass (`sync-beta.yml`).
-- `beta` is the newest of everything. The daily bump workflow and Dependabot open pull requests
-  against `beta`; they merge automatically when the `test` and `vm` checks pass. Dependabot's major
-  updates wait for a human (`dependabot-automerge.yml` skips `version-update:semver-major`).
+- `main` is the only branch. Every change — yours, the daily update check's pull requests,
+  Dependabot's — lands on `main` through a pull request that merges automatically once the required
+  `test` and `vm` checks pass.
+- Dependabot's major updates wait for a human (`dependabot-automerge.yml` skips
+  `version-update:semver-major`).
 - Pull requests opened with `GITHUB_TOKEN` don't start workflows on their own, so the bump workflow
   dispatches `ci.yml` on its branch before enabling auto-merge; that run's checks land on the same
   commit.
-- The maintainer sets `beta` branch protection: required checks `test` and `vm`, auto-merge
+- The maintainer sets `main` branch protection: required checks `test` and `vm`, auto-merge
   allowed.
 
 ### The daily bump check
@@ -150,22 +150,23 @@ installs keep trusting the previous beta key until they update.
 | pi | `@earendil-works/pi-coding-agent` on npm |
 
 For each update it creates the branch `auto/<component>-<version>`, applies the bump with
-`--apply`, commits as `github-actions[bot]`, pushes, and opens a pull request against `beta` with
+`--apply`, commits as `github-actions[bot]`, pushes, and opens a pull request against `main` with
 the old → new version and the source URL. `--list` prints the updates as JSON, which the workflow
 reads.
 
-### The daily beta prerelease
+### The daily dev prerelease
 
-`beta.yml` (daily at 05:41 UTC, or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
-`v<package.json patch + 1>-beta.<run number>` when `beta` has moved since the last beta tag or the
+`dev.yml` (daily at 05:41 UTC, or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
+`v<package.json patch + 1>-dev.<run number>` when `main` has moved since the last dev tag or the
 rootfs needs rebuilding:
 
-- `plan` compares `beta`'s HEAD with the newest `v*-beta.*` tag, finds the newest release that
-  carries a `rootfs-info.json`, and reuses its rootfs unless the rule below says to rebuild.
+- `plan` compares `main`'s HEAD with the newest `v*-dev.*` tag (the old `v*-beta.*` tags count as
+  previous prereleases too), finds the newest release that carries a `rootfs-info.json`, and reuses
+  its rootfs unless the rule below says to rebuild.
 - `release` (the `beta-release` environment) builds with `HIVE_RELEASE_VERSION`, signs with
-  `BETA_SIGNING_KEY`, verifies `SHA256SUMS.sig` against `BETA_RELEASE_PUBLIC_KEY`, boots a real VM
+  `BETA_SIGNING_KEY`, verifies `SHA256SUMS.sig` against `PRERELEASE_PUBLIC_KEY`, boots a real VM
   (`scripts/vm-smoke.mjs`), and only then publishes the prerelease: the commits since the previous
-  beta tag, which rootfs it uses, and `hive update --channel beta`.
+  prerelease tag, which rootfs it uses, and `hive update --channel dev`.
 
 The rootfs rule (`scripts/rootfs-plan.mjs`) reuses the tested rootfs unless
 
@@ -179,11 +180,11 @@ only a rebuild pays the ~660 MB rootfs build and download.
 
 ### Promotion to stable
 
-1. Merge `beta` into `main` with a pull request; the `main` → `beta` sync then keeps them level.
-2. Bump `version` in `package.json` and cut the stable release locally, as in "Cut a release".
-   Optionally set `HIVE_RELEASE_REUSE_ROOTFS=<beta's rootfs tarball>` to ship exactly the rootfs
-   beta already tested; otherwise the release rebuilds it.
-3. Publish with `gh release create` as before. Stable installs accept only the stable key.
+1. Bump `version` in `package.json` and cut the stable release locally from `main`, as in "Cut a
+   release". Optionally build from the exact commit of a dev build that has been good, with
+   `HIVE_RELEASE_REUSE_ROOTFS=<that build's rootfs tarball>` set to ship exactly the rootfs the dev
+   build already tested; otherwise the release rebuilds it.
+2. Publish with `gh release create` as before. Stable installs accept only the stable key.
 
 ## What each file is
 
@@ -196,7 +197,7 @@ only a rebuild pays the ~660 MB rootfs build and download.
 | `release/<version>/passt-<version>-source.tar.xz` | The passt source tarball (GPL-2.0-or-later / BSD-3-Clause corresponding source) the static `pasta` was built from. |
 | `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and the source tarballs. |
 | `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature over `SHA256SUMS`, verified by `hive update`. |
-| `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it); the beta rootfs plan does. |
+| `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it); the dev rootfs plan does. |
 
 `install-cli.sh` checks the download against `SHA256SUMS` over HTTPS but does not verify the
 signature; `hive update` checks both before switching versions.
