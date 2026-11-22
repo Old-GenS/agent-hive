@@ -530,13 +530,19 @@ function markOnboardingDone(): void {
   }
 }
 
-/** Whether the server says setup is needed, and this browser hasn't dismissed it. */
+/**
+ * Whether to open the first-run setup. A server with no model key always gets it: nothing can run
+ * without one, and this browser's "done" flag may be from another hive at the same address (a
+ * reinstall, another WSL distro). Otherwise the server's answer counts unless this browser
+ * dismissed setup.
+ */
 async function onboardingNeeded(): Promise<boolean> {
-  if (onboardingDone()) return false;
   try {
     const res = await api("/api/onboarding");
     if (!res.ok) return false;
-    const data = (await res.json()) as { needed?: unknown };
+    const data = (await res.json()) as { needed?: unknown; hasKey?: unknown };
+    if (data.hasKey === false) return true;
+    if (onboardingDone()) return false;
     return data.needed === true;
   } catch {
     return false;
