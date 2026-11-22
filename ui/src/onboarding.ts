@@ -7,6 +7,7 @@
  * that setup was done and take the user to the Runs page.
  */
 import { api, el } from "./util.js";
+import { githubConnect } from "./github-connect.js";
 
 export interface SetupOptions {
   /** Remember that setup is done (the caller owns localStorage). */
@@ -638,11 +639,8 @@ export function buildSetupPage(options: SetupOptions): HTMLElement {
       body.append(
         el("p", { class: "setup-lead" }, "GitHub is optional: local repos and the terminal still work."),
         el("p", {}, "Sign in with the GitHub CLI so hive can list your repos, push branches and open pull requests."),
-        copyBox("gh auth login"),
+        githubConnect({ refresh: () => void loadData(), checkId: "setup-github-check" }),
       );
-      const again = el("button", { class: "btn", id: "setup-github-check", type: "button" }, "Check again");
-      again.onclick = () => void loadData();
-      body.append(el("div", { class: "setup-actions" }, again));
     }
     return body;
   }

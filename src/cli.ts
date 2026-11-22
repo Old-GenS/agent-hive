@@ -7,7 +7,7 @@
  * HIVE_DOTENV_PATH and HIVE_RUNTIME are in place before ./config.ts reads them.
  */
 import { parseArgs } from "node:util";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
@@ -49,6 +49,7 @@ hive keys add <provider> [--no-test]
 hive keys test [provider]
 hive keys remove <provider>
 hive keys default <provider>
+hive login github
 hive serve [--host <addr>] [--port <n>] [--open | --no-open]
 hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>] [--dry-run]
 hive setup
@@ -1428,6 +1429,55 @@ function setupDownloadProgress(): {
   return { onProgress, done };
 }
 
+/** Find an executable on PATH, without a shell (used for wslview on WSL). */
+function onPath(name: string): boolean {
+  for (const dir of (process.env.PATH || "").split(":")) {
+    if (!dir) continue;
+    try {
+      accessSync(join(dir, name), constants.X_OK);
+      return true;
+    } catch {
+      // Not in this directory.
+    }
+  }
+  return false;
+}
+
+/** `hive login github`: gh's own device login, with its prompts on this terminal. */
+async function cmdLogin(args: string[]): Promise<number> {
+  const [target, ...extra] = args;
+  if (target !== "github" || extra.length > 0) {
+    process.stderr.write("hive login github\n");
+    return 1;
+  }
+  const ghBin = process.env.GH_BIN || "gh";
+  const env: NodeJS.ProcessEnv = { ...process.env, GH_NO_UPDATE_NOTIFIER: "1" };
+  // On WSL, gh would look for a Linux browser; wslview opens the Windows one.
+  if (!env.BROWSER) {
+    const { hostInfo } = await import("./fixes.js");
+    if (hostInfo().wsl && onPath("wslview")) env.BROWSER = "wslview";
+  }
+  const login = spawnSync(ghBin, ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"], {
+    stdio: "inherit",
+    env,
+  });
+  if (login.error) {
+    if ((login.error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("gh is not installed on this computer; install the GitHub CLI (gh)");
+    }
+    throw new Error(`couldn't run gh: ${login.error.message}`);
+  }
+  if (login.status !== 0) return login.status ?? 1;
+  const setup = spawnSync(ghBin, ["auth", "setup-git"], { stdio: "inherit", env });
+  if (setup.error || setup.status !== 0) {
+    process.stderr.write("hive: warning: gh auth setup-git failed; git may not use the GitHub login\n");
+  }
+  const { githubLogin } = await import("./git.js");
+  const name = await githubLogin();
+  process.stdout.write(`hive: signed in to GitHub as ${name}\n`);
+  return 0;
+}
+
 async function cmdSetup(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { bundleRoot, setupRootfs } = await import("./release.js");
@@ -1637,6 +1687,9 @@ async function main(): Promise<void> {
       return;
     case "keys":
       process.exitCode = await cmdKeys(rest);
+      return;
+    case "login":
+      process.exitCode = await cmdLogin(rest);
       return;
     case "serve":
       process.exitCode = await cmdServe(rest);

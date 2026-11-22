@@ -409,7 +409,7 @@ Write-Host ''
 Write-Host "hive is installed in the WSL distro '$Distro'. In a new terminal:"
 Write-Host '  hive doctor                      check KVM, pasta and libkrun'
 Write-Host '  hive keys add openrouter         or deepseek, zai, anthropic, openai'
-Write-Host "  wsl -d $Distro -- gh auth login  for GitHub: new projects, pushes, pull requests"
+Write-Host "  hive login github                for GitHub: new projects, pushes, pull requests"
 Write-Host '  hive serve                       web UI at http://127.0.0.1:8080/ui/ in your browser'
 Write-Host ''
 Write-Host "Keep projects in the Linux home folder, not under C:\ (much faster)."

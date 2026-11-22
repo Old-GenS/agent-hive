@@ -62,8 +62,11 @@ is kept.
 **First run:** a new user with no model key, or a machine that isn't set up, lands on `#setup`
 (Welcome → Check this computer → Add a model key → GitHub → Ready). A failed check shows the
 command that fixes it for this distro, and WSL gets its own advice. An installed release whose VM
-filesystem is missing offers **Download VM filesystem** with progress. Every step can be skipped,
-and Settings has **Run setup again**. `hive doctor` prints the same fixes in the terminal.
+filesystem is missing offers **Download VM filesystem** with progress. Step 4 has a **Connect
+GitHub** button: it starts the GitHub CLI's device login on the server and shows the one-time code
+and the `github.com/login/device` link, so you enter the code on your own device and never type a
+`gh` command. Every step can be skipped, and Settings has **Run setup again**. `hive doctor` prints
+the same fixes in the terminal.
 
 **Runs**
 
@@ -103,7 +106,8 @@ repository.
   and RAM. Saved values apply to new runs without a restart; values set in the server's
   environment are shown read-only.
 - **This computer:** how runs are isolated, the checks behind it (KVM, libkrun, pasta, launcher,
-  VM filesystem), the GitHub login, a live **Resources** section (CPU, memory, disk, temperature,
+  VM filesystem), the GitHub login (with **Connect GitHub** when it isn't connected: the same
+  device-login flow as setup step 4), a live **Resources** section (CPU, memory, disk, temperature,
   runs) and the limits, with a link to **Settings › Runs**.
 
 The header has a light/dark toggle and Log out.
@@ -111,7 +115,9 @@ The header has a light/dark toggle and Log out.
 ## GitHub access
 
 By default the server clones and pushes over HTTPS with the machine's `gh` login, which also lists
-your repos, opens pull requests and creates new repositories. For several servers, per-repo SSH
+your repos, opens pull requests and creates new repositories. Log it in with **Connect GitHub** in
+the web UI (first-run setup or Settings › This computer), or with `hive login github`; each starts
+the GitHub CLI's device login and shows the one-time code. For several servers, per-repo SSH
 deploy keys and a separate bot account work too (`HIVE_GIT_PROTOCOL=ssh`); see
 [AGENTS.md](../AGENTS.md#github-access-server). The VM never gets any of these credentials.
 
@@ -150,4 +156,7 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | DELETE | `/api/settings/:key` | Reset one setting to its `.env` value or default |
 | GET | `/api/github/repos` | Your repos (via `gh`) |
 | GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first |
+| POST | `/api/github/login` | Start the server's GitHub device login (200 with the state; `waiting` carries the one-time `code` and `url`) |
+| GET | `/api/github/login` | The login's state: `idle`, `starting`, `waiting`, `done` (with `login`) or `error` |
+| DELETE | `/api/github/login` | Cancel a pending login and return `{state: "idle"}` |
 | GET | `/health` | Health check (no auth) |
