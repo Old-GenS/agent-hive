@@ -1,6 +1,6 @@
 {
   "name": "agent-hive",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "license": "MIT",
   "description": "Self-hosted coding agent server: pi in throwaway microVMs, behind a small Fastify API",
   "type": "module",
