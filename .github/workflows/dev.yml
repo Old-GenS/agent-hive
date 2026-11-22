@@ -259,6 +259,19 @@ jobs:
             --title "v$VERSION" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             release/"$VERSION"/*
+      - name: Keep only the newest 5 dev prereleases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Prereleases only (v*-dev.N, and the old v*-beta.N); stable releases are never touched.
+          old=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-(dev|beta)\\.[0-9]+$")))]
+                  | sort_by(.createdAt) | reverse | .[5:] | .[].tagName')
+          for tag in $old; do
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            echo "deleted old prerelease $tag"
+          done
       - name: Delete the prerelease signing key
         if: always()
         run: rm -f "$RUNNER_TEMP/prerelease.pem"
