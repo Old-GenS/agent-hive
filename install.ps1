@@ -252,6 +252,14 @@ if (-not $distroPresent) {
     Invoke-Program -FilePath 'wsl.exe' -ArgumentList @('--install', 'Ubuntu-24.04', '--name', $Distro, '--no-launch') | Out-Null
     $distroPresent = @(Get-WslDistro) -contains $Distro
     if (-not $distroPresent) {
+        # On some machines the first `wsl --install` only enables a Windows feature (DISM output)
+        # and returns without installing the distro; the same command then installs it.
+        Write-Note 'WSL enabled a Windows feature first; installing Ubuntu again'
+        Invoke-Program -FilePath 'wsl.exe' -ArgumentList @('--install', 'Ubuntu-24.04', '--name', $Distro, '--no-launch') | Out-Null
+        $distroPresent = @(Get-WslDistro) -contains $Distro
+    }
+    if (-not $distroPresent) {
+        Write-Host 'hive: if WSL asked for a restart, restart Windows and run this installer again.'
         Write-Host "hive: WSL did not register the distro '$Distro'."
         Write-Host "hive: try: wsl --install Ubuntu-24.04 --name $Distro --no-launch"
         throw 'hive: setup stopped (see above)'
