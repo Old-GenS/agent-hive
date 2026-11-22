@@ -1373,11 +1373,68 @@ async function cmdDoctor(args: string[]): Promise<number> {
   return allOk ? 0 : 1;
 }
 
+/** Whole MB, 1 decimal below 100 MB and none above it. */
+function megabytes(bytes: number): string {
+  return (bytes / 1_000_000).toFixed(bytes >= 100_000_000 ? 0 : 1);
+}
+
+/**
+ * Progress for `hive setup`'s one-time VM filesystem download, on stderr: one redrawn line on a
+ * terminal, a line every 10% otherwise. `done` finishes the line.
+ */
+function setupDownloadProgress(): {
+  onProgress: (p: { received: number; total: number | undefined }) => void;
+  done: () => void;
+} {
+  const tty = Boolean(process.stderr.isTTY);
+  let started = false;
+  let finished = false;
+  let lastDraw = 0;
+  let bucket = -1;
+  let openLine = false;
+  const onProgress = (p: { received: number; total: number | undefined }): void => {
+    if (!started) {
+      started = true;
+      const size = p.total === undefined ? "about 660 MB" : `${megabytes(p.total)} MB`;
+      process.stderr.write(`hive: downloading the VM filesystem (${size}, one time)…\n`);
+    }
+    const total = p.total;
+    const pct =
+      total === undefined ? undefined : total === 0 ? 100 : Math.min(100, Math.floor((p.received / total) * 100));
+    const totalText = total === undefined ? "?" : megabytes(total);
+    const pctText = pct === undefined ? "?" : String(pct);
+    if (tty) {
+      const now = Date.now();
+      if (pct === 100 && !finished) {
+        process.stderr.write(`\r  ${megabytes(p.received)} / ${totalText} MB (100%)\n`);
+        finished = true;
+        openLine = false;
+        return;
+      }
+      if (finished || now - lastDraw < 250) return;
+      lastDraw = now;
+      process.stderr.write(`\r  ${megabytes(p.received)} / ${totalText} MB (${pctText}%)`);
+      openLine = true;
+    } else {
+      const next = pct === undefined ? -1 : Math.floor(pct / 10);
+      if (next === bucket) return;
+      bucket = next;
+      process.stderr.write(`hive: ${megabytes(p.received)} / ${totalText} MB (${pctText}%)\n`);
+    }
+  };
+  const done = (): void => {
+    if (openLine) process.stderr.write("\n");
+  };
+  return { onProgress, done };
+}
+
 async function cmdSetup(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { bundleRoot, setupRootfs } = await import("./release.js");
   if (bundleRoot()) {
-    const path = await setupRootfs();
+    const progress = setupDownloadProgress();
+    const path = await setupRootfs({ onProgress: progress.onProgress });
+    progress.done();
     process.stdout.write(`hive: VM filesystem ready: ${path}\n`);
   } else {
     process.stdout.write(
