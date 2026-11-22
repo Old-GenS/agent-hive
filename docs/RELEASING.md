@@ -126,8 +126,7 @@ installs keep trusting the previous prerelease key until they update.
 - `main` is the only branch. Every change — yours, the daily update check's pull requests,
   Dependabot's — lands on `main` through a pull request that merges automatically once the required
   `test` and `vm` checks pass.
-- Dependabot's major updates wait for a human (`dependabot-automerge.yml` skips
-  `version-update:semver-major`).
+- Dependabot's updates, major versions included, merge once CI passes, like the daily check's.
 - Pull requests opened with `GITHUB_TOKEN` don't start workflows on their own, so the bump workflow
   dispatches `ci.yml` on its branch before enabling auto-merge; that run's checks land on the same
   commit.
