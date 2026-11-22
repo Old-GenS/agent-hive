@@ -1142,7 +1142,7 @@ textarea:disabled {
 
 .runs-layout {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 340px minmax(0, 1fr);
   gap: 24px;
   align-items: start;
 }
@@ -1223,27 +1223,29 @@ textarea:disabled {
   grid-area: pill;
 }
 
-/* The run list's star sits over the card's bottom-right corner; the meta line leaves room for it. */
+/* The run list's star gets its own column on the card's right edge, centred vertically; the card
+   keeps that space free so the status pill and the meta line never run under it. */
 .run-item-wrap {
   position: relative;
 }
 
-.run-item-wrap .run-item-meta {
-  padding-right: 22px;
+.run-item-wrap .run-item {
+  padding-right: 44px;
 }
 
 .run-item-star-btn {
   position: absolute;
-  right: 6px;
-  bottom: 4px;
-  width: 28px;
-  height: 28px;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 0;
   border-radius: var(--radius);
   background: transparent;
   color: var(--text-3);
-  font-size: 16px;
+  font-size: 17px;
   line-height: 1;
   cursor: pointer;
 }

@@ -1051,7 +1051,8 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
   const meta = el(
     "span",
     { class: "run-item-meta" },
-    `${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"} \u00b7 ${runTimeLabel(summary)}`,
+    // The time first: it's what people scan for, and the end of the line is what gets cut off.
+    `${runTimeLabel(summary)} \u00b7 ${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"}`,
   );
   meta.title = summary.finishedAt !== undefined
     ? `Started ${dateTime(summary.createdAt)}, finished ${dateTime(summary.finishedAt)}`
