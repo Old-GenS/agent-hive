@@ -65,7 +65,9 @@ export default async function onboardingRoutes(app: FastifyInstance) {
       return reply.code(409).send({
         error:
           bundleRoot() === undefined
-            ? "Downloading the VM filesystem needs an installed release; build it from source with npm run build:image && npm run build:rootfs"
+            ? process.platform === "darwin"
+              ? "macOS needs an arm64 VM image, which this build does not produce yet (docs/MACOS.md, Phase 2)"
+              : "Downloading the VM filesystem needs an installed release; build it from source with npm run build:image && npm run build:rootfs"
             : "The VM filesystem is already installed",
       });
     }
