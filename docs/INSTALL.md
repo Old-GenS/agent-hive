@@ -112,11 +112,12 @@ npm run smoke:macos
 
 ### Build the release bundle
 
-The release bundle is what an installed copy runs. Build it with the same image and the release
-signing key (see [RELEASING.md](RELEASING.md)):
+The release bundle is what an installed copy runs. Build it with the same image (see
+[RELEASING.md](RELEASING.md)). Stable **Linux** releases are signed keyless by the `release.yml`
+workflow; the macOS bundle has no keyless workflow yet, so it is still signed locally:
 
 ```bash
-node scripts/keygen.mjs /tmp/hive-release-key.pem   # once; use the real key for a real release
+node scripts/keygen.mjs /tmp/hive-release-key.pem   # if you don't already have a key
 HIVE_SIGNING_KEY=/tmp/hive-release-key.pem \
   bash scripts/build-release-macos.sh \
   --rootfs-image /path/to/hive-rootfs-<id>-linux-arm64.img.gz

@@ -5,23 +5,32 @@ bundled Node.js, the hardened VM launcher, libkrun, libkrunfw and a static pasta
 the VM rootfs as a separate download. On Apple silicon, `scripts/build-release-macos.sh` builds
 the arm64 bundle and its `.img.gz` image the same way (no pasta: the VM has no IP network). Each
 release also uploads the GPL corresponding source of the kernel libkrunfw contains and, on Linux,
-of the passt sources the static pasta is built from. `SHA256SUMS` covers all of it and is signed
-by an ed25519 key that lives only on the release machine.
+of the passt sources the static pasta is built from. `SHA256SUMS` covers all of it. Stable releases are signed **keyless** in CI: `release.yml` signs
+with the run's GitHub OIDC token, and `hive update` accepts the result only when the certificate
+names that workflow, in this repository, at `main`. There is no signing key on this machine.
 
-## One-time setup
+## How a stable release is signed
 
-```bash
-node scripts/keygen.mjs ~/.config/agent-hive/release-signing-key.pem > /tmp/release-key.pub
-```
+Nothing to set up beyond the environment below.
 
-Paste the printed public key into `src/release-key.ts` as `RELEASE_PUBLIC_KEY` and commit it.
-`hive update` refuses to install a release whose `SHA256SUMS` isn't signed by that key. Never
-commit the private key.
+1. Bump `version` in `package.json` and merge it to `main`.
+2. Actions → **Stable release** → *Run workflow* with that version.
+3. The job waits for approval on the `stable-release` environment. Approve as the reviewer
+   account — the one that never runs coding agents.
+4. It builds with `--skip-sign`, signs `SHA256SUMS` with `cosign sign-blob` using the run's OIDC
+   token, and writes `SHA256SUMS.sigstore.json`.
+5. Before publishing it checks the bundle twice: `cosign verify-blob` against the expected
+   identity, and the shipped client (`dist/verify-sigstore.js`). The second is the one that matters:
+   it proves an installed copy would accept the release.
 
-**Back up the private key** (for example in a password manager, or offline). Installed copies only
-accept updates signed by it: if it's lost, a new key means everyone has to reinstall by hand with
-`install-cli.sh`. If it leaks, publish a release with a new key straight away and say so in the
-release notes.
+The job refuses to sign when `stable-release` has no required reviewer, so an environment that was
+never configured cannot publish (GitHub would otherwise create it unprotected on first use).
+
+**The environment** needs: a required reviewer that is not an account agents can use, *Prevent
+self-review* on, *Allow administrators to bypass* off, and deployment branches limited to `main`.
+
+Bump-and-approve is the whole process. `scripts/promote.mjs` is the older local route (see below)
+and needs a local signing key; it is not used now that the key is retired.
 
 The release build needs podman (it builds the VM image and packs the rootfs inside
 `podman unshare`, since the image has files only root may read).
@@ -85,12 +94,17 @@ was tested: the same app commit, the same VM filesystem, re-signed with the stab
    `scripts/promote.mjs` checks the nightly's `SHA256SUMS.sig` against `PRERELEASE_PUBLIC_KEY`,
    checks that the nightly's rootfs was built from the promoted commit's `image/` tree, builds the
    app from that same commit in a throwaway worktree (the checkout is not touched), reuses that
-   rootfs, checks the result's `SHA256SUMS.sig` against `RELEASE_PUBLIC_KEY`, and writes
-   `release/<version>/`. `--dry-run` checks the nightly and builds nothing; `--publish` also creates
-   the GitHub release (a stable one, with notes naming the nightly and the rootfs it reused).
+   rootfs, signs the result with the local key and checks the signature against
+   `RELEASE_PUBLIC_KEY`, and writes `release/<version>/`. `--dry-run` checks the nightly and builds
+   nothing; `--publish` also creates the GitHub release.
 
-   It needs podman, network, `gh`, and the stable signing key (`HIVE_SIGNING_KEY`, default
-   `~/.config/agent-hive/release-signing-key.pem`).
+   It needs podman, network, `gh`, **and a local stable signing key** (`HIVE_SIGNING_KEY`, default
+   `~/.config/agent-hive/release-signing-key.pem`). The stable key has been retired in favour of the
+   keyless workflow above, so this path only works if you mint a new key with `scripts/keygen.mjs`
+   and accept that existing installs would need a reinstall.
+
+   Note that promoting builds from the nightly's commit, not from `main`: anything merged after
+   that nightly is not in the stable release, which is the point — you ship what CI tested.
 
 ## Build a release by hand
 
@@ -172,22 +186,27 @@ Set once, in the `Old-GenS` organization and its `agent-hive` repository:
 | Secret scanning + push protection | Settings › Code security | on (free on a public repo); non-provider patterns is GHAS-only |
 | `BETA_SIGNING_KEY` | Settings › Environments › `beta-release` (kept under its old name) | the prerelease key, as an environment secret |
 
-### Two signing keys
+### What signs what
 
-- **Stable key** (`RELEASE_PUBLIC_KEY` in `src/release-key.ts`): its private half lives only on the
-  release machine (see above) and never in GitHub.
-- **Prerelease key** (`PRERELEASE_PUBLIC_KEY` in `src/release-key.ts`): its private half, an ed25519
-  PKCS#8 PEM, is the `BETA_SIGNING_KEY` secret of the `beta-release` environment. The nightly
-  workflow signs each nightly prerelease with it in CI.
+- **Stable releases** are signed keyless by `.github/workflows/release.yml`, which runs on `main`.
+  Installers accept them when the certificate names
+  `https://github.com/Old-GenS/agent-hive/.github/workflows/release.yml@refs/heads/main` under the
+  GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`).
+- **Nightly prereleases** are still signed with an ed25519 key: the `BETA_SIGNING_KEY` secret of the
+  `beta-release` environment, whose public half is `PRERELEASE_PUBLIC_KEY` in
+  `src/release-key.ts`. `nightly.yml` writes it to a temporary file, signs, and deletes it.
 
-A stable install trusts only the stable key, so the prerelease key (or a GitHub compromise) cannot
-sign an update for it. The nightly channel trusts both keys, so a nightly install can move back to
-a stable release.
+A stable install trusts only the stable identity, so a nightly key (or a GitHub compromise that
+only reaches the nightly workflow) cannot sign an update for it. The nightly channel trusts both, so
+a nightly install can move back to a stable release.
 
-**Rotating the prerelease key:** generate a new keypair with `node scripts/keygen.mjs <file>`, put
-the private half in the `BETA_SIGNING_KEY` environment secret, commit the new public half as
-`PRERELEASE_PUBLIC_KEY`, and publish the next nightly build. The stable key is untouched; existing
-nightly installs keep trusting the previous prerelease key until they update.
+**Rotating the nightly key:** generate a keypair with `node scripts/keygen.mjs <file>`, put the
+private half in the `BETA_SIGNING_KEY` environment secret, commit the new public half as
+`PRERELEASE_PUBLIC_KEY`, and publish the next nightly. Stable releases are untouched.
+
+**Changing who may release:** edit `src/release-key.ts` and the `stable-release` environment. Both
+are gated: `CODEOWNERS` gives `.github/workflows/**` and `CODEOWNERS` itself to a code owner, and
+the environment requires the reviewer.
 
 ### Branches and pull requests
 
@@ -276,7 +295,8 @@ Stable installs accept only the stable key, so the promotion re-signs the tested
 | `release/<version>/kernel-source-<file>` | The kernel tarball libkrunfw's `Makefile` downloads (its `KERNEL_REMOTE`); with libkrunfw's source (config and patches) it is the GPL-2.0 corresponding source. |
 | `release/<version>/passt-<version>-source.tar.xz` | The passt source tarball (GPL-2.0-or-later / BSD-3-Clause corresponding source) the static `pasta` was built from. |
 | `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and the source tarballs. |
-| `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature over `SHA256SUMS`, verified by `hive update`. |
+| `release/<version>/SHA256SUMS.sigstore.json` | The keyless signature over `SHA256SUMS` (a sigstore bundle), verified by `hive update` against the release workflow's identity. |
+| `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature, used by nightlies and by the local `promote` path. |
 | `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it); the nightly rootfs plan does. |
 
 `install-cli.sh` checks the download against `SHA256SUMS` over HTTPS but does not verify the
