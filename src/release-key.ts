@@ -4,7 +4,7 @@
  * Keyless (what stable releases will use): a signature counts only when its certificate names one
  * of the workflow refs below, under this issuer. There is no signing key to steal.
  *
- * The ed25519 keys below are what nightlies and `scripts/promote.mjs` still use. They stay until
+ * The ed25519 keys below are what nightlies still use. They stay until
  * `nightly.yml` signs with OIDC too; `release-rootfs.mjs` reads them straight out of this file so
  * the promotion command and the CLI cannot drift apart.
  */
