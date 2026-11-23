@@ -1,10 +1,11 @@
 # macOS (Apple silicon)
 
-**Status: Phase 0 (the spike) and Phase 1 (the product's networking) are done, both in November
-2026; Phase 2 (the arm64 VM image) and Phase 3 (platform plumbing) have not started.** On an M4,
-hive's own launcher boots a read-only ext4 image with the implicit vsock disabled and one vsock
-port wired to hive's egress proxy, and a real `runSandbox` run passes the negative network tests.
-The gap to `hive run` on a Mac is the arm64 Fedora image. See [Phase 0
+**Status: Phases 0 and 1 are done (November 2026); Phase 2's image build is in place and boots on
+an M4; Phase 3 has started with a green macOS test suite, while the run image and `/proc`-free
+recovery are still open.** On an M4, hive's own launcher boots a read-only ext4 image with the
+implicit vsock disabled and one vsock port wired to hive's egress proxy, and a real `runSandbox`
+run passes the negative network tests. The CI-built arm64 Fedora image boots the same way;
+`hive run` on a Mac now waits for the release bundle and the image wiring. See [Phase 0
 results](#phase-0-results), [Phase 1 results](#phase-1-results) and
 [`scripts/macos-spike/`](../scripts/macos-spike/README.md).
 
@@ -48,9 +49,9 @@ macOS 27):
 - libkrunfw's aarch64 kernel has `EXT4_FS`, `EROFS_FS`, `SQUASHFS` and `VIRTIO_BLK` built in,
   and libkrun 1.19.8 has `krun_add_disk(..., read_only)`, so a read-only rootfs image is supported.
 - Phase 1 added the platform branches for `/dev/kvm` versus `kern.hv_support`, pasta versus
-  vsock, the dylib name and the VM image. Still open: `/proc` in `recoverRuns`
-  (`src/runs.ts:258`), `du -B1` (`src/diskwatch.ts:17`, GNU-only), the run-image lifecycle and
-  the `linux-x86_64` release asset names (`src/release.ts:344`) — Phase 3 and Phase 4.
+  vsock, the dylib name and the VM image. Phase 3 has made `npm test` green on macOS and `du`
+  portable; still open: `/proc` in `recoverRuns` (`src/runs.ts:258`), the run-image lifecycle and
+  the `linux-x86_64` release asset names (`src/release.ts:344`).
 
 ## Why not pasta or gvproxy
 
@@ -398,21 +399,24 @@ installer have nothing to pair the image with, and `hive run` on a Mac still nee
 
 ### Phase 3 — Hive platform plumbing (3–5 days)
 
-- **First, make `npm test` green on macOS.** After Phase 1, 10 tests still fail here, all for
-  Phase 3/4 reasons: `du -B1` (four tests; use `-k` and multiply), `/private/var` vs `/var`
-  (two push tests), `rmSync` on a symlink to a directory (`ERR_FS_EISDIR`; use `unlinkSync`),
-  the uninstall test's systemd file name where macOS uses launchd, and two `install-cli.sh` tests
-  (the Linux installer refuses to run on macOS). A red suite hides every macOS regression.
+- **`npm test` is green on macOS, and `ci.yml` runs it on a `macos-14` runner.** The last ten
+  failures were the disk watchdog's `du -B1` (macOS accepts it but counts 512-byte blocks), git
+  returning `/private/var` for paths the tests only knew as `/var`, `rmSync` following a cache
+  symlink into a directory (the pruner now unlinks the link), the uninstall test's systemd file
+  name (it asks `servicePaths()` now), and the two `install-cli.sh` execution tests (skipped off
+  Linux, because that installer only ships the Linux x86_64 release). The push-refusal test also
+  names the remote's own `core.hooksPath`, so a developer-wide hook path cannot disable it.
 - `src/config.ts`: default network mode per platform; accept `HIVE_RUNTIME=auto` (the CLI
   currently rejects the documented default, `src/cli.ts:1743`).
 - `src/sandbox.ts` `libkrunAvailable()`/`systemInfo()`: HVF check, no pasta requirement, macOS
   check names and fixes.
 - `src/runs.ts`: `recoverRuns` via the pidfile plus `ps -axo pid=,command=` on macOS; keep
   `/proc` on Linux.
-- `src/diskwatch.ts`: `du -s -k -x --`, then ×1024 (works on both platforms and fixes the 512×
-  undercount). On macOS the run folder lives on the case-sensitive image: check free space on the
-  host volume holding the image, not `statfs` on the mountpoint, and cap the image's growth.
-  `src/stall.ts` is fine as is (`find -mmin` is portable).
+- `src/diskwatch.ts` uses `du -s -k -x --` × 1024 now, so the same numbers hold on both
+  platforms and the 512× undercount is gone. On macOS the run folder will live on the
+  case-sensitive image: check free space on the host volume holding the image, not `statfs` on
+  the mountpoint, and cap the image's growth. `src/stall.ts` is fine as is (`find -mmin` is
+  portable).
 - macOS run-image lifecycle: attach it at startup for the CLI, `hive serve` and the launchd
   service; keep a marker inside and refuse to run when it is not mounted; detach on shutdown; add
   it to `hive uninstall` and `hive doctor`.
@@ -460,13 +464,13 @@ Done in Phase 1 unless the row says otherwise.
 | `src/config.ts`, `src/fixes.ts` | `current.img`, no `HIVE_NETWORK=direct` on macOS, macOS check wording |
 | `vm/build-rootfs.sh`, `scripts/build-rootfs-image.sh` (new) | **Phase 2:** Linux folder rootfs unchanged; build and compress the macOS raw image |
 | `src/runs.ts` | **Phase 3:** `recoverRuns` without `/proc`; launcher pid |
-| `src/diskwatch.ts` | **Phase 3:** portable `du`; host free space while runs live on the image |
+| `src/diskwatch.ts` | **Phase 3:** portable `du` (done); host free space while runs live on the image (open) |
 | `src/usage.ts`, `src/service.ts`, `src/uninstall.ts` | **Phase 3:** platform branches, run-image attach/detach; `hive uninstall` detaches it |
 | `src/release.ts`, `src/cli.ts` | **Phase 3/4:** image asset, macOS asset names, doctor/checks, `HIVE_RUNTIME` validation |
 | `install-cli.sh` / `install.sh` | **Phase 4:** macOS install and `update` path |
 | `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | **Phase 4:** build and sign |
 | `versions.json`, `scripts/check-updates.mjs` | **Phase 4:** arm64 pins |
-| `.github/workflows/` | **Phase 4:** macOS unit/build job; arm64 rootfs image; release assets |
+| `.github/workflows/` | **Phase 3/4:** macOS unit-test job and arm64 rootfs image (done); release assets (open) |
 
 ## Risks
 

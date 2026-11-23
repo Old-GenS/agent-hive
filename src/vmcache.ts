@@ -6,7 +6,7 @@
  * pruned; it sits outside the bucket so no VM can touch it.
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import { githubSlug } from "./git.js";
@@ -95,8 +95,13 @@ export function pruneVmCache(liveKeys: Set<string>, now = Date.now()): string[] 
       continue;
     }
     if (stat.isSymbolicLink()) {
-      // Never recurse through it: remove the link itself.
-      rmSync(bucket, { force: true });
+      // Never recurse through it: remove the link itself. unlinkSync, not rmSync: on macOS rmSync
+      // follows a link to a directory and fails with EISDIR instead of removing the link.
+      try {
+        unlinkSync(bucket);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
       deleted.push(key);
       continue;
     }

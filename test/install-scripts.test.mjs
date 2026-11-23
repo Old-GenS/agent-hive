@@ -148,31 +148,41 @@ test("install-cli.sh parses with sh -n", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("install-cli.sh installs the fake release and adds ~/.local/bin to PATH once", async () => {
-  const { home, data, env } = installEnv("home-one");
-  const first = await runInstall(env);
-  assert.equal(first.status, 0, first.stderr);
-  assert.match(first.stdout, new RegExp(`hive ${VERSION} installed`));
-  assert.match(first.stdout, /next: hive doctor/);
+test(
+  "install-cli.sh installs the fake release and adds ~/.local/bin to PATH once",
+  // install-cli.sh installs the Linux x86_64 release and refuses anything else, so its execution
+  // tests only run on Linux.
+  { skip: process.platform !== "linux" && "install-cli.sh only installs the Linux x86_64 release" },
+  async () => {
+    const { home, data, env } = installEnv("home-one");
+    const first = await runInstall(env);
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.stdout, new RegExp(`hive ${VERSION} installed`));
+    assert.match(first.stdout, /next: hive doctor/);
 
-  const link = join(home, ".local", "bin", "hive");
-  assert.ok(lstatSync(link).isSymbolicLink(), "~/.local/bin/hive is a symlink");
-  assert.equal(readlinkSync(link), join(data, "agent-hive", "current", "bin", "hive"));
-  assert.ok(existsSync(join(data, "agent-hive", "versions", VERSION, "bin", "hive")));
-  assert.equal(countPathLine(home), 1, "~/.profile gained the PATH line once");
+    const link = join(home, ".local", "bin", "hive");
+    assert.ok(lstatSync(link).isSymbolicLink(), "~/.local/bin/hive is a symlink");
+    assert.equal(readlinkSync(link), join(data, "agent-hive", "current", "bin", "hive"));
+    assert.ok(existsSync(join(data, "agent-hive", "versions", VERSION, "bin", "hive")));
+    assert.equal(countPathLine(home), 1, "~/.profile gained the PATH line once");
 
-  const second = await runInstall(env);
-  assert.equal(second.status, 0, second.stderr);
-  assert.equal(countPathLine(home), 1, "a second install does not add the PATH line again");
-});
+    const second = await runInstall(env);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(countPathLine(home), 1, "a second install does not add the PATH line again");
+  },
+);
 
-test("install-cli.sh leaves ~/.profile alone with HIVE_NO_MODIFY_PATH=1", async () => {
-  const { home, env } = installEnv("home-two", { HIVE_NO_MODIFY_PATH: "1" });
-  const result = await runInstall(env);
-  assert.equal(result.status, 0, result.stderr);
-  assert.ok(!existsSync(join(home, ".profile")), "no ~/.profile is written");
-  assert.match(result.stdout, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
-});
+test(
+  "install-cli.sh leaves ~/.profile alone with HIVE_NO_MODIFY_PATH=1",
+  { skip: process.platform !== "linux" && "install-cli.sh only installs the Linux x86_64 release" },
+  async () => {
+    const { home, env } = installEnv("home-two", { HIVE_NO_MODIFY_PATH: "1" });
+    const result = await runInstall(env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(!existsSync(join(home, ".profile")), "no ~/.profile is written");
+    assert.match(result.stdout, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
+  },
+);
 
 test("install.ps1 has the Windows installer's pieces", () => {
   const text = readFileSync(installPs1, "utf8");

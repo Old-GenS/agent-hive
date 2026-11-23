@@ -41,6 +41,31 @@ jobs:
             bash -n "$f" || exit 1
           done
 
+  # The macOS path (Hypervisor.framework, the vsock bridge, launchd, the launchd/systemd split)
+  # cannot be exercised on Linux, and a red suite on a Mac hides every regression. GitHub's macOS
+  # runners are VMs without a usable HVF, so this builds the launcher and runs the unit tests; the
+  # real VM is checked by hand (scripts/macos-spike and docs/MACOS.md).
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - id: node
+        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - name: Configure the git identity
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+      - run: npm ci
+      - run: npm run build:vm
+      - run: npm test
+
   windows-installer:
     runs-on: windows-latest
     timeout-minutes: 10

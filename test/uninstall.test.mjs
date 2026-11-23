@@ -43,6 +43,9 @@ delete process.env.HIVE_VM_CACHE;
 const { uninstallPlan, runUninstall, uninstallEntries, assertRemovable, sizeLabel, pathBytes } = await import(
   "../dist/uninstall.js"
 );
+const { servicePaths } = await import("../dist/service.js");
+// systemd on Linux, a launchd agent on macOS: the plan looks for this file, whatever it is called.
+const serviceFile = servicePaths().file;
 
 function bytes(n) {
   return Buffer.alloc(n);
@@ -102,7 +105,7 @@ function setup() {
 
 /** A service file in the temp service dir, so the plan reports the service as installed. */
 function addServiceFile() {
-  writeFileSync(join(serviceDir, "agent-hive.service"), "[Unit]\n");
+  writeFileSync(serviceFile, "[Unit]\n");
 }
 
 setup();
@@ -180,8 +183,8 @@ test("a service file is reported in the plan and only reported by a dry run", ()
   assert.equal(plan.service, true);
   const lines = runUninstall(plan, { dryRun: true });
   assert.ok(lines.some((line) => /background service/.test(line)));
-  assert.ok(existsSync(join(serviceDir, "agent-hive.service")), "a dry run leaves the service file");
-  rmSync(join(serviceDir, "agent-hive.service"));
+  assert.ok(existsSync(serviceFile), "a dry run leaves the service file");
+  rmSync(serviceFile);
   assert.equal(uninstallPlan({ keepRuns: true, keepConfig: true }).service, false);
 });
 
