@@ -494,7 +494,7 @@ remaining step.**
 | Image | a CI-built `hive-rootfs-<id>-linux-arm64.img.gz` (~604 MB), ext4 superblock, `current.img` install path and a `rootfs-info.json` image-tree check |
 | Installer | the macOS branch installs a fake release under a temp HOME, picks the darwin asset, verifies with `shasum`, and writes the zsh PATH line once |
 | Isolation | `npm run smoke:macos` on the M4: no IP network, TSI off, proxy 200, LAN/metadata 403, direct LAN/public/DNS/ping refused (10/10) |
-| CI build | `macos-release.yml` builds the image on `ubuntu-24.04-arm` and the bundle on `macos-15`, and checks the tarball with `shasum` and the code signatures. It has not run yet (it is dispatch-only and first runs after merge); it signs with a throwaway key, so it does not verify the release `SHA256SUMS.sig`. |
+| CI build | `macos-release.yml` builds the image on `ubuntu-24.04-arm` and the bundle on `macos-15`, and checks the tarball with `shasum` and the code signatures. It signs with a throwaway key, so it does not verify the release `SHA256SUMS.sig`. |
 
 **Remaining:** a signed, published macOS release (and notarization for a Developer ID build) is
 what a user can download; the build and install code is ready for it.

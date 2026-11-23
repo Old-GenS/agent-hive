@@ -100,8 +100,10 @@ rver=${BASH_REMATCH[1]}
 # next to the image (build-rootfs-image.sh); a release may not pair a new app with a stale guest.
 info_file=${HIVE_ROOTFS_INFO:-$(dirname "$rootfs_image")/rootfs-info.json}
 [[ -f "$info_file" ]] || die "missing $info_file; build the image with scripts/build-rootfs-image.sh or set HIVE_ROOTFS_INFO"
-info_rootfs=$(node -p "require(process.argv[1]).rootfs" "$info_file")
-info_tree=$(node -p "require(process.argv[1]).imageTree || ''" "$info_file")
+# Read the JSON, not require(): the path is usually relative (build/rootfs-image/...), and
+# require() would treat it as a module name.
+info_rootfs=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).rootfs" "$info_file")
+info_tree=$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).imageTree || ''" "$info_file")
 [[ "$info_rootfs" == "$rver" ]] || die "$info_file names rootfs $info_rootfs, not $rver"
 image_tree=$(git rev-parse HEAD:image)
 [[ "$info_tree" == "$image_tree" ]] \
