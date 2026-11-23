@@ -2,6 +2,7 @@
 
 - [What you need](#what-you-need)
 - [Linux](#linux)
+- [macOS (Apple silicon)](#macos-apple-silicon)
 - [Windows 11](#windows-11)
 - [From source](#from-source)
 - [After installing](#after-installing)
@@ -9,6 +10,8 @@
 - [Uninstalling](#uninstalling)
 
 ## What you need
+
+**Linux**
 
 - **KVM** (`/dev/kvm`): a regular PC or a server with virtualization turned on in the BIOS/UEFI.
   Your user needs access to it: `sudo usermod -aG kvm $USER`, then log out and back in.
@@ -21,13 +24,24 @@
   | Fedora, RHEL | `sudo dnf install passt` |
   | Arch | `sudo pacman -S passt` |
 
+**macOS**
+
+- **Apple silicon** (M1 or newer) and **macOS 14 or newer**. Intel Macs are not supported.
+- **Hypervisor.framework**, which every Apple silicon Mac has; confirm with
+  `sysctl -n kern.hv_support` (it prints `1`). There is no KVM, pasta or network namespace:
+  the VM has no IP network and reaches the internet only through hive's proxy over one vsock port.
+
+**Both**
+
 - **An API key** for at least one model provider: DeepSeek, Z.AI, OpenRouter, Anthropic or OpenAI.
 - **The GitHub CLI** (`gh`) is optional: it lets hive list your repos, push branches, open pull
   requests and create new repos.
 
-Releases bring their own Node.js and libkrun, and work on Ubuntu 20.04+, Debian 11+, RHEL/Alma/Rocky
-8+, Fedora, Mint, Arch and WSL2. Tested on Fedora 45, Linux Mint 22.1, Windows 11 (WSL2, Ubuntu
-24.04), and in Ubuntu 22.04 and 24.04 containers. macOS is on the [roadmap](ROADMAP.md).
+Linux releases bring their own Node.js and libkrun, and work on Ubuntu 20.04+, Debian 11+,
+RHEL/Alma/Rocky 8+, Fedora, Mint, Arch and WSL2. Tested on Fedora 45, Linux Mint 22.1, Windows 11
+(WSL2, Ubuntu 24.04), and in Ubuntu 22.04 and 24.04 containers. The macOS arm64 bundle builds and
+boots (docs/MACOS.md); a signed, downloadable macOS release is not published yet, so use the source
+build below.
 
 ## Linux
 
@@ -39,6 +53,87 @@ The script downloads the latest release, checks it against the release's `SHA256
 under `~/.local/share/agent-hive`, puts `hive` in `~/.local/bin` (adding that folder to your PATH in
 `~/.profile` if needed; set `HIVE_NO_MODIFY_PATH=1` to skip that) and downloads the VM filesystem
 (about 660 MB, once). At the end it tells you if the `kvm` group or `passt` is missing.
+
+## macOS (Apple silicon)
+
+### Build it from source
+
+This is the supported route until a signed macOS release is published. You need Xcode command
+line tools, Rust (stable), Node.js 20+ and git:
+
+```bash
+xcode-select --install                       # if you have not already
+git clone https://github.com/Old-GenS/agent-hive.git && cd agent-hive
+npm ci
+npm run build && npm run build:ui
+npm run build:native:macos                   # libkrun, libkrunfw and the signed launcher
+npm run build:vm                             # the source checkout's vm/hive-vm
+```
+
+The VM boots a raw arm64 ext4 image, and macOS has no `mkfs`. Build it on an arm64 Linux machine
+(a `podman machine` or the `macos-image` workflow) with:
+
+```bash
+npm ci
+npm run build:image
+npm run build:rootfs-image                   # build/rootfs-image/hive-rootfs-<id>-linux-arm64.img
+```
+
+Copy the `.img` to the Mac, then point a source checkout at the pieces it should use:
+
+```bash
+export HIVE_VM_BIN="$PWD/build/native-macos/libexec/hive-vm"
+export HIVE_LIBKRUN="$PWD/build/native-macos/lib/libkrun.1.dylib"
+export HIVE_ROOTFS=/path/to/hive-rootfs-<id>-linux-arm64.img
+npm link
+hive doctor
+```
+
+`hive doctor` should show Hypervisor.framework, the libkrun library, the vsock egress, the
+launcher and the VM image as ok. Then run a task as usual:
+
+```bash
+cd ~/code/my-app
+hive run "add a test for the parser"
+```
+
+The network is stricter than on Linux: the guest has no `eth0`, no DNS and no route. Its only
+path out is `127.0.0.1:3128` inside the VM, relayed over vsock to hive's egress proxy, which
+refuses this Mac and the local network. There is no `HIVE_NETWORK=direct` on macOS.
+
+To check that isolation on a real Mac, run the smoke test with a built image and libkrun:
+
+```bash
+HIVE_LIBKRUN="$PWD/build/native-macos/lib/libkrun.1.dylib" \
+HIVE_ROOTFS=/path/to/hive-rootfs-<id>-linux-arm64.img \
+npm run smoke:macos
+```
+
+### Build the release bundle
+
+The release bundle is what an installed copy runs. Build it with the same image and the release
+signing key (see [RELEASING.md](RELEASING.md)):
+
+```bash
+node scripts/keygen.mjs /tmp/hive-release-key.pem   # once; use the real key for a real release
+HIVE_SIGNING_KEY=/tmp/hive-release-key.pem \
+  bash scripts/build-release-macos.sh \
+  --rootfs-image /path/to/hive-rootfs-<id>-linux-arm64.img.gz
+```
+
+The result is `release/<version>/hive-<version>-darwin-arm64.tar.gz` plus the image, GPL source
+and a signed `SHA256SUMS`. The `macos-release` workflow builds and checks the same bundle on
+GitHub's `macos-15` runners and uploads it as a workflow artifact; it cannot boot
+Hypervisor.framework there, so boot it on a Mac.
+
+> **Not yet published:** `install-cli.sh` already selects the macOS arm64 asset on Apple silicon,
+> but there is no stable macOS release to download yet. Until one is published, build from source
+> as above.
+
+The bundles are **ad-hoc signed, not notarized**. On your own Mac that is enough; if macOS
+quarantines a downloaded bundle and refuses to start it, allow it under **System Settings › Privacy
+& Security** (or run `xattr -dr com.apple.quarantine <bundle>`). A notarized Developer ID build
+needs an Apple Developer account and is a later step.
 
 ## Windows 11
 
@@ -76,7 +171,8 @@ Update with `git pull` and the same build commands. `hive update` is for release
 ## After installing
 
 ```bash
-hive doctor                       # checks KVM, libkrun, pasta, the launcher and the VM filesystem
+hive doctor                       # Linux: KVM, libkrun, pasta, launcher, rootfs
+                                  # macOS: HVF, libkrun, vsock egress, launcher, image
 hive keys add openrouter          # or deepseek, zai, anthropic, openai
 hive login github                 # optional: repos, pushes, pull requests
 ```
@@ -122,6 +218,6 @@ rm -rf ~/.cache/agent-hive            # runs and the download cache
 rm -rf ~/.config/agent-hive           # saved keys and settings
 ```
 
-Then remove the `# added by agent-hive` line from `~/.profile` (and `~/.bashrc`). With the
-Windows installer, everything lives in its own distro: see
-[WINDOWS.md](WINDOWS.md#updating-and-uninstalling).
+Then remove the `# added by agent-hive` line from `~/.profile` and `~/.bashrc` on Linux, or
+from `~/.zprofile` and `~/.zshrc` on macOS. With the Windows installer, everything lives in its
+own distro: see [WINDOWS.md](WINDOWS.md#updating-and-uninstalling).

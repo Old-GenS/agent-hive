@@ -1,10 +1,12 @@
 # Releasing Agent Hive
 
-Releases are **signed**. `scripts/build-release.sh` produces an app bundle with a bundled
-Node.js, the hardened VM launcher, libkrun, libkrunfw and a static pasta fallback, plus the VM
-rootfs as a separate download. Each release also uploads the GPL corresponding source of the
-kernel libkrunfw contains and of the passt sources the static pasta is built from. `SHA256SUMS`
-covers all of it and is signed by an ed25519 key that lives only on the release machine.
+Releases are **signed**. `scripts/build-release.sh` produces the Linux x86_64 app bundle with a
+bundled Node.js, the hardened VM launcher, libkrun, libkrunfw and a static pasta fallback, plus
+the VM rootfs as a separate download. On Apple silicon, `scripts/build-release-macos.sh` builds
+the arm64 bundle and its `.img.gz` image the same way (no pasta: the VM has no IP network). Each
+release also uploads the GPL corresponding source of the kernel libkrunfw contains and, on Linux,
+of the passt sources the static pasta is built from. `SHA256SUMS` covers all of it and is signed
+by an ed25519 key that lives only on the release machine.
 
 ## One-time setup
 
@@ -36,10 +38,19 @@ libraries, and a pasta that isn't statically linked (no `NEEDED` entries, no `IN
 header); it also checks that `pasta --version` runs and warns if its version text doesn't mention
 the pin.
 
-Every pin — libkrun's tag and commit, libkrunfw's version, URL and SHA-256, passt's version, URL
-and SHA-256, the Rust toolchain, the manylinux build image digest and the bundled Node version —
-lives in `versions.json`. Bumping one is just editing that file; `scripts/build-native.sh`
-rebuilds when the file's hash changes.
+Every pin — libkrun's tag and commit, libkrunfw's version, its x86_64 URL and SHA-256 plus the
+macOS prebuilt and Linux arm64 assets, passt's version, URL and SHA-256, the Rust toolchain, the
+manylinux build image digest and the bundled Node version — lives in `versions.json`. Bumping one
+is just editing that file; `scripts/build-native.sh` and `scripts/build-native-macos.sh` rebuild
+when the file's hash changes.
+
+**macOS native pieces.** `scripts/build-native-macos.sh` runs on Apple silicon only (Xcode
+command line tools, Rust, make, network). It builds libkrun from the pinned commit, downloads
+libkrunfw's pinned `libkrunfw-prebuilt-aarch64.tgz`, compiles the one `libkrunfw.5.dylib`, compiles
+`vm/hive-vm.c` with the HVF entitlements and ad-hoc signs all three. The launcher preloads
+libkrunfw from libkrun's own directory, so `lib/` must keep the two dylibs together; the script
+sets their install names and verifies the launcher's signature. On a Mac without
+Hypervisor.framework (including GitHub's macOS runners) it skips the launcher's `--check`.
 
 **Test a real VM before shipping a libkrun or libkrunfw bump**, including DNS and HTTPS from inside
 it: build checks and unit tests can't see a guest-kernel regression. libkrunfw 5.6.4 (November
@@ -51,7 +62,7 @@ until a newer one passes that check.
 | Pin | Where it is used |
 |-----|------------------|
 | `libkrun` (tag, commit) | Built from source in `scripts/build-native.sh`; the commit is verified after cloning |
-| `libkrunfw` (version, URL, SHA-256) | Upstream's prebuilt x86_64 tarball, downloaded and checked by `scripts/build-native.sh` |
+| `libkrunfw` (version, URL, SHA-256; `macos.aarch64`, `linux.aarch64`) | Upstream's prebuilt x86_64 tarball for Linux, the macOS prebuilt kernel bundle, and the Linux arm64 library; `scripts/build-native.sh` and `scripts/build-native-macos.sh` check the ones they use |
 | `passt` (version, URL, SHA-256) | The source tarball `scripts/build-native.sh` builds the static `pasta` fallback from; its licenses ship in `share/licenses/passt/` |
 | `rust` | The toolchain `scripts/native-in-container.sh` installs with rustup |
 | `buildImage` | The `manylinux_2_28` image digest the native build runs in |
@@ -104,6 +115,22 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    The build refuses a rootfs from another image tree; that check is `scripts/release-rootfs.mjs`.
    `HIVE_RELEASE_VERSION` overrides `package.json`'s version (the nightly workflow and `promote` use
    it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
+
+   **macOS (Apple silicon)** needs the arm64 image, which is built on arm64 Linux (the
+   `macos-image` workflow, or `npm run build:rootfs-image` on a `podman machine`), plus the
+   macOS native build. On the Mac:
+
+   ```bash
+   HIVE_SIGNING_KEY=~/.config/agent-hive/release-signing-key.pem \
+     bash scripts/build-release-macos.sh \
+     --rootfs-image hive-rootfs-<id>-linux-arm64.img.gz
+   ```
+
+   That writes `hive-<version>-darwin-arm64.tar.gz`, the image, libkrunfw's source and its kernel
+   tarball, and a signed `SHA256SUMS`. Run it in a release directory that already has the Linux
+   assets (run the Linux build first) and it re-signs one `SHA256SUMS` covering both platforms;
+   otherwise the macOS assets stand alone. The bundle's `ROOTFS_VERSION` names the image, which is
+   how `installRelease` pairs them.
 
    The build also runs `scripts/build-native.sh` for libkrun, libkrunfw and the launcher (podman
    and network; see above), and downloads the GPL source assets described below.
@@ -218,6 +245,16 @@ The rootfs rule (`scripts/rootfs-plan.mjs`) reuses the tested rootfs unless
 A reuse copies the previous release's rootfs tarball and `rootfs-info.json` into the new release;
 only a rebuild pays the ~660 MB rootfs build and download.
 
+### macOS builds
+
+`.github/workflows/macos-release.yml` (manual dispatch) reuses the `macos-image` workflow on
+`ubuntu-24.04-arm`, then builds the bundle on `macos-15` and uploads it as a workflow artifact.
+It signs with a throwaway key and does not publish: GitHub's macOS runners cannot nest
+Hypervisor.framework, and the stable key must not be in CI. Use it to check that the macOS build
+still works, and build the distributable release on a Mac with the real key. The nightly workflow
+does not yet add macOS assets to a nightly; doing that requires publishing the combined
+`SHA256SUMS` after both platform jobs finish.
+
 ### Promotion to stable
 
 Promote a nightly that has been in use without trouble; see "Promote a nightly to stable" above.
@@ -229,6 +266,8 @@ Stable installs accept only the stable key, so the promotion re-signs the tested
 |------|------|
 | `release/<version>/hive-<version>-linux-x86_64.tar.gz` | The app bundle: `bin/hive` (a `sh` wrapper), `lib/hive.mjs` (the CLI as one esbuild file), `lib/libkrun.so.1` and `lib/libkrunfw.so.5` (the old-glibc native pieces, with `RUNPATH=$ORIGIN`), `libexec/node` (bundled Node), `libexec/hive-vm` (hardened launcher), `libexec/pasta` (the static pasta fallback), `share/licenses/` (libkrun, libkrunfw, passt and hive's own MIT license), `VERSION`, `ROOTFS_VERSION`. |
 | `release/<version>/hive-rootfs-<rootfs-version>-linux-x86_64.tar.gz` | The VM root filesystem, extracted under `~/.local/share/agent-hive/rootfs/<rootfs-version>`. A new download is only needed when the rootfs version changes. |
+| `release/<version>/hive-<version>-darwin-arm64.tar.gz` | The macOS arm64 app bundle: the same layout as the Linux one, with `lib/libkrun.1.dylib` and `lib/libkrunfw.5.dylib` (kept together), `libexec/node` for `darwin-arm64`, the ad-hoc-signed launcher and no pasta. |
+| `release/<version>/hive-rootfs-<rootfs-version>-linux-arm64.img.gz` | The macOS VM filesystem: a gzipped raw ext4 image attached read-only. Its name and `ROOTFS_VERSION` must match the darwin bundle. |
 | `release/<version>/libkrunfw-<version>-source.tar.gz` | libkrunfw's source at the pinned tag (GPL/LGPL corresponding source). |
 | `release/<version>/kernel-source-<file>` | The kernel tarball libkrunfw's `Makefile` downloads (its `KERNEL_REMOTE`); with libkrunfw's source (config and patches) it is the GPL-2.0 corresponding source. |
 | `release/<version>/passt-<version>-source.tar.xz` | The passt source tarball (GPL-2.0-or-later / BSD-3-Clause corresponding source) the static `pasta` was built from. |

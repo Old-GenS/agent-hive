@@ -230,13 +230,15 @@ virtualization off in the firmware.
   (`src/web-runs.ts` over `src/runs.ts`), so web runs and `hive run` runs share one engine and one
   run list. `hive service install|status|restart|logs|uninstall` keeps it running as a systemd user
   unit (Linux) or a launchd agent (macOS).
-- **macOS** *(plan: [MACOS.md](MACOS.md))*:
-  - libkrun on Apple's Hypervisor.framework;
-  - a launcher build for Apple silicon (arm64), plus an arm64 rootfs;
+- **macOS** *(plan: [MACOS.md](MACOS.md); build and install path done, signed release pending)*:
+  - libkrun on Apple's Hypervisor.framework *(done)*;
+  - a launcher build for Apple silicon (arm64), plus an arm64 ext4 image *(done:
+    `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh`)*;
   - network isolation without pasta (pasta is Linux-only): a vsock-only path to the egress proxy,
-    so the VM has no IP network at all;
+    so the VM has no IP network at all *(done; `npm run smoke:macos`)*;
   - code signing with the hypervisor entitlement: an ad-hoc signature (free) is enough to run it on
-    your own Mac; a notarized download for other people needs an Apple Developer account (US$99/year).
+    your own Mac; a notarized download for other people needs an Apple Developer account (US$99/year)
+    *(ad-hoc done; notarized release pending)*.
 - **Packages:** `.rpm` and `.deb` for system updates; a signed `.pkg` or Homebrew on macOS.
 - **Agent adapters:** one adapter per coding agent. Each starts its agent in the VM (pi today:
   `pi --mode json`) and turns its events into common ones (text, tool started or failed, usage,

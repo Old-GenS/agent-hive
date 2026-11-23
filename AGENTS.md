@@ -59,8 +59,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/egress.ts` | The egress proxy, the VM's only network path: pasta forwards its port to the host's loopback (or the vsock bridge does on macOS), and it resolves destinations itself and refuses non-public addresses (this computer, the local network) |
 | `src/libkrun.ts` | Which libkrun the launcher loads: `HIVE_LIBKRUN`, then the system one when `hive-vm --check` passes, then the bundled one; the label every isolation report uses |
 | `src/pasta.ts` | Which pasta each VM runs under: the system one when `pasta --version` works, else the static copy bundled in a release; the label every network-isolation report uses |
-| `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, URL, SHA-256, source), passt (version, URL, SHA-256), Rust, the manylinux build image digest and the bundled Node version |
-| `install-cli.sh` | The Linux release installer: downloads the latest release over HTTPS, checks it against `SHA256SUMS`, links `~/.local/bin/hive`, puts it on `PATH` (and says what to fix for KVM or pasta), downloads the VM filesystem with progress, and ends with `next: hive doctor` |
+| `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, x86_64 URL/SHA-256 and the macOS prebuilt and Linux arm64 assets), passt (version, URL, SHA-256), Rust, the manylinux build image digest and the bundled Node version |
+| `install-cli.sh` | The Linux and macOS release installer: downloads the latest release over HTTPS, checks it against `SHA256SUMS` (with `shasum` on macOS), links `~/.local/bin/hive`, puts it on `PATH` (and says what to fix for KVM/pasta or Hypervisor.framework), downloads the VM rootfs or image with progress, and ends with `next: hive doctor` |
 | `install.ps1` | The Windows one-line installer: a dedicated WSL2 Ubuntu distro with no first-launch prompts (user, password over stdin, `/etc/wsl.conf`), passt/gh/wslu, nested virtualization when `/dev/kvm` is missing, `install-cli.sh` as the user, and `hive.cmd` on the Windows `PATH`; `-Uninstall` / `HIVE_UNINSTALL=1` removes it |
 | `src/git.ts` | Host-side git on the pristine clone only: clone, new-repo setup, `git am` the patches, push, change summary; `gh` helpers for the login, `gh repo create` and `gh pr create` |
 | `src/github-login.ts` | GitHub device login for the server's `gh` (the UI's **Connect GitHub**): one login at a time, the one-time code read from gh's output, state and cancel; the output is never logged |
@@ -80,8 +80,8 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init), `hive-netd` (guest TCP → vsock relay, macOS) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh` (ad-hoc signs on macOS), `hive-vm.entitlements`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
-| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` on Linux and macOS, plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `nightly.yml` (daily signed nightly prerelease, reusing the tested rootfs when it is current), `macos-image.yml` (the arm64 macOS VM image, built and inspected on an arm64 runner); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
-| `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for releases), `native-in-container.sh` (its manylinux_2_28 half), `build-rootfs-image.sh` and `rootfs-image.mjs` (the macOS arm64 VM image and its naming), release build and signing |
+| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` on Linux and macOS, plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `nightly.yml` (daily signed nightly prerelease, reusing the tested rootfs when it is current), `macos-image.yml` (the arm64 macOS VM image, built and inspected on an arm64 runner, and reusable), `macos-release.yml` (a manual macOS bundle build on `macos-15`, uploading a test artifact); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
+| `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for Linux releases), `native-in-container.sh` (its manylinux_2_28 half), `build-native-macos.sh` (the macOS arm64 dylibs, launcher and signatures), `build-release-macos.sh` (the darwin bundle, image and sources), `build-rootfs-image.sh` and `rootfs-image.mjs` (the macOS arm64 VM image and its naming), `macos-smoke.mjs` (real-VM isolation check on a Mac), `kernel-remote.mjs` (libkrunfw's kernel URL without GNU make), release build and signing |
 | `scripts/check-updates.mjs` | The daily bump check: newest upstream version of every pin in `versions.json` and `image/Containerfile` (`--list` as JSON, `--apply <component>`); pure parsers and `applyUpdate` are exported for tests |
 | `scripts/rootfs-plan.mjs` | The nightly build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
 | `scripts/release-rootfs.mjs` | The rootfs checks shared by the release build and `promote`: the tarball name, its `rootfs-info.json` rootfs id and `imageTree` must agree with the release's `image/` tree, and the nightly tag maps to its stable version; `build-release.sh` calls it before it reuses a rootfs |
@@ -89,15 +89,17 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `scripts/vm-smoke.mjs` | The real-VM release check: HTTPS through the egress proxy, LAN and metadata addresses refused, headless Chromium renders a page, and a run with a fake OpenRouter key gets a 401 and no network error |
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
 | `scripts/macos-spike/` | The Phase 0 macOS harness: libkrun build recipe, throwaway launcher, vsock/egress bridge and guest probes; not used by the product build |
-| `docs/INSTALL.md` | Every install route (Linux release, Windows, from source), what's needed, after installing, updating and uninstalling; the README keeps only the two one-liners |
+| `docs/INSTALL.md` | Every install route (Linux release, macOS source/release build, Windows, from source), what's needed, after installing, updating and uninstalling; the README keeps only the one-liners |
 | `docs/WINDOWS.md` | The Windows/WSL2 guide: requirements, what `install.ps1` does, the env vars, `hive` from PowerShell versus inside WSL, where projects live, GitHub and the web UI, updating, uninstalling, troubleshooting and the manual install route |
-| `docs/MACOS.md` | macOS: why the Linux network path doesn't carry over, the vsock-only egress design, the Phase 0 spike and Phase 1 networking results, the remaining phases, the file map and the risks |
+| `docs/MACOS.md` | macOS: why the Linux network path doesn't carry over, the vsock-only egress design, the Phase 0/1/2/4 results, the remaining phases, the file map and the risks |
 
 Build: `npm run build` (server), `npm run build:ui`, `npm run build:image`; for the libkrun
 backend also `npm run build:vm` and `npm run build:rootfs`; on arm64 Linux, `npm run build:rootfs-image`
-makes the macOS VM image. For release-grade native builds
-(libkrun, libkrunfw and the old-glibc launcher) use `scripts/build-native.sh`, which runs inside
-the pinned manylinux container from `versions.json`. Run the tests with `npm test`.
+makes the macOS VM image. For release-grade Linux native builds (libkrun, libkrunfw and the
+old-glibc launcher) use `scripts/build-native.sh`, which runs inside the pinned manylinux
+container from `versions.json`. On Apple silicon, `scripts/build-native-macos.sh` builds and signs
+the arm64 native pieces, `npm run smoke:macos` checks the real VM's isolation, and
+`scripts/build-release-macos.sh` builds the darwin release. Run the tests with `npm test`.
 
 ## Security model — keep these invariants
 
@@ -248,5 +250,5 @@ opens tested pin-bump PRs; Dependabot; a daily nightly prerelease (`.github/work
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
 - a VM size per run
-- macOS: Phases 0–2 are done and verified on an M4 (the arm64 image builds in CI, boots, and `hive setup` installs it as a `.img.gz`); Phase 3 has `npm test` green on macOS (run by the `macos` CI job) and a portable `du`; `/proc`-free recovery, the case-sensitive run image and the macOS bundle/installer remain
+- macOS: Phases 0–2 are done and verified on an M4 (the arm64 image builds in CI, boots, and `hive setup` installs it as a `.img.gz`); Phase 3 has `npm test` green on macOS (run by the `macos` CI job) and a portable `du`; Phase 4's native build, darwin bundle, installer branch and isolation smoke test are done. Remaining: `/proc`-free recovery, the case-sensitive run image, and publishing/notarizing a signed macOS release
 - a per-run network allowlist

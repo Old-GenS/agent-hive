@@ -5,6 +5,7 @@ name: macOS VM image (arm64)
 # GitHub arm64 runners cannot nest Hypervisor.framework, so this job checks the image and the
 # guest tools but does not boot the VM; a Mac does that by hand.
 on:
+  workflow_call:
   workflow_dispatch:
   pull_request:
     paths:
