@@ -11,7 +11,7 @@ FROM registry.fedoraproject.org/fedora:45
 RUN dnf -y install --setopt=install_weak_deps=False \
       nodejs24 nodejs24-bin nodejs24-npm nodejs24-npm-bin \
       chromium git-core findutils procps-ng which diffutils \
-      ripgrep fd-find jq curl unzip tar gzip xz patch less file tree python3 \
+      ripgrep fd-find jq curl unzip tar gzip xz patch less file tree python3 iputils \
       gcc gcc-c++ make glibc-static \
     && dnf clean all
 

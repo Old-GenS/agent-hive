@@ -22,7 +22,19 @@ const versionsText = `{
     "version": "5.6.2",
     "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-x86_64.tgz",
     "sha256": "016c32ddb2a28aa300382cab33352d63a41a901eb36ee8d1ca24b389791c8b91",
-    "source": "https://github.com/containers/libkrunfw/archive/refs/tags/v5.6.2.tar.gz"
+    "source": "https://github.com/containers/libkrunfw/archive/refs/tags/v5.6.2.tar.gz",
+    "macos": {
+      "aarch64": {
+        "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-prebuilt-aarch64.tgz",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "linux": {
+      "aarch64": {
+        "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-aarch64.tgz",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
   },
   "passt": {
     "version": "2026_10_02.cba3570",
@@ -112,6 +124,18 @@ test("applyUpdate bumps libkrunfw, passt, rust, buildImage and node", () => {
       url: "https://example.invalid/libkrunfw.tgz",
       sha256: "f".repeat(64),
       source: "https://example.invalid/source.tar.gz",
+      macos: {
+        aarch64: {
+          url: "https://example.invalid/v5.6.4/libkrunfw-prebuilt-aarch64.tgz",
+          sha256: "a".repeat(64),
+        },
+      },
+      linux: {
+        aarch64: {
+          url: "https://example.invalid/v5.6.4/libkrunfw-aarch64.tgz",
+          sha256: "b".repeat(64),
+        },
+      },
     }),
   );
   assert.deepEqual(libkrunfw.libkrunfw, {
@@ -119,6 +143,18 @@ test("applyUpdate bumps libkrunfw, passt, rust, buildImage and node", () => {
     url: "https://example.invalid/libkrunfw.tgz",
     sha256: "f".repeat(64),
     source: "https://example.invalid/source.tar.gz",
+    macos: {
+      aarch64: {
+        url: "https://example.invalid/v5.6.4/libkrunfw-prebuilt-aarch64.tgz",
+        sha256: "a".repeat(64),
+      },
+    },
+    linux: {
+      aarch64: {
+        url: "https://example.invalid/v5.6.4/libkrunfw-aarch64.tgz",
+        sha256: "b".repeat(64),
+      },
+    },
   });
 
   const passt = readVersions(

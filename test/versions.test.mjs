@@ -21,8 +21,19 @@ test("versions.json has the expected pins", () => {
   assert.ok(versions.libkrunfw.url.includes(`/v${versions.libkrunfw.version}/`), "libkrunfw.url matches its version");
   assert.ok(versions.libkrunfw.source.endsWith(`/v${versions.libkrunfw.version}.tar.gz`), "libkrunfw.source matches its version");
   assert.match(versions.libkrunfw.sha256, /^[0-9a-f]{64}$/);
-  assert.match(versions.libkrunfw.url, /^https:\/\/github\.com\/containers\/libkrunfw\//);
-  assert.match(versions.libkrunfw.source, /^https:\/\/github\.com\/containers\/libkrunfw\//);
+  // GitHub redirects containers/libkrunfw to libkrun/libkrunfw, and release API URLs use the
+  // destination host; accept both so a pin bump from the API does not fail this test.
+  assert.match(versions.libkrunfw.url, /^https:\/\/github\.com\/(?:containers|libkrun)\/libkrunfw\//);
+  assert.match(versions.libkrunfw.source, /^https:\/\/github\.com\/(?:containers|libkrun)\/libkrunfw\//);
+  for (const [platform, asset] of [
+    ["macos", "libkrunfw-prebuilt-aarch64.tgz"],
+    ["linux", "libkrunfw-aarch64.tgz"],
+  ]) {
+    const pin = versions.libkrunfw[platform].aarch64;
+    assert.equal(new URL(pin.url).pathname.split("/").pop(), asset, `libkrunfw.${platform} asset name`);
+    assert.ok(pin.url.includes(`/v${versions.libkrunfw.version}/`), `libkrunfw.${platform} matches its version`);
+    assert.match(pin.sha256, /^[0-9a-f]{64}$/);
+  }
 
   assert.match(versions.buildImage, /@sha256:[0-9a-f]{64}$/);
   assert.match(versions.rust, /^\d+\.\d+\.\d+$/);
@@ -35,7 +46,13 @@ test("versions.json has the expected pins", () => {
 });
 
 test("the release build scripts parse", () => {
-  for (const script of ["scripts/build-native.sh", "scripts/native-in-container.sh", "scripts/build-release.sh"]) {
+  for (const script of [
+    "scripts/build-native.sh",
+    "scripts/native-in-container.sh",
+    "scripts/build-release.sh",
+    "scripts/build-native-macos.sh",
+    "scripts/build-release-macos.sh",
+  ]) {
     const result = spawnSync("bash", ["-n", script], { cwd: repoRoot, encoding: "utf8" });
     assert.equal(result.status, 0, `${script}: ${result.stderr}`);
   }

@@ -1801,8 +1801,11 @@ async function main(): Promise<void> {
     process.env.HIVE_VM_BIN ||= join(bundleRoot, "libexec/hive-vm");
     try {
       const rver = readFileSync(join(bundleRoot, "ROOTFS_VERSION"), "utf8").trim();
-      const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local/share");
-      process.env.HIVE_ROOTFS ||= join(dataHome, "agent-hive/rootfs", rver);
+      // rootfsBootPath is a folder on Linux but rootfs/<rver>/rootfs.img on macOS; use the
+      // release layout instead of assuming a folder (the installed image would otherwise be a
+      // directory, which the launcher refuses).
+      const { rootfsBootPath } = await import("./release.js");
+      process.env.HIVE_ROOTFS ||= rootfsBootPath(rver);
     } catch {
       // No ROOTFS_VERSION in the bundle: leave HIVE_ROOTFS to its source default.
     }

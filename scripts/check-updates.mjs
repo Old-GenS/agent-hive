@@ -103,12 +103,16 @@ export function applyUpdate(name, files, found) {
       versions.libkrun = { ...versions.libkrun, version: found.version, tag: found.tag, commit: found.commit };
       break;
     case "libkrunfw":
+      // The arm64 entries point at versioned URLs too, so they have to move with the parent or a
+      // bump would leave a stale macOS/Linux arm64 pin behind.
       versions.libkrunfw = {
         ...versions.libkrunfw,
         version: found.version,
         url: found.url,
         sha256: found.sha256,
         source: found.source,
+        macos: found.macos ?? versions.libkrunfw.macos,
+        linux: found.linux ?? versions.libkrunfw.linux,
       };
       break;
     case "passt":
@@ -183,21 +187,36 @@ async function checkLibkrun() {
   return { version, tag, commit };
 }
 
+/**
+ * One libkrunfw release asset, with the digest GitHub now publishes. When the API has no digest
+ * (older releases), the caller downloads the asset and hashes it.
+ */
+function libkrunfwAsset(rel, tag, name) {
+  const asset = (rel.assets ?? []).find((a) => a && a.name === name);
+  const url =
+    asset?.browser_download_url ??
+    `https://github.com/containers/libkrunfw/releases/download/${tag}/${name}`;
+  const digest = typeof asset?.digest === "string" ? asset.digest.replace(/^sha256:/, "") : "";
+  return { url, digest: /^[0-9a-f]{64}$/.test(digest) ? digest : undefined };
+}
+
 async function checkLibkrunfw() {
   const rel = await fetchJson(`${GITHUB}/repos/containers/libkrunfw/releases/latest`);
   const tag = String(rel.tag_name ?? "").trim();
   if (!/^v?\d/.test(tag)) throw new Error(`unexpected release tag "${tag}"`);
   const version = tag.replace(/^v/, "");
-  const asset = (rel.assets ?? []).find((a) => a && a.name === "libkrunfw-x86_64.tgz");
-  const url =
-    asset?.browser_download_url ??
-    `https://github.com/containers/libkrunfw/releases/download/${tag}/libkrunfw-x86_64.tgz`;
-  const sha256 = await sha256OfUrl(url);
+  // The x86_64 asset still feeds the Linux release; the two arm64 assets are the macOS prebuilt
+  // kernel bundle and the Linux arm64 library. All three move with the same version.
+  const x86 = libkrunfwAsset(rel, tag, "libkrunfw-x86_64.tgz");
+  const macos = libkrunfwAsset(rel, tag, "libkrunfw-prebuilt-aarch64.tgz");
+  const linux = libkrunfwAsset(rel, tag, "libkrunfw-aarch64.tgz");
   return {
     version,
-    url,
-    sha256,
+    url: x86.url,
+    sha256: x86.digest ?? (await sha256OfUrl(x86.url)),
     source: `https://github.com/containers/libkrunfw/archive/refs/tags/v${version}.tar.gz`,
+    macos: { aarch64: { url: macos.url, sha256: macos.digest ?? (await sha256OfUrl(macos.url)) } },
+    linux: { aarch64: { url: linux.url, sha256: linux.digest ?? (await sha256OfUrl(linux.url)) } },
   };
 }
 

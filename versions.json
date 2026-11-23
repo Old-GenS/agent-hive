@@ -9,7 +9,19 @@
     "version": "5.6.2",
     "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-x86_64.tgz",
     "sha256": "016c32ddb2a28aa300382cab33352d63a41a901eb36ee8d1ca24b389791c8b91",
-    "source": "https://github.com/containers/libkrunfw/archive/refs/tags/v5.6.2.tar.gz"
+    "source": "https://github.com/containers/libkrunfw/archive/refs/tags/v5.6.2.tar.gz",
+    "macos": {
+      "aarch64": {
+        "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-prebuilt-aarch64.tgz",
+        "sha256": "adef6739cc3bda2a1b57f04c08ccbfdf206a6c831d76b32de1beddc0e7984e86"
+      }
+    },
+    "linux": {
+      "aarch64": {
+        "url": "https://github.com/containers/libkrunfw/releases/download/v5.6.2/libkrunfw-aarch64.tgz",
+        "sha256": "dea7905a167eee17d482200ea2fe15871aceb293b0674ac825ed7ae69759399f"
+      }
+    }
   },
   "passt": {
     "version": "2026_10_02.cba3570",

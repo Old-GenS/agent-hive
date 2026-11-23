@@ -1,12 +1,14 @@
 # macOS (Apple silicon)
 
-**Status: Phases 0–2 are done (November 2026); Phase 3 has started with a green macOS test suite,
-while the run image and `/proc`-free recovery are still open.** On an M4, hive's own launcher boots
-a read-only ext4 image with the implicit vsock disabled and one vsock port wired to hive's egress
-proxy, and a real `runSandbox` run passes the negative network tests. The CI-built arm64 Fedora
-image boots the same way, and `hive setup` installs it as a `.img.gz`; what `hive run` from a
-release still waits for is the macOS app bundle (Phase 4). See [Phase 0
-results](#phase-0-results), [Phase 1 results](#phase-1-results) and
+**Status: Phases 0–2 are done (November 2026); Phase 3 has a green macOS test suite, while the
+run image and `/proc`-free recovery are still open. Phase 4's native build, release bundle,
+installer and CI build are in place; the signed public macOS release is the remaining distribution
+step.** On an M4, hive's own launcher boots a read-only ext4 image with the implicit vsock disabled
+and one vsock port wired to hive's egress proxy, and a real `runSandbox` run passes the negative
+network tests (`npm run smoke:macos`). The CI-built arm64 Fedora image boots the same way,
+`hive setup` installs it as a `.img.gz`, and a locally built `hive-<version>-darwin-arm64`
+bundle reports every check as ok and can run a VM. See [Phase 0 results](#phase-0-results),
+[Phase 1 results](#phase-1-results), [Phase 4 results](#phase-4-results) and
 [`scripts/macos-spike/`](../scripts/macos-spike/README.md).
 
 hive runs the agent inside a libkrun microVM. On Linux the VM reaches the internet only through
@@ -23,9 +25,11 @@ the macOS virtio-fs and HVF fixes we need.
 - **Hardware virtualization available:** `sysctl -n kern.hv_support` prints 1 (it does on an M4).
 - **A few GB free** for libkrun's build and the arm64 VM filesystem (the Linux VM filesystem alone
   is about 660 MB).
-- For development: Homebrew with `lld` and `xz`, a Rust toolchain with the
-  `aarch64-unknown-linux-musl` target, and podman (a `podman machine` runs Linux arm64 natively
-  on Apple silicon) to build the guest image.
+- For the native build: Xcode command line tools (clang and libclang), Rust stable, make, git,
+  curl and network. The build uses Rust's `rust-lld`, so Homebrew's `lld` is not needed.
+- To build the guest image locally: an arm64 Linux host, or a `podman machine` (it runs Linux
+  arm64 natively on Apple silicon); macOS has no `mkfs`. The `macos-image` workflow does this
+  on `ubuntu-24.04-arm` and uploads the result.
 
 ## What is already true
 
@@ -50,9 +54,11 @@ macOS 27):
   and libkrun 1.19.8 has `krun_add_disk(..., read_only)`, so a read-only rootfs image is supported.
 - Phase 1 added the platform branches for `/dev/kvm` versus `kern.hv_support`, pasta versus
   vsock, the dylib name and the VM image. Phase 2 added the arm64 image and its install path;
-  Phase 3 has made `npm test` green on macOS and `du` portable. Still open: `/proc` in
-  `recoverRuns` (`src/runs.ts:258`) and the run-image lifecycle; the macOS app bundle, installer
-  and native build are Phase 4.
+  Phase 3 has made `npm test` green on macOS and `du` portable. Phase 4 added
+  `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh`, the macOS branch of
+  `install-cli.sh` and the dispatchable `macos-release` workflow. Still open: `/proc` in
+  `recoverRuns` (`src/runs.ts:258`), the run-image lifecycle, and publishing/notarizing a
+  signed macOS release.
 
 ## Why not pasta or gvproxy
 
@@ -362,14 +368,15 @@ end to end yet; everything else is the product path. `runSandbox()` from `dist/s
 
 - libkrun loads its kernel bundle with `dlopen("libkrunfw.5.dylib")`, and dyld searches the system
   paths only. The launcher now preloads `libkrunfw.5.dylib` from libkrun's own directory (or
-  `HIVE_LIBKRUNFW`), so the release bundle must keep the two dylibs together. Phase 4 still owns
-  `install_name_tool` and the re-sign.
-- `vm/build.sh` ad-hoc signs the launcher on macOS with `vm/hive-vm.entitlements`. A release build
-  needs the same two keys, and distribution needs a Developer ID (Phase 4).
+  `HIVE_LIBKRUNFW`), so the release bundle must keep the two dylibs together. Phase 4's native
+  build sets the dylib ids and re-signs them.
+- `vm/build.sh` ad-hoc signs the launcher on macOS with `vm/hive-vm.entitlements`. Phase 4's
+  release build uses the same two keys; distribution still needs a Developer ID.
 - `hive-vm-init` needs GNU coreutils' `env --chdir`; Fedora has it, Alpine's busybox does not. The
   test image installed `coreutils`.
-- The launchd service, `recoverRuns` without `/proc`, a portable `du`, the case-sensitive run
-  image and the arm64 asset names are still Phase 3/4, and `hive run` waits for Phase 2's image.
+- The launchd service, `recoverRuns` without `/proc` and the case-sensitive run image are still
+  Phase 3. `hive run` from a checkout needs `HIVE_ROOTFS`; an installed release gets the image
+  through `hive setup`.
 
 **Exit criteria:** met for the networking half (a real `runSandbox` VM with proxy-only egress and
 the Phase 0 negative tests). `hive run` end to end waits for the arm64 image.
@@ -382,14 +389,15 @@ the Phase 0 negative tests). `hive run` end to end waits for the arm64 image.
   runner (`mke2fs -d` or `mkfs.erofs`; macOS has no mkfs). This is a separate step from
   `vm/build-rootfs.sh`, which keeps producing the Linux folder rootfs.
 - Name the macOS artifact `hive-rootfs-<hash>-linux-arm64.img` (or `.img.gz`), checksummed and
-  signed like the app bundle; `release.ts` accepts an image now, and the macOS installer is Phase 4.
+  signed like the app bundle; `release.ts` accepts an image, and Phase 4 adds the installer.
 - Keep the license/source obligations current (Fedora, Chromium, node, pi; libkrunfw is already in
   `THIRD-PARTY.md`).
 
-**Status: done, except the macOS app bundle and installer (Phase 4).** On an arm64 Linux host (or
+**Status: done; Phase 4 ships the app bundle and installer.** On an arm64 Linux host (or
 a `podman machine`), `npm run build:image` then `npm run build:rootfs-image` exports the sandbox
 image into a raw ext4 image named `hive-rootfs-<rootfs-id>-linux-arm64.img`, keeps the raw file
-for `HIVE_ROOTFS`, and writes a gzipped copy plus its SHA-256. The
+for `HIVE_ROOTFS`, and writes a gzipped copy, its SHA-256 and a `rootfs-info.json` naming
+the `image/` tree it came from (the macOS release build refuses a mismatched image). The
 [`macos-image`](../.github/workflows/macos-image.yml) workflow does the same on an
 `ubuntu-24.04-arm` runner, then mounts the image and runs Node, Chromium and pi from inside it.
 Fedora 45 ships Chromium and Node 24 for aarch64, so the image builds natively; the arm64 image
@@ -408,9 +416,10 @@ with `hive-rootfs-<id>-linux-arm64.img.gz`, verifies it against `SHA256SUMS`, gu
 | Network | proxy `200`; DNS, the LAN and a public IP all blocked |
 | Release client | image downloaded, SHA-256 checked, ext4 checked, linked as `current.img` |
 
-What is left is packaging: there is no macOS app bundle yet, so `installRelease` cannot install
-one and Phase 4's build must ship it. `hive run` from a checkout still needs `HIVE_ROOTFS`
-pointing at a built `.img`; a release will get there through `hive setup`.
+Phase 4 now packages it: `scripts/build-release-macos.sh` produces the
+`hive-<version>-darwin-arm64` bundle that `installRelease` expects, with the image as its paired
+asset. `hive run` from a checkout still needs `HIVE_ROOTFS` pointing at a built `.img`; an
+installed release gets there through `hive setup`.
 
 ### Phase 3 — Hive platform plumbing (3–5 days)
 
@@ -418,9 +427,10 @@ pointing at a built `.img`; a release will get there through `hive setup`.
   failures were the disk watchdog's `du -B1` (macOS accepts it but counts 512-byte blocks), git
   returning `/private/var` for paths the tests only knew as `/var`, `rmSync` following a cache
   symlink into a directory (the pruner now unlinks the link), the uninstall test's systemd file
-  name (it asks `servicePaths()` now), and the two `install-cli.sh` execution tests (skipped off
-  Linux, because that installer only ships the Linux x86_64 release). The push-refusal test also
-  names the remote's own `core.hooksPath`, so a developer-wide hook path cannot disable it.
+  name (it asks `servicePaths()` now), and the two `install-cli.sh` execution tests (they were
+  skipped off Linux until Phase 4 added the darwin-arm64 branch; they now run on both). The
+  push-refusal test also names the remote's own `core.hooksPath`, so a developer-wide hook path
+  cannot disable it.
 - `src/config.ts`: default network mode per platform; accept `HIVE_RUNTIME=auto` (the CLI
   currently rejects the documented default, `src/cli.ts:1743`).
 - `src/sandbox.ts` `libkrunAvailable()`/`systemInfo()`: HVF check, no pasta requirement, macOS
@@ -440,23 +450,54 @@ pointing at a built `.img`; a release will get there through `hive setup`.
 - `src/service.ts`: launchd already exists; fix the release-bundle command (it currently points at
   `lib/cli.js`, which a bundle does not ship).
 - `src/release.ts`: platform/arch asset names (`darwin-arm64` app, `linux-arm64` rootfs image)
-  and install paths.
-- `install-cli.sh` (or a macOS installer): `shasum -a 256` fallback, zsh `PATH`, Gatekeeper note.
+  and install paths (done in Phases 2/4).
+- `install-cli.sh` (or a macOS installer): `shasum -a 256` fallback, zsh `PATH`, Gatekeeper note
+  (done in Phase 4; the doc note is in `docs/INSTALL.md`).
 - UI: "This computer" shows Hypervisor.framework and the vsock network; nothing else changes.
 
 ### Phase 4 — Release and distribution (2–4 days)
 
-- `scripts/build-native-macos.sh`: libkrun 1.19.8 from source, `libkrunfw-prebuilt-aarch64`,
-  the launcher with entitlements and an ad-hoc signature, `install_name_tool` so the bundled
-  libkrun finds libkrunfw next to it, then re-sign.
-- `scripts/build-release-macos.sh`: Node `darwin-arm64`, the esbuild bundle, `ui/dist`, the arm64
-  rootfs image from the arm64 job, `SHA256SUMS` and the release signature; wire it into the
-  nightly/release workflows on `macos-15`.
-- `versions.json`: add `libkrunfw.macos.aarch64` and `libkrunfw.linux.aarch64` URLs with
-  SHA-256; teach `scripts/check-updates.mjs` about them.
-- Docs: a macOS section in `docs/INSTALL.md`, the README requirements, `AGENTS.md`, and the
-  roadmap.
-- Later: Homebrew tap or cask; a notarized Developer ID build for distribution.
+**Status: the build and install path is done (November 2026); a signed public release is the
+remaining step.**
+
+- `scripts/build-native-macos.sh` builds libkrun 1.19.8 from source and libkrunfw 5.6.2 from
+  upstream's prebuilt kernel bundle, compiles the launcher with the HVF entitlements, sets the
+  dylib ids, ad-hoc signs all three and verifies the launcher can load the bundled libkrun. Output
+  is `build/native-macos/` (libkrun and libkrunfw together in `lib/`, `hive-vm` in
+  `libexec/`); it is cached while the pins and launcher sources are unchanged.
+- `scripts/build-release-macos.sh` builds the `hive-<version>-darwin-arm64.tar.gz` bundle with
+  Node `darwin-arm64`, the esbuild CLI, `ui/dist`, the launcher, libkrun, libkrunfw and the arm64
+  rootfs image, then writes a signed `SHA256SUMS` that also covers the image. It checks the
+  image's ext4 superblock and `ROOTFS_VERSION` pairing, ships the libkrunfw GPL source and its
+  kernel tarball, and can add the macOS assets to an existing Linux release directory.
+- `versions.json` has `libkrunfw.macos.aarch64` and `libkrunfw.linux.aarch64` URLs with
+  SHA-256; `scripts/check-updates.mjs` reads all three assets' GitHub-published digests and moves
+  the arm64 URLs with the version.
+- `install-cli.sh` now installs the `darwin-arm64` bundle on Apple silicon: it uses
+  `shasum -a 256`, adds `~/.local/bin` to `~/.zprofile`/`.zshrc`, downloads the ~610 MB arm64
+  image and checks Hypervisor.framework instead of KVM/pasta.
+- `.github/workflows/macos-release.yml` (manual dispatch) reuses the arm64 image job, builds the
+  bundle on `macos-15`, checks the tarball and signatures, and uploads it as a workflow artifact.
+  It cannot boot HVF on GitHub's runners, and it signs with a throwaway key: a distributable
+  release is still built on a Mac with the release key.
+- Docs: the macOS section in `docs/INSTALL.md`, the README, `AGENTS.md`, `docs/RELEASING.md`
+  and this page.
+- Later: publish and notarize a Developer ID build for distribution; Homebrew tap or cask; wire
+  the macOS assets into the nightly release and stable promotion.
+
+### Phase 4 results
+
+| Check | Result |
+|---|---|
+| Native build | libkrun 1.19.8 and libkrunfw 5.6.2, launcher signed with both entitlements; `hive-vm --check` loads the bundled dylibs |
+| Bundle | `hive-0.5.5-nightly.99-darwin-arm64.tar.gz` (55 MB); `hive doctor` reports HVF, bundled libkrun, vsock egress, launcher and image as ok |
+| Image | a CI-built `hive-rootfs-<id>-linux-arm64.img.gz` (~604 MB), ext4 superblock, `current.img` install path and a `rootfs-info.json` image-tree check |
+| Installer | the macOS branch installs a fake release under a temp HOME, picks the darwin asset, verifies with `shasum`, and writes the zsh PATH line once |
+| Isolation | `npm run smoke:macos` on the M4: no IP network, TSI off, proxy 200, LAN/metadata 403, direct LAN/public/DNS/ping refused (10/10) |
+| CI build | `macos-release.yml` builds the image on `ubuntu-24.04-arm` and the bundle on `macos-15`, and checks the tarball with `shasum` and the code signatures. It has not run yet (it is dispatch-only and first runs after merge); it signs with a throwaway key, so it does not verify the release `SHA256SUMS.sig`. |
+
+**Remaining:** a signed, published macOS release (and notarization for a Developer ID build) is
+what a user can download; the build and install code is ready for it.
 
 **Total: roughly 3–4 weeks** after the spike. The security/networking work (Phases 0–1) carries
 almost all of the risk; Phases 2–4 are packaging and filesystem plumbing.
@@ -482,10 +523,12 @@ Done in Phase 1 unless the row says otherwise.
 | `src/diskwatch.ts` | **Phase 3:** portable `du` (done); host free space while runs live on the image (open) |
 | `src/usage.ts`, `src/service.ts`, `src/uninstall.ts` | **Phase 3:** platform branches, run-image attach/detach; `hive uninstall` detaches it |
 | `src/release.ts`, `src/cli.ts` | **Phase 2/3:** the macOS image asset and install path (done), macOS asset names and `HIVE_RUNTIME` validation (open) |
-| `install-cli.sh` / `install.sh` | **Phase 4:** macOS install and `update` path |
-| `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | **Phase 4:** build and sign |
-| `versions.json`, `scripts/check-updates.mjs` | **Phase 4:** arm64 pins |
-| `.github/workflows/` | **Phase 3/4:** macOS unit-test job and arm64 rootfs image (done); release assets (open) |
+| `install-cli.sh` | **Phase 4:** the darwin-arm64 asset, `shasum -a 256`, zsh `PATH` and HVF advice (done) |
+| `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | **Phase 4:** build libkrun/libkrunfw/the launcher, then the signed bundle and image (done) |
+| `scripts/macos-smoke.mjs` (new) | **Phase 4:** the real-VM isolation check (`npm run smoke:macos`) |
+| `scripts/kernel-remote.mjs` (new) | reads libkrunfw's `KERNEL_REMOTE` without GNU make, for the macOS GPL source asset |
+| `versions.json`, `scripts/check-updates.mjs` | **Phase 4:** arm64 pins and their digests (done) |
+| `.github/workflows/` | **Phase 3/4:** macOS unit-test job and arm64 rootfs image (done); the dispatchable macOS bundle build (done); nightly/stable assets (open) |
 
 ## Risks
 
@@ -497,7 +540,7 @@ Done in Phase 1 unless the row says otherwise.
 | virtio-fs is slow for many small files (git, npm) on macOS | the rootfs is a block image now; measure `work/` and `io/` in Phase 0; if unusable, put `work/` on a virtio-blk image and export patches — a bigger change, decided on numbers |
 | vsock-without-TSI does not behave as documented | the Phase 0 negative test is the gate; fallback is gvproxy with an explicit reduced-isolation label |
 | Chromium, npm or git ignores the proxy and wants DNS | all honour the `*_PROXY` variables today; test each in Phase 0; npm's cache already lives in the VM |
-| GitHub's macOS runners are VMs, and nested HVF needs an M3+ host and macOS 15+ | do not count on a VM boot in CI: unit tests and `hive-vm --check` there, a `scripts/macos-smoke.sh` run by hand on real hardware |
+| GitHub's macOS runners are VMs, and nested HVF needs an M3+ host and macOS 15+ | do not count on a VM boot in CI: unit tests and `hive-vm --check` there, the dispatchable `macos-release` build, and `scripts/macos-smoke.mjs` run by hand on real hardware |
 | UNIX socket path longer than 104 bytes | short `/tmp/hv-XXXX.sock`; the ctl dir stays under the run folder |
 | macOS sleep and the run time limit (`CLOCK_MONOTONIC` excludes sleep) | decide whether the limit is wall-clock or awake time; use a continuous clock if wall-clock |
 | Signing and notarization | ad-hoc for local use; Developer ID + notarization only when distributing |
@@ -506,7 +549,8 @@ Done in Phase 1 unless the row says otherwise.
 
 1. **Apple silicon only (macOS 14+)** — Intel Macs are out. Accepted?
 2. **Proxy-only egress by default**, with gvproxy only as an explicit reduced-isolation opt-in.
-3. **Source build first**, signed/notarized installer later.
+3. **Source build first**, signed/notarized installer later. The source path and the signed
+   release build are done; publishing the signed macOS assets is the remaining step.
 4. **arm64 rootfs image in CI** (`ubuntu-24.04-arm`) or a local `podman machine`.
 5. **Linux stays on pasta** until macOS ships; unify later.
 6. **Rootfs image format:** **ext4** (Phase 0: 104 MiB allocated, 39 MiB gzipped, boot in ~0.07 s,

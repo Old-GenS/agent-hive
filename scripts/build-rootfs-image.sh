@@ -82,5 +82,13 @@ debugfs -R "stat /usr/local/bin/hive-netd" "$img_path" 2>/dev/null | grep -q "In
 gzip -9 -n -c "$img_path" > "$gz_path"
 ( cd "$OUT" && sha256sum "$name" > "$name.sha256" )
 
+# Pair the image with the image/ tree it came from, so a release build can refuse a stale guest
+# image (the same check the Linux release makes with rootfs-info.json).
+image_tree=$(git -C "$repo_root" rev-parse HEAD:image 2>/dev/null || true)
+if [[ -z "$image_tree" ]]; then
+  echo "build-rootfs-image: warning: no git image tree; a release build will refuse this image without HIVE_ROOTFS_INFO" >&2
+fi
+printf '{"rootfs":"%s","imageTree":"%s","built":"%s"}\n' "$id" "$image_tree" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/rootfs-info.json"
+
 echo "build-rootfs-image: $gz_path ($(du -h "$gz_path" | cut -f1))" >&2
 echo "$gz_path"

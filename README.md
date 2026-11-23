@@ -41,6 +41,9 @@ curl -fsSL https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install-cl
 irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
 ```
 
+**macOS** (Apple silicon): build it from source for now; a signed release is not published yet.
+The steps are [in docs/INSTALL.md](docs/INSTALL.md#macos-apple-silicon).
+
 Then start the web UI. It opens in your browser and walks you through the rest (checks, an API
 key, GitHub):
 
@@ -129,7 +132,7 @@ The full picture is in **[How it works](docs/HOW-IT-WORKS.md)**.
 
 ## Docs
 
-- [Install](docs/INSTALL.md): requirements, Linux, Windows, from source, updating
+- [Install](docs/INSTALL.md): requirements, Linux, macOS, Windows, from source, updating
 - [Staying up to date](docs/UPDATES.md): how libkrun, the VM and every dependency are kept current and tested
 - [How it works](docs/HOW-IT-WORKS.md): the design, the isolation, and what happens during a run
 - [CLI reference](docs/CLI.md): every command and option

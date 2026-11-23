@@ -27,7 +27,7 @@ import { keysFilePath } from "./keys.js";
 import { servicePaths, uninstallService } from "./service.js";
 import { isLive, listRuns } from "./runs.js";
 
-/** The marker install-cli.sh writes on the PATH line in ~/.profile and ~/.bashrc. */
+/** The marker install-cli.sh writes on the PATH line in the shell's startup file. */
 const PATH_MARKER = "added by agent-hive";
 
 /** One thing `runUninstall` removes: what it is, where it is, and its best-effort size. */
@@ -287,8 +287,11 @@ export function uninstallPlan(o: { keepRuns: boolean; keepConfig: boolean }): Un
     if (bytes !== undefined) sizes[path] = bytes;
   }
 
+  // The installer writes ~/.profile and ~/.bashrc on Linux, ~/.zprofile and ~/.zshrc on macOS.
+  // Check all four: a marked line is only ever one this installer wrote.
   const pathLines: PathLineFile[] = [];
-  for (const file of [join(homedir(), ".profile"), join(homedir(), ".bashrc")]) {
+  for (const name of [".profile", ".bashrc", ".zprofile", ".zshrc"]) {
+    const file = join(homedir(), name);
     const lines = markedLines(file);
     if (lines.length > 0) pathLines.push({ file, lines });
   }

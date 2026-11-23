@@ -1,6 +1,6 @@
 // The install scripts: `sh -n install-cli.sh`, a full `install-cli.sh` run against a fake release
-// served from localhost (no network, no sudo), and the static checks on install.ps1. The
-// installer itself is only parsed and analysed in CI (.github/workflows/ci.yml).
+// served from localhost (no network, no sudo) on Linux and macOS, and the static checks on
+// install.ps1. The Windows installer itself is only parsed and analysed in CI.
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -28,7 +28,16 @@ const root = mkdtempSync(join(tmpdir(), "hive-install-test-"));
 
 const VERSION = "1.2.3";
 const REPO = "o/r";
-const APP = `hive-${VERSION}-linux-x86_64.tar.gz`;
+// install-cli.sh ships the Linux x86_64 and macOS arm64 releases. On anything else the execution
+// tests are skipped, but the script still has to parse.
+const PLATFORM =
+  process.platform === "linux" && process.arch === "x64"
+    ? "linux-x86_64"
+    : process.platform === "darwin" && process.arch === "arm64"
+      ? "darwin-arm64"
+      : "";
+const SUPPORTED = PLATFORM !== "";
+const APP = `hive-${VERSION}-${PLATFORM || "linux-x86_64"}.tar.gz`;
 
 // A tiny release: the app bundle (a hive that only succeeds and a VERSION file), its SHA256SUMS
 // and the release JSON that points at them. All of it is served from 127.0.0.1.
@@ -137,8 +146,12 @@ async function runInstall(env) {
   }
 }
 
+function firstRc(home) {
+  return join(home, process.platform === "darwin" ? ".zprofile" : ".profile");
+}
+
 function countPathLine(home) {
-  const profile = join(home, ".profile");
+  const profile = firstRc(home);
   if (!existsSync(profile)) return 0;
   return readFileSync(profile, "utf8").split("\n").filter((line) => line.includes("added by agent-hive")).length;
 }
@@ -150,9 +163,7 @@ test("install-cli.sh parses with sh -n", () => {
 
 test(
   "install-cli.sh installs the fake release and adds ~/.local/bin to PATH once",
-  // install-cli.sh installs the Linux x86_64 release and refuses anything else, so its execution
-  // tests only run on Linux.
-  { skip: process.platform !== "linux" && "install-cli.sh only installs the Linux x86_64 release" },
+  { skip: !SUPPORTED && `install-cli.sh has no build for ${process.platform}/${process.arch}` },
   async () => {
     const { home, data, env } = installEnv("home-one");
     const first = await runInstall(env);
@@ -173,13 +184,13 @@ test(
 );
 
 test(
-  "install-cli.sh leaves ~/.profile alone with HIVE_NO_MODIFY_PATH=1",
-  { skip: process.platform !== "linux" && "install-cli.sh only installs the Linux x86_64 release" },
+  "install-cli.sh leaves the shell profile alone with HIVE_NO_MODIFY_PATH=1",
+  { skip: !SUPPORTED && `install-cli.sh has no build for ${process.platform}/${process.arch}` },
   async () => {
     const { home, env } = installEnv("home-two", { HIVE_NO_MODIFY_PATH: "1" });
     const result = await runInstall(env);
     assert.equal(result.status, 0, result.stderr);
-    assert.ok(!existsSync(join(home, ".profile")), "no ~/.profile is written");
+    assert.ok(!existsSync(firstRc(home)), "no shell profile is written");
     assert.match(result.stdout, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   },
 );
