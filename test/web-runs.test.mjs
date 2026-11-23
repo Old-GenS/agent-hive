@@ -407,6 +407,15 @@ async function makePushableRun(name, { rejectWith } = {}) {
     // Single-quoted so the shell leaves the backticks in GitHub's message alone.
     writeFileSync(hook, `#!/bin/sh\necho '${rejectWith}' >&2\nexit 1\n`);
     chmodSync(hook, 0o755);
+    // A developer-wide core.hooksPath (this Mac has one) would override $GIT_DIR/hooks, so name
+    // the remote's own hooks directory explicitly: the refusal must not depend on global config.
+    execFileSync("git", [
+      "--git-dir",
+      remoteGit,
+      "config",
+      "core.hooksPath",
+      join(remoteGit, "hooks"),
+    ]);
   }
   const dir = join(root, name);
   mkdirSync(join(dir, "out"), { recursive: true });

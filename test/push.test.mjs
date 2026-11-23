@@ -2,7 +2,7 @@
 // importing any dist module, because config.ts reads it at import time.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -121,7 +121,8 @@ test("gitConfigIdentity reads the repo's user.name and user.email", () => {
 });
 
 test("pushRun pushes a local run's patches to a new branch", async () => {
-  const base = tempDir("hive-push-local-");
+  // Canonical root: git resolves relative clone URLs through realpath (/private/var on macOS).
+  const base = realpathSync(tempDir("hive-push-local-"));
   const remoteGit = join(base, "remote.git");
   const upGit = join(base, "up.git");
   const local = join(base, "local");
@@ -171,7 +172,7 @@ test("pushRun pushes a local run's patches to a new branch", async () => {
 });
 
 test("pushRun pushes a remote run back to the URL it was cloned from, and applyRun refuses it", async () => {
-  const base = tempDir("hive-push-remote-");
+  const base = realpathSync(tempDir("hive-push-remote-"));
   const remoteGit = join(base, "remote.git");
   const seed = join(base, "seed");
 

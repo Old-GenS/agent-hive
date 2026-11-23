@@ -10,11 +10,15 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/** Bytes used by `paths`, from `du -s -B1` (symlinks are not followed); undefined on any error. */
+/**
+ * Bytes used by `paths`, from `du -s -k` (symlinks are not followed); undefined on any error.
+ * `-k` is the block-size flag both GNU and BSD du agree on. macOS accepts `-B1` but still counts
+ * 512-byte blocks, which undercounts a run by 512x and switches the size cap off.
+ */
 export async function usedBytes(paths: string[]): Promise<number | undefined> {
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("du", ["-s", "-B1", "-x", "--", ...paths], {
+    ({ stdout } = await execFileAsync("du", ["-s", "-k", "-x", "--", ...paths], {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     }));
@@ -32,7 +36,7 @@ export async function usedBytes(paths: string[]): Promise<number | undefined> {
     const first = line.trim().split(/\s+/)[0];
     const n = Number.parseInt(first, 10);
     if (!Number.isFinite(n)) return undefined;
-    total += n;
+    total += n * 1024; // du -k reports KiB
   }
   return total;
 }
