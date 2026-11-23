@@ -367,12 +367,9 @@ test("a signature from the wrong key is rejected", async () => {
   await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey], platform: "linux" }), /signature/);
 });
 
-test("no trusted signer refuses to verify anything", async () => {
+test("an empty public key refuses to verify anything", async () => {
   current = makeRelease("1.5.0", "aaaaaaaaaaaa");
-  await assert.rejects(
-    release.installRelease(await release.fetchRelease(), { publicKeys: [], identities: [], platform: "linux" }),
-    /trusts no release signer/,
-  );
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [], platform: "linux" }), /signing key/);
 });
 
 test("a release signed by a second key installs only when that key is trusted", async () => {
