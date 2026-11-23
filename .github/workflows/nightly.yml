@@ -2,8 +2,8 @@ name: Nightly prerelease
 
 on:
   schedule:
-    # 19:00 America/Vancouver (03:00 UTC).
-    - cron: "0 3 * * *"
+    # 23:00 America/Vancouver (BC is UTC-7 year-round, so 06:00 UTC).
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       fresh_rootfs:
@@ -240,7 +240,11 @@ jobs:
             rootfs_line="rootfs rebuilt: $ROOTFS_REASON"
           fi
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          ![Nightly prerelease](https://github.com/${{ github.repository }}/actions/workflows/nightly.yml/badge.svg)
+
           Daily nightly build of $GITHUB_SHA.
+
+          Build: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 
           ## Commits
           \`\`\`
