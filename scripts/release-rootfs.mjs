@@ -7,7 +7,7 @@
  * `imageTree`) and which rootfs id it is (`rootfs-info.json`'s `rootfs`, which must match the
  * `hive-rootfs-<id>-linux-x86_64.tar.gz` file name). The nightly plan compares the image tree
  * before it reuses a rootfs; `scripts/build-release.sh` runs the same check for a hand-built
- * release, and `scripts/promote.mjs` runs it before it builds, so a release cannot be paired with
+ * release, and the build runs it before it packs the rootfs, so a release cannot be paired with
  * a rootfs from another image tree (an old pi, old Fedora packages, or a different `image/`).
  *
  * CLI, used by build-release.sh: prints the rootfs id, or exits 1 with the reason:

@@ -29,8 +29,7 @@ never configured cannot publish (GitHub would otherwise create it unprotected on
 **The environment** needs: a required reviewer that is not an account agents can use, *Prevent
 self-review* on, *Allow administrators to bypass* off, and deployment branches limited to `main`.
 
-Bump-and-approve is the whole process. `scripts/promote.mjs` is the older local route (see below)
-and needs a local signing key; it is not used now that the key is retired.
+Bump-and-approve is the whole process.
 
 The release build needs podman (it builds the VM image and packs the rootfs inside
 `podman unshare`, since the image has files only root may read).
@@ -77,34 +76,6 @@ until a newer one passes that check.
 | `buildImage` | The `manylinux_2_28` image digest the native build runs in |
 | `node` | The Node.js version bundled in the app (`HIVE_NODE_VERSION` still overrides it) |
 | `skip` | Upstream versions known to be broken for hive, per component, with the reason. The daily bump check never offers them (libkrunfw 5.6.4: DNS fails in the VM) |
-
-## Promote a nightly to stable
-
-This is the normal way to cut a stable release. It guarantees the stable matches the nightly that
-was tested: the same app commit, the same VM filesystem, re-signed with the stable key.
-
-1. Bump `version` in `package.json` to the stable version the nightly tag names
-   (`v0.5.6-nightly.3` promotes to `0.5.6`), commit it and merge it to `main`.
-2. Promote:
-
-   ```bash
-   npm run promote -- v0.5.6-nightly.3
-   ```
-
-   `scripts/promote.mjs` checks the nightly's `SHA256SUMS.sig` against `PRERELEASE_PUBLIC_KEY`,
-   checks that the nightly's rootfs was built from the promoted commit's `image/` tree, builds the
-   app from that same commit in a throwaway worktree (the checkout is not touched), reuses that
-   rootfs, signs the result with the local key and checks the signature against
-   `RELEASE_PUBLIC_KEY`, and writes `release/<version>/`. `--dry-run` checks the nightly and builds
-   nothing; `--publish` also creates the GitHub release.
-
-   It needs podman, network, `gh`, **and a local stable signing key** (`HIVE_SIGNING_KEY`, default
-   `~/.config/agent-hive/release-signing-key.pem`). The stable key has been retired in favour of the
-   keyless workflow above, so this path only works if you mint a new key with `scripts/keygen.mjs`
-   and accept that existing installs would need a reinstall.
-
-   Note that promoting builds from the nightly's commit, not from `main`: anything merged after
-   that nightly is not in the stable release, which is the point — you ship what CI tested.
 
 ## Build a release by hand
 
@@ -168,8 +139,7 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
 ## Automation and the nightly channel
 
 `.github/workflows/` keeps `main` at the newest upstream pins and publishes a signed nightly
-prerelease every day. A stable release is promoted from one of those nightlies with
-`npm run promote` (see "Promote a nightly to stable"), so it never differs from what CI tested.
+prerelease every day. Stable releases are built from `main` by `release.yml`.
 
 ### Repository settings the automation depends on
 
@@ -296,7 +266,7 @@ Stable installs accept only the stable key, so the promotion re-signs the tested
 | `release/<version>/passt-<version>-source.tar.xz` | The passt source tarball (GPL-2.0-or-later / BSD-3-Clause corresponding source) the static `pasta` was built from. |
 | `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and the source tarballs. |
 | `release/<version>/SHA256SUMS.sigstore.json` | The keyless signature over `SHA256SUMS` (a sigstore bundle), verified by `hive update` against the release workflow's identity. |
-| `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature, used by nightlies and by the local `promote` path. |
+| `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature, used by the nightlies. |
 | `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it); the nightly rootfs plan does. |
 
 `install-cli.sh` checks the download against `SHA256SUMS` over HTTPS but does not verify the

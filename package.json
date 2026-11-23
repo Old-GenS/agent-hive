@@ -25,8 +25,7 @@
     "release": "bash scripts/build-release.sh",
     "test": "npm run build && node scripts/run-tests.mjs",
     "start": "node dist/index.js",
-    "dev": "tsc --watch & node --watch dist/index.js",
-    "promote": "node scripts/promote.mjs"
+    "dev": "tsc --watch & node --watch dist/index.js"
   },
   "dependencies": {
     "@fastify/static": "^10.1.11",
