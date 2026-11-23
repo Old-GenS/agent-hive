@@ -399,7 +399,7 @@ installer have nothing to pair the image with, and `hive run` on a Mac still nee
 
 ### Phase 3 — Hive platform plumbing (3–5 days)
 
-- **`npm test` is green on macOS, and `ci.yml` runs it on a `macos-14` runner.** The last ten
+- **`npm test` is green on macOS, and `ci.yml` runs it on a `macos-15` runner.** The last ten
   failures were the disk watchdog's `du -B1` (macOS accepts it but counts 512-byte blocks), git
   returning `/private/var` for paths the tests only knew as `/var`, `rmSync` following a cache
   symlink into a directory (the pruner now unlinks the link), the uninstall test's systemd file
@@ -436,7 +436,7 @@ installer have nothing to pair the image with, and `hive run` on a Mac still nee
   libkrun finds libkrunfw next to it, then re-sign.
 - `scripts/build-release-macos.sh`: Node `darwin-arm64`, the esbuild bundle, `ui/dist`, the arm64
   rootfs image from the arm64 job, `SHA256SUMS` and the release signature; wire it into the
-  nightly/release workflows on `macos-14`.
+  nightly/release workflows on `macos-15`.
 - `versions.json`: add `libkrunfw.macos.aarch64` and `libkrunfw.linux.aarch64` URLs with
   SHA-256; teach `scripts/check-updates.mjs` about them.
 - Docs: a macOS section in `docs/INSTALL.md`, the README requirements, `AGENTS.md`, and the
