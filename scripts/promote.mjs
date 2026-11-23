@@ -237,9 +237,12 @@ async function main() {
     if (!existsSync(join(out, `hive-${version}-linux-x86_64.tar.gz`))) {
       fail(`the build did not produce hive-${version}-linux-x86_64.tar.gz`);
     }
-    const builtRootfs = readFileSync(join(out, "ROOTFS_VERSION"), "utf8").trim();
-    if (builtRootfs !== rver) fail(`the release records rootfs ${builtRootfs}, expected ${rver}`);
+    // build-release.sh writes VERSION and ROOTFS_VERSION inside the app tarball, not next to it;
+    // rootfs-info.json is the record that does land in release/<version>/.
     const builtInfo = JSON.parse(readFileSync(join(out, "rootfs-info.json"), "utf8"));
+    if (builtInfo.rootfs !== rver) {
+      fail(`the release records rootfs ${builtInfo.rootfs}, expected ${rver}`);
+    }
     if (builtInfo.imageTree !== commitImageTree) {
       fail("the release's rootfs-info.json does not name the promoted commit's image/ tree");
     }
