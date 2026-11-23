@@ -248,5 +248,5 @@ opens tested pin-bump PRs; Dependabot; a daily nightly prerelease (`.github/work
 - server: refusing to restart, or finishing runs first, while runs are in progress
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
 - a VM size per run
-- macOS: Phase 0 and Phase 1 are done and verified on an M4; Phase 2's arm64 image builds in CI and boots on the M4, and Phase 3 has `npm test` green on macOS (run by the `macos` CI job) and a portable `du`; `/proc`-free recovery and the case-sensitive run image remain
+- macOS: Phases 0–2 are done and verified on an M4 (the arm64 image builds in CI, boots, and `hive setup` installs it as a `.img.gz`); Phase 3 has `npm test` green on macOS (run by the `macos` CI job) and a portable `du`; `/proc`-free recovery, the case-sensitive run image and the macOS bundle/installer remain
 - a per-run network allowlist

@@ -553,7 +553,7 @@ export function checkSandbox(): string[] {
   if (!existsSync(config.sandbox.rootfs)) {
     problems.push(
       networkBackend() === "vsock"
-        ? `VM image ${config.sandbox.rootfs} not found; see docs/MACOS.md`
+        ? `VM image ${config.sandbox.rootfs} not found; build it with npm run build:rootfs-image on arm64 Linux (docs/MACOS.md)`
         : `libkrun rootfs ${config.sandbox.rootfs} not found; create it with: npm run build:rootfs`,
     );
   }

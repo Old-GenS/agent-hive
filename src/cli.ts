@@ -1464,7 +1464,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
       ? `ok (${rootfsPath})`
       : `missing (${config.sandbox.rootfs}) — ${
           networkBackend() === "vsock"
-            ? "the macOS VM image is not built yet (docs/MACOS.md, Phase 2)"
+            ? "the macOS VM image is not installed (npm run build:rootfs-image on arm64 Linux; docs/MACOS.md)"
             : "run hive setup"
         }`,
   });
@@ -1649,7 +1649,7 @@ async function cmdSetup(args: string[]): Promise<number> {
     // The Linux recipe builds a folder rootfs, which the macOS launcher refuses: say what is
     // actually missing instead of sending the user to a command that cannot help.
     process.stdout.write(
-      "hive: running from source; macOS needs an arm64 VM image, which this checkout does not build yet (docs/MACOS.md, Phase 2)\n",
+      "hive: running from source; build the arm64 VM image on arm64 Linux with npm run build:rootfs-image, then set HIVE_ROOTFS to the .img (docs/MACOS.md)\n",
     );
   } else {
     process.stdout.write(

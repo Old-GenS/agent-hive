@@ -5,7 +5,10 @@
  *   versions/<version>/   an extracted app bundle (bin/hive, lib/, libexec/, VERSION, ROOTFS_VERSION)
  *   current               symlink to the active version
  *   previous              symlink to the version `hive update --rollback` goes back to
- *   rootfs/<rootfs-version>/ the extracted VM root filesystem, with a `.complete` marker
+ *   rootfs/<rootfs-version>/ the VM root filesystem: a tree (Linux) or rootfs.img (macOS),
+ *                            with a `.complete` marker
+ *   rootfs/current        symlink to the active rootfs directory (Linux)
+ *   rootfs/current.img    symlink to the active rootfs image (macOS)
  *
  * Every path is computed at call time from the environment (XDG dirs, HOME), never at import
  * time, so tests and callers can point the data dir wherever they like.
@@ -13,13 +16,16 @@
 import { createHash, verify } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  closeSync,
   createReadStream,
   createWriteStream,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   readlinkSync,
   readdirSync,
   renameSync,
@@ -31,6 +37,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import { PRERELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from "./release-key.js";
 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -61,6 +68,64 @@ export function previousLink(): string {
 
 export function rootfsDir(): string {
   return join(dataDir(), "rootfs");
+}
+
+/**
+ * The release asset that carries the VM rootfs: a folder tree on Linux, a gzipped raw ext4
+ * image on macOS (docs/MACOS.md, Phase 2).
+ */
+export function rootfsAssetName(rver: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin"
+    ? `hive-rootfs-${rver}-linux-arm64.img.gz`
+    : `hive-rootfs-${rver}-linux-x86_64.tar.gz`;
+}
+
+/** The image a macOS install boots, inside its rootfs version directory. */
+export function rootfsImagePath(rver: string): string {
+  return join(rootfsDir(), rver, "rootfs.img");
+}
+
+/** What `config.sandbox.rootfs` resolves to: the rootfs folder, or the macOS disk image. */
+export function rootfsBootPath(rver: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin" ? rootfsImagePath(rver) : join(rootfsDir(), rver);
+}
+
+/**
+ * The stable link `config.sandbox.rootfs` uses: `rootfs/current` (a folder) on Linux,
+ * `rootfs/current.img` (a disk image) on macOS.
+ */
+export function rootfsCurrentLink(platform: NodeJS.Platform = process.platform): string {
+  return join(rootfsDir(), platform === "darwin" ? "current.img" : "current");
+}
+
+/**
+ * Point the current-rootfs link at `rver`, choosing the link by the installed layout: an image
+ * (macOS) gets `current.img`, a folder tree (Linux) gets `current`. The layout is what hive
+ * boots, so activation does not have to guess from the host it happens to run on.
+ */
+export function switchRootfs(rver: string): void {
+  if (existsSync(rootfsImagePath(rver))) {
+    switchLink(rootfsCurrentLink("darwin"), rootfsImagePath(rver));
+    return;
+  }
+  const dir = join(rootfsDir(), rver);
+  if (existsSync(dir)) switchLink(rootfsCurrentLink("linux"), dir);
+}
+
+const EXT4_MAGIC_OFFSET = 1024 + 0x38;
+
+/** True when `path` has an ext4 superblock: magic 0xef53 at offset 1080. */
+export function isExt4Image(path: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const magic = Buffer.alloc(2);
+    return readSync(fd, magic, 0, 2, EXT4_MAGIC_OFFSET) === 2 && magic.readUInt16LE(0) === 0xef53;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 export function binLink(): string {
@@ -331,20 +396,28 @@ export async function download(
   );
 }
 
-/** Download, verify and unpack the rootfs a release points at. */
+/**
+ * Download, verify and install the rootfs a release points at: a folder tree on Linux, a
+ * gunzipped raw ext4 image on macOS. The fetched bytes must match the release's SHA256SUMS.
+ */
 export async function ensureRootfs(
   rel: Release,
   rver: string,
   sums: Map<string, string>,
   tmp: string,
   onProgress?: OnProgress,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
   const dest = join(rootfsDir(), rver);
   if (existsSync(join(dest, ".complete"))) return;
 
-  const name = `hive-rootfs-${rver}-linux-x86_64.tar.gz`;
+  const name = rootfsAssetName(rver, platform);
   const asset = rel.assets.find((a) => a.name === name);
-  if (!asset) throw new Error(`release has no rootfs ${rver}`);
+  if (!asset) {
+    throw new Error(
+      `release has no rootfs ${rver} for ${platform === "darwin" ? "macOS (arm64)" : "Linux (x86_64)"} (${name})`,
+    );
+  }
   const file = join(tmp, name);
   await download(asset, file, 600_000, onProgress);
   const actual = await sha256File(file);
@@ -353,8 +426,20 @@ export async function ensureRootfs(
   const dir = join(rootfsDir(), `.tmp-${rver}`);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
-  execFileSync("tar", ["-xzf", file, "-C", dir, "--no-same-owner"]);
-  if (!existsSync(join(dir, "usr/local/bin/hive-vm-init"))) throw new Error("bad rootfs archive");
+  if (platform === "darwin") {
+    const image = join(dir, "rootfs.img");
+    await pipeline(createReadStream(file), createGunzip(), createWriteStream(image));
+    if (!isExt4Image(image)) {
+      rmSync(dir, { recursive: true, force: true });
+      throw new Error(`bad VM image (not ext4): ${name}`);
+    }
+  } else {
+    execFileSync("tar", ["-xzf", file, "-C", dir, "--no-same-owner"]);
+    if (!existsSync(join(dir, "usr/local/bin/hive-vm-init"))) {
+      rmSync(dir, { recursive: true, force: true });
+      throw new Error("bad rootfs archive");
+    }
+  }
   writeFileSync(join(dir, ".complete"), "");
   renameSync(dir, dest);
 }
@@ -363,16 +448,27 @@ export async function ensureRootfs(
  * Install a release into `versions/<version>` and fetch its rootfs unless it is already there.
  * Nothing is activated: call activate() once this returns.
  */
-export async function installRelease(rel: Release, o: { publicKeys?: string[] } = {}): Promise<string> {
+export async function installRelease(
+  rel: Release,
+  o: { publicKeys?: string[]; platform?: NodeJS.Platform } = {},
+): Promise<string> {
   const keys = (o.publicKeys ?? trustedKeys(readChannel())).filter((key) => key !== "");
   if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 
-  const app = `hive-${rel.version}-linux-x86_64.tar.gz`;
+  // The app bundle decides which rootfs goes with it: the Linux folder rootfs or the macOS
+  // arm64 image. There is no macOS bundle yet (Phase 4), but the pairing belongs here.
+  const platform = o.platform ?? process.platform;
+  const app =
+    platform === "darwin"
+      ? `hive-${rel.version}-darwin-arm64.tar.gz`
+      : `hive-${rel.version}-linux-x86_64.tar.gz`;
   const sumsAsset = rel.assets.find((a) => a.name === "SHA256SUMS");
   const sigAsset = rel.assets.find((a) => a.name === "SHA256SUMS.sig");
   const appAsset = rel.assets.find((a) => a.name === app);
   if (!sumsAsset || !sigAsset || !appAsset) {
-    throw new Error(`release v${rel.version} has no linux-x86_64 build`);
+    throw new Error(
+      `release v${rel.version} has no ${platform === "darwin" ? "darwin-arm64" : "linux-x86_64"} build`,
+    );
   }
 
   mkdirSync(dataDir(), { recursive: true });
@@ -406,7 +502,7 @@ export async function installRelease(rel: Release, o: { publicKeys?: string[] } 
 
     const rver = readFileSync(join(dest, "ROOTFS_VERSION"), "utf8").trim();
     if (rver !== "none") {
-      await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp);
+      await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, undefined, platform);
     }
     return dest;
   } finally {
@@ -415,16 +511,21 @@ export async function installRelease(rel: Release, o: { publicKeys?: string[] } 
 }
 
 /**
- * Download the VM rootfs that belongs to the running bundle (hive setup). `onProgress` is called
- * as the archive downloads; it is never required.
+ * Download the VM rootfs that belongs to the running bundle (hive setup), and point the
+ * platform's current-rootfs link at it. `onProgress` is called as the archive downloads; it is
+ * never required.
  */
 export async function setupRootfs(
-  o: { publicKeys?: string[]; onProgress?: OnProgress } = {},
+  o: { publicKeys?: string[]; onProgress?: OnProgress; platform?: NodeJS.Platform } = {},
 ): Promise<string> {
+  const platform = o.platform ?? process.platform;
   if (!bundleRoot()) throw new Error("not an installed release");
   const rver = readFileSync(join(bundleRoot() as string, "ROOTFS_VERSION"), "utf8").trim();
   const dest = join(rootfsDir(), rver);
-  if (existsSync(join(dest, ".complete"))) return dest;
+  if (existsSync(join(dest, ".complete"))) {
+    switchRootfs(rver);
+    return rootfsBootPath(rver, platform);
+  }
 
   // A prerelease build trusts the prerelease key too, whether or not the channel file says so.
   const channel: Channel =
@@ -448,11 +549,12 @@ export async function setupRootfs(
     if (!verifySumsAny(sums, readFileSync(sigPath, "utf8"), keys)) {
       throw new Error("release signature check failed");
     }
-    await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, o.onProgress);
+    await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, o.onProgress, platform);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
-  return dest;
+  switchRootfs(rver);
+  return rootfsBootPath(rver, platform);
 }
 
 /** Point a symlink at `target` by renaming a fresh temp symlink over it. */
@@ -463,7 +565,17 @@ function switchLink(link: string, target: string): void {
   renameSync(tmp, link);
 }
 
-/** Make `version` the current version, keeping the old one as `previous`. */
+/** The rootfs version an app version names, unless it has no rootfs of its own. */
+function rootfsVersionOf(version: string): string | undefined {
+  try {
+    const rver = readFileSync(join(versionsDir(), version, "ROOTFS_VERSION"), "utf8").trim();
+    return rver === "" || rver === "none" ? undefined : rver;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Make `version` the current version (and its rootfs), keeping the old one as `previous`. */
 export function activate(version: string): void {
   const target = join(versionsDir(), version);
   mkdirSync(dataDir(), { recursive: true });
@@ -475,6 +587,8 @@ export function activate(version: string): void {
   }
   switchLink(currentLink(), target);
   if (old !== undefined && old !== target) switchLink(previousLink(), old);
+  const rver = rootfsVersionOf(version);
+  if (rver !== undefined) switchRootfs(rver);
 
   mkdirSync(dirname(binLink()), { recursive: true });
   let isSymlink = false;
@@ -490,7 +604,7 @@ export function activate(version: string): void {
   }
 }
 
-/** Swap current and previous, returning the version that is now current. */
+/** Swap current and previous (app and rootfs), returning the version that is now current. */
 export function rollback(): string {
   let previous: string;
   try {
@@ -506,7 +620,10 @@ export function rollback(): string {
   }
   if (current !== undefined) switchLink(previousLink(), current);
   switchLink(currentLink(), previous);
-  return basename(previous);
+  const version = basename(previous);
+  const rver = rootfsVersionOf(version);
+  if (rver !== undefined) switchRootfs(rver);
+  return version;
 }
 
 /** Remove versions and rootfs dirs that neither the current nor the previous version uses. */

@@ -1,11 +1,11 @@
 # macOS (Apple silicon)
 
-**Status: Phases 0 and 1 are done (November 2026); Phase 2's image build is in place and boots on
-an M4; Phase 3 has started with a green macOS test suite, while the run image and `/proc`-free
-recovery are still open.** On an M4, hive's own launcher boots a read-only ext4 image with the
-implicit vsock disabled and one vsock port wired to hive's egress proxy, and a real `runSandbox`
-run passes the negative network tests. The CI-built arm64 Fedora image boots the same way;
-`hive run` on a Mac now waits for the release bundle and the image wiring. See [Phase 0
+**Status: Phases 0–2 are done (November 2026); Phase 3 has started with a green macOS test suite,
+while the run image and `/proc`-free recovery are still open.** On an M4, hive's own launcher boots
+a read-only ext4 image with the implicit vsock disabled and one vsock port wired to hive's egress
+proxy, and a real `runSandbox` run passes the negative network tests. The CI-built arm64 Fedora
+image boots the same way, and `hive setup` installs it as a `.img.gz`; what `hive run` from a
+release still waits for is the macOS app bundle (Phase 4). See [Phase 0
 results](#phase-0-results), [Phase 1 results](#phase-1-results) and
 [`scripts/macos-spike/`](../scripts/macos-spike/README.md).
 
@@ -49,9 +49,10 @@ macOS 27):
 - libkrunfw's aarch64 kernel has `EXT4_FS`, `EROFS_FS`, `SQUASHFS` and `VIRTIO_BLK` built in,
   and libkrun 1.19.8 has `krun_add_disk(..., read_only)`, so a read-only rootfs image is supported.
 - Phase 1 added the platform branches for `/dev/kvm` versus `kern.hv_support`, pasta versus
-  vsock, the dylib name and the VM image. Phase 3 has made `npm test` green on macOS and `du`
-  portable; still open: `/proc` in `recoverRuns` (`src/runs.ts:258`), the run-image lifecycle and
-  the `linux-x86_64` release asset names (`src/release.ts:344`).
+  vsock, the dylib name and the VM image. Phase 2 added the arm64 image and its install path;
+  Phase 3 has made `npm test` green on macOS and `du` portable. Still open: `/proc` in
+  `recoverRuns` (`src/runs.ts:258`) and the run-image lifecycle; the macOS app bundle, installer
+  and native build are Phase 4.
 
 ## Why not pasta or gvproxy
 
@@ -381,21 +382,35 @@ the Phase 0 negative tests). `hive run` end to end waits for the arm64 image.
   runner (`mke2fs -d` or `mkfs.erofs`; macOS has no mkfs). This is a separate step from
   `vm/build-rootfs.sh`, which keeps producing the Linux folder rootfs.
 - Name the macOS artifact `hive-rootfs-<hash>-linux-arm64.img` (or `.img.gz`), checksummed and
-  signed like the app bundle; `release.ts` and the installer must accept an image, not a folder.
+  signed like the app bundle; `release.ts` accepts an image now, and the macOS installer is Phase 4.
 - Keep the license/source obligations current (Fedora, Chromium, node, pi; libkrunfw is already in
   `THIRD-PARTY.md`).
 
-**Status: the image build is in place; the release wiring is not.** On an arm64 Linux host (or a
-`podman machine`), `npm run build:image` then `npm run build:rootfs-image` exports the sandbox
+**Status: done, except the macOS app bundle and installer (Phase 4).** On an arm64 Linux host (or
+a `podman machine`), `npm run build:image` then `npm run build:rootfs-image` exports the sandbox
 image into a raw ext4 image named `hive-rootfs-<rootfs-id>-linux-arm64.img`, keeps the raw file
 for `HIVE_ROOTFS`, and writes a gzipped copy plus its SHA-256. The
 [`macos-image`](../.github/workflows/macos-image.yml) workflow does the same on an
 `ubuntu-24.04-arm` runner, then mounts the image and runs Node, Chromium and pi from inside it.
-Fedora 45 ships Chromium and Node 24 for aarch64, so the image builds natively.
+Fedora 45 ships Chromium and Node 24 for aarch64, so the image builds natively; the arm64 image
+uses the same packages already listed in [THIRD-PARTY.md](THIRD-PARTY.md).
 
-What is left is the release side: there is no macOS app bundle yet, so `release.ts` and the
-installer have nothing to pair the image with, and `hive run` on a Mac still needs
-`HIVE_ROOTFS` pointing at a hand-built `.img`. That waits for Phase 4's bundle.
+The release client is image-aware too. `release.ts` pairs `hive-<version>-darwin-arm64.tar.gz`
+with `hive-rootfs-<id>-linux-arm64.img.gz`, verifies it against `SHA256SUMS`, gunzips it to
+`rootfs/<id>/rootfs.img`, checks the ext4 superblock, and points `rootfs/current.img` at it.
+`hive setup` does the same for the running bundle. Activation also repoints `rootfs/current`
+(the Linux folder rootfs), which the setup path previously left dangling.
+
+| Check | Result |
+|---|---|
+| Image | 1.75 GB of files → 2.55 GB ext4 → 604 MB gzip; Node v24.18.0, Chromium 157.0.8103.78, pi 1.6.0 |
+| Boot on an M4 | read-only ext4 root with a rw overlay; `tsi=0`; only `lo` and a down `dummy0` |
+| Network | proxy `200`; DNS, the LAN and a public IP all blocked |
+| Release client | image downloaded, SHA-256 checked, ext4 checked, linked as `current.img` |
+
+What is left is packaging: there is no macOS app bundle yet, so `installRelease` cannot install
+one and Phase 4's build must ship it. `hive run` from a checkout still needs `HIVE_ROOTFS`
+pointing at a built `.img`; a release will get there through `hive setup`.
 
 ### Phase 3 — Hive platform plumbing (3–5 days)
 
@@ -466,7 +481,7 @@ Done in Phase 1 unless the row says otherwise.
 | `src/runs.ts` | **Phase 3:** `recoverRuns` without `/proc`; launcher pid |
 | `src/diskwatch.ts` | **Phase 3:** portable `du` (done); host free space while runs live on the image (open) |
 | `src/usage.ts`, `src/service.ts`, `src/uninstall.ts` | **Phase 3:** platform branches, run-image attach/detach; `hive uninstall` detaches it |
-| `src/release.ts`, `src/cli.ts` | **Phase 3/4:** image asset, macOS asset names, doctor/checks, `HIVE_RUNTIME` validation |
+| `src/release.ts`, `src/cli.ts` | **Phase 2/3:** the macOS image asset and install path (done), macOS asset names and `HIVE_RUNTIME` validation (open) |
 | `install-cli.sh` / `install.sh` | **Phase 4:** macOS install and `update` path |
 | `scripts/build-native-macos.sh`, `scripts/build-release-macos.sh` (new) | **Phase 4:** build and sign |
 | `versions.json`, `scripts/check-updates.mjs` | **Phase 4:** arm64 pins |
