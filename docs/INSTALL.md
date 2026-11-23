@@ -59,7 +59,8 @@ under `~/.local/share/agent-hive`, puts `hive` in `~/.local/bin` (adding that fo
 ### Build it from source
 
 This is the supported route until a signed macOS release is published. You need Xcode command
-line tools, Rust (stable), Node.js 20+ and git:
+line tools (clang, make and libclang), Rust stable with the `aarch64-apple-darwin` target (its
+`rust-lld` is the linker), Node.js 20+ and git:
 
 ```bash
 xcode-select --install                       # if you have not already
@@ -67,7 +68,6 @@ git clone https://github.com/Old-GenS/agent-hive.git && cd agent-hive
 npm ci
 npm run build && npm run build:ui
 npm run build:native:macos                   # libkrun, libkrunfw and the signed launcher
-npm run build:vm                             # the source checkout's vm/hive-vm
 ```
 
 The VM boots a raw arm64 ext4 image, and macOS has no `mkfs`. Build it on an arm64 Linux machine
@@ -79,7 +79,8 @@ npm run build:image
 npm run build:rootfs-image                   # build/rootfs-image/hive-rootfs-<id>-linux-arm64.img
 ```
 
-Copy the `.img` to the Mac, then point a source checkout at the pieces it should use:
+Copy the `.img` (and its `rootfs-info.json` if you will build the release bundle) to the Mac,
+then point a source checkout at the pieces it should use:
 
 ```bash
 export HIVE_VM_BIN="$PWD/build/native-macos/libexec/hive-vm"

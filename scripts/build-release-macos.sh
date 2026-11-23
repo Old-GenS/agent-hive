@@ -96,6 +96,17 @@ esac
 [[ "$name" =~ ^hive-rootfs-([0-9a-f]{12})-linux-arm64\.img\.gz$ ]] || die "image name must look like hive-rootfs-<12 hex>-linux-arm64.img.gz (got $name)"
 rver=${BASH_REMATCH[1]}
 
+# The image must come from this checkout's image/ tree. The ARM runner writes rootfs-info.json
+# next to the image (build-rootfs-image.sh); a release may not pair a new app with a stale guest.
+info_file=${HIVE_ROOTFS_INFO:-$(dirname "$rootfs_image")/rootfs-info.json}
+[[ -f "$info_file" ]] || die "missing $info_file; build the image with scripts/build-rootfs-image.sh or set HIVE_ROOTFS_INFO"
+info_rootfs=$(node -p "require(process.argv[1]).rootfs" "$info_file")
+info_tree=$(node -p "require(process.argv[1]).imageTree || ''" "$info_file")
+[[ "$info_rootfs" == "$rver" ]] || die "$info_file names rootfs $info_rootfs, not $rver"
+image_tree=$(git rev-parse HEAD:image)
+[[ "$info_tree" == "$image_tree" ]] \
+  || die "the image was built from image/ tree $info_tree, but this checkout has $image_tree; rebuild the image"
+
 # Verify the ext4 superblock magic (0xef53 at offset 1024 + 0x38), the same check release.ts makes.
 # Read only the first 1082 bytes, even from the gzip, instead of decompressing 2.5 GB to /tmp.
 if [[ "$rootfs_image" == *.img ]]; then
@@ -166,9 +177,10 @@ else
   makefile=$(tar -tzf "$out/libkrunfw-$libkrunfw_version-source.tar.gz" | grep -E '^[^/]+/Makefile$' | head -n1)
   [[ -n "$makefile" ]] || die "no Makefile in $libkrunfw_source"
   srcdir=$(mktemp -d)
+  trap 'rm -rf "$stage" "$srcdir"' EXIT
   tar -xzf "$out/libkrunfw-$libkrunfw_version-source.tar.gz" -C "$srcdir" "$makefile"
-  # BSD make has no --eval, so the small helper expands the Makefile's own variables
-  # (such as $(KERNEL_VERSION)) instead of running GNU make.
+  # macOS's /usr/bin/make is GNU make 3.81, which predates --eval, so the small helper expands
+  # the Makefile's own variables (such as $(KERNEL_VERSION)) instead of running make.
   kernel_remote=$(node scripts/kernel-remote.mjs "$srcdir/$makefile") \
     || die "could not read KERNEL_REMOTE from $makefile"
   rm -rf "$srcdir"

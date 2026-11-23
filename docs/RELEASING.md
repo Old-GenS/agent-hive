@@ -132,6 +132,10 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    otherwise the macOS assets stand alone. The bundle's `ROOTFS_VERSION` names the image, which is
    how `installRelease` pairs them.
 
+   The image must come with its `rootfs-info.json` (written by `build-rootfs-image.sh`); the
+   build refuses an image whose `imageTree` differs from this checkout's `HEAD:image`, exactly
+   like the Linux build. Set `HIVE_ROOTFS_INFO` when the file lives somewhere else.
+
    The build also runs `scripts/build-native.sh` for libkrun, libkrunfw and the launcher (podman
    and network; see above), and downloads the GPL source assets described below.
 

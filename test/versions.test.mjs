@@ -21,8 +21,10 @@ test("versions.json has the expected pins", () => {
   assert.ok(versions.libkrunfw.url.includes(`/v${versions.libkrunfw.version}/`), "libkrunfw.url matches its version");
   assert.ok(versions.libkrunfw.source.endsWith(`/v${versions.libkrunfw.version}.tar.gz`), "libkrunfw.source matches its version");
   assert.match(versions.libkrunfw.sha256, /^[0-9a-f]{64}$/);
-  assert.match(versions.libkrunfw.url, /^https:\/\/github\.com\/containers\/libkrunfw\//);
-  assert.match(versions.libkrunfw.source, /^https:\/\/github\.com\/containers\/libkrunfw\//);
+  // GitHub redirects containers/libkrunfw to libkrun/libkrunfw, and release API URLs use the
+  // destination host; accept both so a pin bump from the API does not fail this test.
+  assert.match(versions.libkrunfw.url, /^https:\/\/github\.com\/(?:containers|libkrun)\/libkrunfw\//);
+  assert.match(versions.libkrunfw.source, /^https:\/\/github\.com\/(?:containers|libkrun)\/libkrunfw\//);
   for (const [platform, asset] of [
     ["macos", "libkrunfw-prebuilt-aarch64.tgz"],
     ["linux", "libkrunfw-aarch64.tgz"],

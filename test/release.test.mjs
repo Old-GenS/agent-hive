@@ -488,6 +488,37 @@ test("CLI update accepts nightly and the old dev and beta aliases, and rejects o
   assert.match(doctor.stdout, /^update channel   nightly$/m);
 });
 
+test("a bundle's rootfs path follows the release layout", () => {
+  const bundle = mkdtempSync(join(root, "bundle-rootfs-"));
+  const rver = "0123456789ab";
+  writeFileSync(join(bundle, "VERSION"), "0.0.1\n");
+  writeFileSync(join(bundle, "ROOTFS_VERSION"), rver + "\n");
+  const data = mkdtempSync(join(root, "bundle-data-"));
+  const dir = join(data, "agent-hive", "rootfs", rver);
+  mkdirSync(dir, { recursive: true });
+  let expected = dir;
+  if (process.platform === "darwin") {
+    expected = join(dir, "rootfs.img");
+    writeFileSync(expected, "");
+  } else {
+    mkdirSync(join(dir, "usr/local/bin"), { recursive: true });
+    writeFileSync(join(dir, "usr/local/bin/hive-vm-init"), "");
+  }
+  const env = {
+    ...process.env,
+    HIVE_BUNDLE_ROOT: bundle,
+    XDG_DATA_HOME: data,
+    HIVE_NO_UPDATE_CHECK: "1",
+  };
+  delete env.HIVE_ROOTFS;
+  const result = spawnSync(process.execPath, [join(repoRoot, "dist/cli.js"), "doctor"], {
+    env,
+    encoding: "utf8",
+  });
+  assert.ok(result.stdout.includes("rootfs: ok"), result.stdout);
+  assert.ok(result.stdout.includes(expected), result.stdout);
+});
+
 test("CLI doctor reports a source checkout", () => {
   delete process.env.HIVE_BUNDLE_ROOT;
   const result = spawnSync(process.execPath, ["dist/cli.js", "doctor"], {

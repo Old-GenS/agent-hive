@@ -29,7 +29,7 @@ jobs:
   bundle:
     needs: image
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -45,6 +45,10 @@ jobs:
         with:
           name: hive-rootfs-image-${{ github.sha }}
           path: build/rootfs-image
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/native-macos
+          key: native-macos-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'vm/build.sh', 'scripts/build-native-macos.sh') }}
       - name: Create a throwaway signing key
         run: node scripts/keygen.mjs "$RUNNER_TEMP/release-signing-key.pem" > /dev/null
       - name: Build the macOS release
@@ -54,8 +58,13 @@ jobs:
           HIVE_RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          image=$(ls build/rootfs-image/*.img.gz)
-          bash scripts/build-release-macos.sh --rootfs-image "$image"
+          shopt -s nullglob
+          images=(build/rootfs-image/*.img.gz)
+          if [ "${#images[@]}" -ne 1 ]; then
+            echo "expected one .img.gz from the image job, found ${#images[@]}" >&2
+            exit 1
+          fi
+          bash scripts/build-release-macos.sh --rootfs-image "${images[0]}"
       - name: Check the bundle
         run: |
           set -euo pipefail

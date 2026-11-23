@@ -122,20 +122,27 @@ if curl -sS --noproxy '*' --max-time 5 http://1.1.1.1/ >/dev/null 2>&1; then
 else
   emit direct-public-refused true "refused"
 fi
-if getent hosts example.com >/dev/null 2>&1; then
-  emit dns-refused false "the guest resolved a name itself"
+if command -v getent >/dev/null 2>&1; then
+  if getent hosts example.com >/dev/null 2>&1; then
+    emit dns-refused false "the guest resolved a name itself"
+  else
+    emit dns-refused true "no resolver"
+  fi
 else
-  emit dns-refused true "no resolver"
+  emit dns-refused false "getent is missing from the guest image"
 fi
-if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
-  emit ping-refused false "ping reached a public IP"
+if command -v ping >/dev/null 2>&1; then
+  if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
+    emit ping-refused false "ping reached a public IP"
+  else
+    emit ping-refused true "no route"
+  fi
 else
-  emit ping-refused true "no route"
+  emit ping-refused false "ping is missing from the guest image"
 fi
 `;
 
 async function main() {
-  if (process.exitCode !== undefined) return;
   const lanIp = privateIPv4();
   if (lanIp === undefined) throw new Error("no private IPv4 address on this Mac; connect to a LAN or Wi-Fi network");
   process.stderr.write(`macos-smoke: LAN ${lanIp}, image ${image}\n`);

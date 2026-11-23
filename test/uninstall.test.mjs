@@ -323,6 +323,18 @@ test("runUninstall removes exactly the plan, keeps runs and config, and rewrites
   assert.equal(existsSync(configDir), false);
 });
 
+test("uninstallPlan finds the zsh PATH line as well as the bash one", () => {
+  setup();
+  const zprofile = join(home, ".zprofile");
+  writeFileSync(zprofile, PROFILE_LINE + "\n");
+  try {
+    const plan = uninstallPlan({ keepRuns: true, keepConfig: true });
+    assert.deepEqual(plan.pathLines.map((entry) => entry.file), [profile, zprofile]);
+  } finally {
+    rmSync(zprofile, { force: true });
+  }
+});
+
 test("sizeLabel shows human sizes", () => {
   assert.equal(sizeLabel(undefined), "");
   assert.equal(sizeLabel(0), "0 B");

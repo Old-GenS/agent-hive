@@ -26,7 +26,9 @@ permissions:
 
 concurrency:
   group: macos-image-${{ github.ref }}
-  cancel-in-progress: true
+  # A pull request supersedes itself; a release build calling this workflow must not cancel a
+  # direct image run on the same ref (or be cancelled by one).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
@@ -86,6 +88,7 @@ jobs:
           [[ -n "$pi_version" ]] || { echo "pi did not report a version"; exit 1; }
           sudo chroot /mnt/hive-image /bin/bash -n /usr/local/bin/hive-vm-init
           sudo chroot /mnt/hive-image test -x /usr/local/bin/hive-netd
+          sudo chroot /mnt/hive-image test -x /usr/bin/ping
       - name: Upload the image
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -93,4 +96,5 @@ jobs:
           path: |
             build/rootfs-image/*.img.gz
             build/rootfs-image/*.img.gz.sha256
+            build/rootfs-image/rootfs-info.json
           retention-days: 7

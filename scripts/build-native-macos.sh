@@ -70,8 +70,18 @@ libkrunfw_sha256=$(read_pin libkrunfw macos aarch64 sha256)
 # The pinned Rust toolchain is a Linux-container pin; on a Mac the installed stable toolchain is
 # used. libkrun's makefile needs rust-lld and a libclang for bindgen, both of which ship with a
 # normal Xcode/Rust install. Override the paths when they live somewhere else.
-libclang_path="${LIBCLANG_PATH:-/Library/Developer/CommandLineTools/usr/lib}"
-[[ -f "$libclang_path/libclang.dylib" ]] || die "libclang not found under $libclang_path (set LIBCLANG_PATH)"
+libclang_path="${LIBCLANG_PATH:-}"
+if [[ -z "$libclang_path" ]]; then
+  developer_dir=$(xcode-select -p 2>/dev/null || true)
+  for candidate in \
+    /Library/Developer/CommandLineTools/usr/lib \
+    "$developer_dir/usr/lib" \
+    "$developer_dir/Toolchains/XcodeDefault.xctoolchain/usr/lib"; do
+    if [[ -f "$candidate/libclang.dylib" ]]; then libclang_path=$candidate; break; fi
+  done
+fi
+[[ -n "$libclang_path" && -f "$libclang_path/libclang.dylib" ]] \
+  || die "libclang not found (set LIBCLANG_PATH; Xcode command line tools provide it)"
 rust_sysroot=$(rustc --print sysroot)
 rust_lld="$rust_sysroot/lib/rustlib/aarch64-apple-darwin/bin/rust-lld"
 [[ -x "$rust_lld" ]] || die "rust-lld not found at $rust_lld (install the aarch64-apple-darwin target)"
@@ -121,7 +131,7 @@ export CARGO_BUILD_JOBS="$jobs"
 echo "build-native-macos: building libkrun $libkrun_tag" >&2
 (
   cd "$libkrun_dir"
-  make BLK=1 NET=1 CC_LINUX="$cc_linux" 2>&1 | tee "$work/logs/libkrun-build.log"
+  make BLK=1 NET=1 CC_LINUX="$cc_linux" 2>&1 | tee "$work/logs/libkrun-build.log" >&2
   make BLK=1 NET=1 PREFIX="$work/prefix" install
 )
 

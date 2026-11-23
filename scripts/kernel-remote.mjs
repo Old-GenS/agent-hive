@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * Read KERNEL_REMOTE from a libkrunfw Makefile without GNU make, whose --eval the Linux release
- * build uses. BSD make (macOS's /usr/bin/make) has no --eval, so this expands the simple
- * $(NAME) references the Makefile defines before KERNEL_REMOTE. Exported for the tests.
+ * Read KERNEL_REMOTE from a libkrunfw Makefile without GNU make's --eval, which the Linux
+ * release build uses. macOS's /usr/bin/make is GNU make 3.81, which predates --eval (GNU make 4),
+ * so this expands the simple $(NAME) references the Makefile defines before KERNEL_REMOTE.
+ * Exported for the tests.
  *
  * CLI: node scripts/kernel-remote.mjs <Makefile>   (prints the URL)
  */
