@@ -194,7 +194,9 @@ export function fixFor(check: CheckId, host: HostInfo, detail?: string): Fix {
           return { text: "Download the VM image with hive setup.", command: "hive setup" };
         }
         return {
-          text: "Build the macOS VM image (an arm64 ext4 disk image); macOS cannot boot a rootfs folder. See docs/MACOS.md, Phase 2.",
+          text:
+            "Build the arm64 ext4 disk image on an arm64 Linux machine with npm run build:rootfs-image, " +
+            "then set HIVE_ROOTFS to it; macOS cannot boot a rootfs folder. See docs/MACOS.md.",
         };
       }
       if (host.bundle) {

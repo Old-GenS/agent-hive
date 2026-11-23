@@ -4,6 +4,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import {
   appendFileSync,
@@ -46,10 +47,11 @@ function sha256(buf) {
 
 /**
  * Build the files of one release: the app bundle, its rootfs, a SHA256SUMS covering both and a
- * signature over the sums. `tamper: "app"` corrupts the app after signing, `tamper: "sig"` signs
- * the sums with a different key.
+ * signature over the sums. `image` ships the macOS arm64 disk image instead of the Linux folder
+ * tarball (badMagic leaves the ext4 superblock out); `tamper: "app"` corrupts the app after
+ * signing, `tamper: "sig"` signs the sums with a different key.
  */
-function makeRelease(version, rver, { tamper } = {}) {
+function makeRelease(version, rver, { tamper, image } = {}) {
   const dir = mkdtempSync(join(root, "rel-"));
   const appDir = join(dir, `hive-${version}`);
   mkdirSync(join(appDir, "bin"), { recursive: true });
@@ -62,11 +64,21 @@ function makeRelease(version, rver, { tamper } = {}) {
 
   let rootfsName;
   if (rver !== "none") {
-    rootfsName = `hive-rootfs-${rver}-linux-x86_64.tar.gz`;
-    const contents = join(dir, "rootfs-contents");
-    mkdirSync(join(contents, "usr/local/bin"), { recursive: true });
-    writeFileSync(join(contents, "usr/local/bin/hive-vm-init"), "");
-    execFileSync("tar", ["-czf", join(dir, rootfsName), "-C", contents, "."]);
+    if (image) {
+      rootfsName = `hive-rootfs-${rver}-linux-arm64.img.gz`;
+      const disk = Buffer.alloc(4096);
+      if (!image.badMagic) {
+        disk[1080] = 0x53; // ext4 superblock magic, little-endian
+        disk[1081] = 0xef;
+      }
+      writeFileSync(join(dir, rootfsName), gzipSync(disk));
+    } else {
+      rootfsName = `hive-rootfs-${rver}-linux-x86_64.tar.gz`;
+      const contents = join(dir, "rootfs-contents");
+      mkdirSync(join(contents, "usr/local/bin"), { recursive: true });
+      writeFileSync(join(contents, "usr/local/bin/hive-vm-init"), "");
+      execFileSync("tar", ["-czf", join(dir, rootfsName), "-C", contents, "."]);
+    }
   }
 
   const names = rootfsName ? [appName, rootfsName] : [appName];
@@ -231,13 +243,18 @@ test("verifySums accepts only the right key and body", () => {
 test("install 1.1.0 and activate it", async () => {
   current = makeRelease("1.1.0", "aaaaaaaaaaaa");
   const rel = await release.fetchRelease();
-  const dir = await release.installRelease(rel, { publicKeys: [publicKey] });
+  const dir = await release.installRelease(rel, { publicKeys: [publicKey], platform: "linux" });
   assert.equal(dir, join(dataDir, "versions/1.1.0"));
 
   release.activate("1.1.0");
   assert.ok(existsSync(join(dataDir, "versions/1.1.0/VERSION")));
   assert.ok(readlinkSync(release.currentLink()).endsWith("/versions/1.1.0"));
   assert.ok(existsSync(join(dataDir, "rootfs/aaaaaaaaaaaa/.complete")));
+  assert.equal(
+    readlinkSync(join(dataDir, "rootfs/current")),
+    join(dataDir, "rootfs/aaaaaaaaaaaa"),
+    "activation points the current rootfs link at the version's rootfs",
+  );
   assert.ok(lstatSync(join(process.env.HOME, ".local/bin/hive")).isSymbolicLink());
 });
 
@@ -247,7 +264,7 @@ test("install 1.2.0 reuses the rootfs, then rollback swaps current and previous"
   assert.equal(requestCounts.get(rootfsPath), 1);
 
   const rel = await release.fetchRelease();
-  await release.installRelease(rel, { publicKeys: [publicKey] });
+  await release.installRelease(rel, { publicKeys: [publicKey], platform: "linux" });
   assert.equal(requestCounts.get(rootfsPath), 1);
 
   release.activate("1.2.0");
@@ -259,28 +276,107 @@ test("install 1.2.0 reuses the rootfs, then rollback swaps current and previous"
   assert.ok(readlinkSync(release.previousLink()).endsWith("/versions/1.2.0"));
 });
 
+test("the rootfs asset name depends on the platform", () => {
+  assert.equal(
+    release.rootfsAssetName("0123456789ab", "linux"),
+    "hive-rootfs-0123456789ab-linux-x86_64.tar.gz",
+  );
+  assert.equal(
+    release.rootfsAssetName("0123456789ab", "darwin"),
+    "hive-rootfs-0123456789ab-linux-arm64.img.gz",
+  );
+});
+
+test("isExt4Image reads the superblock magic", () => {
+  const dir = mkdtempSync(join(root, "ext4-"));
+  const good = join(dir, "good.img");
+  const disk = Buffer.alloc(2048);
+  disk[1080] = 0x53;
+  disk[1081] = 0xef;
+  writeFileSync(good, disk);
+  const bad = join(dir, "bad.img");
+  writeFileSync(bad, Buffer.alloc(2048));
+  assert.equal(release.isExt4Image(good), true);
+  assert.equal(release.isExt4Image(bad), false);
+  assert.equal(release.isExt4Image(join(dir, "missing.img")), false);
+});
+
+test("ensureRootfs installs the macOS image and setupRootfs links current.img", async () => {
+  const rver = "cafebabecafe";
+  current = makeRelease("2.0.0", rver, { image: {} });
+  const rel = await release.fetchRelease();
+  const sums = release.parseSums(current.files.get("SHA256SUMS").toString("utf8"));
+  const tmp = mkdtempSync(join(root, "image-dl-"));
+  const name = release.rootfsAssetName(rver, "darwin");
+  const hits = requestCounts.get("/dl/" + name) ?? 0;
+  await release.ensureRootfs(rel, rver, sums, tmp, undefined, "darwin");
+  const image = join(release.rootfsDir(), rver, "rootfs.img");
+  assert.ok(existsSync(join(release.rootfsDir(), rver, ".complete")));
+  assert.equal(release.isExt4Image(image), true);
+  assert.equal(requestCounts.get("/dl/" + name), hits + 1);
+
+  // The same rootfs, already installed, is linked without a second download.
+  const bundle = mkdtempSync(join(root, "image-bundle-"));
+  writeFileSync(join(bundle, "VERSION"), "2.0.0\n");
+  writeFileSync(join(bundle, "ROOTFS_VERSION"), rver + "\n");
+  process.env.HIVE_BUNDLE_ROOT = bundle;
+  try {
+    const path = await release.setupRootfs({ publicKeys: [publicKey], platform: "darwin" });
+    assert.equal(path, image);
+    assert.equal(readlinkSync(release.rootfsCurrentLink("darwin")), image);
+    assert.equal(requestCounts.get("/dl/" + name), hits + 1, "an installed image is not downloaded again");
+  } finally {
+    delete process.env.HIVE_BUNDLE_ROOT;
+  }
+});
+
+test("ensureRootfs rejects a macOS image that is not ext4", async () => {
+  const rver = "deadbeefcafe";
+  current = makeRelease("2.1.0", rver, { image: { badMagic: true } });
+  const rel = await release.fetchRelease();
+  const sums = release.parseSums(current.files.get("SHA256SUMS").toString("utf8"));
+  const tmp = mkdtempSync(join(root, "bad-image-"));
+  await assert.rejects(
+    () => release.ensureRootfs(rel, rver, sums, tmp, undefined, "darwin"),
+    /not ext4/,
+  );
+  assert.equal(existsSync(join(release.rootfsDir(), rver)), false);
+});
+
+test("ensureRootfs names the missing asset for the platform", async () => {
+  const rver = "abcdefabcdef";
+  current = makeRelease("2.2.0", rver);
+  const rel = await release.fetchRelease();
+  const sums = release.parseSums(current.files.get("SHA256SUMS").toString("utf8"));
+  const tmp = mkdtempSync(join(root, "no-image-"));
+  await assert.rejects(
+    () => release.ensureRootfs(rel, rver, sums, tmp, undefined, "darwin"),
+    /no rootfs .*macOS.*linux-arm64\.img\.gz/,
+  );
+});
+
 test("a tampered app tarball is rejected and current stays unchanged", async () => {
   current = makeRelease("1.3.0", "aaaaaaaaaaaa", { tamper: "app" });
   const before = readlinkSync(release.currentLink());
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey] }), /checksum mismatch/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey], platform: "linux" }), /checksum mismatch/);
   assert.equal(readlinkSync(release.currentLink()), before);
 });
 
 test("a signature from the wrong key is rejected", async () => {
   current = makeRelease("1.4.0", "aaaaaaaaaaaa", { tamper: "sig" });
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey] }), /signature/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey], platform: "linux" }), /signature/);
 });
 
 test("an empty public key refuses to verify anything", async () => {
   current = makeRelease("1.5.0", "aaaaaaaaaaaa");
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [] }), /signing key/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [], platform: "linux" }), /signing key/);
 });
 
 test("a release signed by a second key installs only when that key is trusted", async () => {
   current = makeRelease("1.6.0", "aaaaaaaaaaaa", { tamper: "sig" });
   const rel = await release.fetchRelease();
-  await assert.rejects(release.installRelease(rel, { publicKeys: [publicKey] }), /signature/);
-  const dir = await release.installRelease(rel, { publicKeys: [publicKey, otherPublicKeyPem] });
+  await assert.rejects(release.installRelease(rel, { publicKeys: [publicKey], platform: "linux" }), /signature/);
+  const dir = await release.installRelease(rel, { publicKeys: [publicKey, otherPublicKeyPem], platform: "linux" });
   assert.equal(dir, join(dataDir, "versions/1.6.0"));
   assert.ok(existsSync(join(dir, "VERSION")));
 });
