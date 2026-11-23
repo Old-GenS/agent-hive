@@ -21,6 +21,10 @@ on:
         description: Reuse the rootfs of this release tag instead of building one
         required: false
         type: string
+      nightly:
+        description: Nightly tag to promote (builds that commit and reuses its rootfs)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -42,6 +46,17 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      # Promoting builds the commit the nightly tested, not `main`, so the artifact is exactly
+      # what CI built and booted. Without this input the workflow builds `main`.
+      - name: Check out the nightly's commit
+        if: inputs.nightly != ''
+        env:
+          TAG: ${{ inputs.nightly }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          git checkout --detach "${TAG}^{commit}"
+
       - id: node
         run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -70,6 +85,7 @@ jobs:
           fi
 
       - name: The version must already be merged on main
+        if: inputs.nightly == ''
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -79,6 +95,57 @@ jobs:
             echo "package.json on main is $merged, not $VERSION; bump and merge it first" >&2
             exit 1
           fi
+
+      - name: Verify the nightly and reuse its rootfs
+        if: inputs.nightly != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.nightly }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/nightly"
+          mkdir -p "$dir"
+          gh release download "$TAG" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig \
+            --pattern 'hive-rootfs-*-linux-x86_64.tar.gz' --pattern rootfs-info.json \
+            --dir "$dir"
+
+          # The nightly's own signature, then the rootfs bytes, then the image tree it says it
+          # came from. Any mismatch stops the promotion before anything is built.
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { readPublicKey, sumsEntry, verifySums } from "./scripts/release-rootfs.mjs";
+            const dir = process.env.RUNNER_TEMP + "/nightly";
+            const sums = readFileSync(dir + "/SHA256SUMS");
+            const pem = readPublicKey(readFileSync("src/release-key.ts", "utf8"), "PRERELEASE_PUBLIC_KEY");
+            if (!verifySums(sums, readFileSync(dir + "/SHA256SUMS.sig", "utf8"), pem)) {
+              console.error("the nightly is not signed by the prerelease key");
+              process.exit(1);
+            }
+            const name = sums.toString("utf8").split("\n")
+              .map((l) => /^[0-9a-f]{64}\s+\*?(.+)$/.exec(l.trim())?.[1])
+              .find((n) => n && /^hive-rootfs-.*-linux-x86_64\.tar\.gz$/.test(n));
+            if (!name) { console.error("no rootfs asset in the nightly"); process.exit(1); }
+            console.log("rootfs=" + name);
+            console.log("sha256=" + sumsEntry(sums.toString("utf8"), name));
+          ' > "$RUNNER_TEMP/nightly/plan.txt"
+
+          rootfs=$(grep '^rootfs=' "$RUNNER_TEMP/nightly/plan.txt" | cut -d= -f2-)
+          expected=$(grep '^sha256=' "$RUNNER_TEMP/nightly/plan.txt" | cut -d= -f2-)
+          actual=$(sha256sum "$dir/$rootfs" | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "$rootfs does not match the nightly's SHA256SUMS" >&2
+            exit 1
+          fi
+
+          image_tree=$(git rev-parse HEAD:image)
+          info_tree=$(node -p "require('$dir/rootfs-info.json').imageTree")
+          if [ "$info_tree" != "$image_tree" ]; then
+            echo "the nightly's rootfs came from image tree $info_tree, not ${image_tree}" >&2
+            exit 1
+          fi
+
+          echo "HIVE_RELEASE_REUSE_ROOTFS=$dir/$rootfs" >> "$GITHUB_ENV"
 
       - name: Reuse another release's rootfs, when asked
         if: inputs.reuse_rootfs != ''
