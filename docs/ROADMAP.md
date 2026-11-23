@@ -8,9 +8,8 @@ they're fully tested (see "Keeping it up to date").
 
 The first signed release, v0.4.0, is published and was tested end to end on a fresh home folder:
 `install-cli.sh`, `hive setup`, `hive doctor`, a real run, `hive update --check` and `hive serve`.
-The release key's private half lives only on the release machine
-(`~/.config/agent-hive/release-signing-key.pem`); `docs/RELEASING.md` has the steps for the next
-release.
+Stable releases are now signed keyless in CI by `.github/workflows/release.yml`; no release key
+lives on any machine, and `docs/RELEASING.md` has the steps for the next release.
 
 - **Release build** (`scripts/build-release.sh`): an app bundle containing `bin/hive`, a bundled
   Node, the `hive-vm` launcher and the CLI as one bundled file. The VM filesystem (rootfs) ships as
