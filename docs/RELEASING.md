@@ -196,7 +196,7 @@ reads.
 
 ### The daily nightly prerelease
 
-`nightly.yml` (daily at 03:00 UTC — 19:00 in Vancouver — or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
+`nightly.yml` (daily at 06:00 UTC — 23:00 in Vancouver — or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
 `v<package.json patch + 1>-nightly.<run number>` when `main` has moved since the last nightly tag or
 the rootfs needs rebuilding:
 
