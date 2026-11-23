@@ -55,6 +55,20 @@ jobs:
           path: build/native
           key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
 
+      # Fails closed: if `stable-release` has no required reviewer (GitHub creates environments
+      # unprotected when a workflow first references one), refuse to build or sign anything.
+      - name: Refuse to sign without a reviewer on the environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${{ github.repository }}/environments/stable-release" \
+            --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
+          if [ "$rules" -lt 1 ]; then
+            echo "stable-release has no required reviewer; refusing to sign" >&2
+            exit 1
+          fi
+
       - name: The version must already be merged on main
         env:
           VERSION: ${{ inputs.version }}
