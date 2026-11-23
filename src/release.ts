@@ -38,13 +38,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
-import {
-  PRERELEASE_IDENTITY,
-  PRERELEASE_PUBLIC_KEY,
-  RELEASE_IDENTITY,
-  RELEASE_PUBLIC_KEY,
-} from "./release-key.js";
-import { SIGNATURE_ASSET, verifySigstoreBundle, type SigningIdentity } from "./verify-sigstore.js";
+import { PRERELEASE_PUBLIC_KEY, RELEASE_PUBLIC_KEY } from "./release-key.js";
 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -209,11 +203,6 @@ export function trustedKeys(channel: Channel): string[] {
   );
 }
 
-/** The keyless identities this channel trusts: stable releases, plus nightlies on that channel. */
-export function trustedIdentities(channel: Channel): SigningIdentity[] {
-  return channel === "nightly" ? [RELEASE_IDENTITY, PRERELEASE_IDENTITY] : [RELEASE_IDENTITY];
-}
-
 /** The directory that holds the running bundle, when this copy was installed from a release. */
 export function bundleRoot(): string | undefined {
   return process.env.HIVE_BUNDLE_ROOT || undefined;
@@ -257,26 +246,6 @@ export function verifySums(sums: Buffer, sigBase64: string, publicKeyPem: string
   } catch {
     return false;
   }
-}
-
-/** A signature checker, so the install path can be exercised without a CI-signed bundle. */
-export type SignatureVerifier = (
-  payload: Buffer,
-  bundleJson: string,
-  identity: SigningIdentity,
-) => Promise<boolean>;
-
-/** True when one of `identities` signed exactly `sums` (see verify-sigstore.ts). */
-export async function verifyBundleAny(
-  sums: Buffer,
-  bundleJson: string,
-  identities: SigningIdentity[],
-  check: SignatureVerifier = verifySigstoreBundle,
-): Promise<boolean> {
-  for (const identity of identities) {
-    if (await check(sums, bundleJson, identity)) return true;
-  }
-  return false;
 }
 
 /** True when any of `publicKeys` verifies the signature over `sums`. */
@@ -481,18 +450,10 @@ export async function ensureRootfs(
  */
 export async function installRelease(
   rel: Release,
-  o: {
-    publicKeys?: string[];
-    identities?: SigningIdentity[];
-    verify?: SignatureVerifier;
-    platform?: NodeJS.Platform;
-  } = {},
+  o: { publicKeys?: string[]; platform?: NodeJS.Platform } = {},
 ): Promise<string> {
   const keys = (o.publicKeys ?? trustedKeys(readChannel())).filter((key) => key !== "");
-  const identities = o.identities ?? trustedIdentities(readChannel());
-  if (keys.length === 0 && identities.length === 0) {
-    throw new Error("this build trusts no release signer, so updates can't be verified");
-  }
+  if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 
   // The app bundle decides which rootfs goes with it: the Linux folder rootfs or the macOS
   // arm64 image. There is no macOS bundle yet (Phase 4), but the pairing belongs here.
@@ -502,10 +463,9 @@ export async function installRelease(
       ? `hive-${rel.version}-darwin-arm64.tar.gz`
       : `hive-${rel.version}-linux-x86_64.tar.gz`;
   const sumsAsset = rel.assets.find((a) => a.name === "SHA256SUMS");
-  const bundleAsset = rel.assets.find((a) => a.name === SIGNATURE_ASSET);
   const sigAsset = rel.assets.find((a) => a.name === "SHA256SUMS.sig");
   const appAsset = rel.assets.find((a) => a.name === app);
-  if (!sumsAsset || (!bundleAsset && !sigAsset) || !appAsset) {
+  if (!sumsAsset || !sigAsset || !appAsset) {
     throw new Error(
       `release v${rel.version} has no ${platform === "darwin" ? "darwin-arm64" : "linux-x86_64"} build`,
     );
@@ -515,19 +475,12 @@ export async function installRelease(
   const tmp = mkdtempSync(join(dataDir(), ".tmp-"));
   try {
     const sumsPath = join(tmp, "SHA256SUMS");
+    const sigPath = join(tmp, "SHA256SUMS.sig");
     await download(sumsAsset, sumsPath);
+    await download(sigAsset, sigPath);
     const sums = readFileSync(sumsPath);
-    let signed: boolean;
-    if (bundleAsset !== undefined) {
-      const bundlePath = join(tmp, SIGNATURE_ASSET);
-      await download(bundleAsset, bundlePath);
-      signed = await verifyBundleAny(sums, readFileSync(bundlePath, "utf8"), identities, o.verify);
-    } else {
-      const sigPath = join(tmp, "SHA256SUMS.sig");
-      await download(sigAsset as ReleaseAsset, sigPath);
-      signed = verifySumsAny(sums, readFileSync(sigPath, "utf8"), keys);
-    }
-    if (!signed) throw new Error("release signature check failed");
+    const sig = readFileSync(sigPath, "utf8");
+    if (!verifySumsAny(sums, sig, keys)) throw new Error("release signature check failed");
 
     const appPath = join(tmp, app);
     await download(appAsset, appPath);
@@ -563,13 +516,7 @@ export async function installRelease(
  * never required.
  */
 export async function setupRootfs(
-  o: {
-    publicKeys?: string[];
-    identities?: SigningIdentity[];
-    verify?: SignatureVerifier;
-    onProgress?: OnProgress;
-    platform?: NodeJS.Platform;
-  } = {},
+  o: { publicKeys?: string[]; onProgress?: OnProgress; platform?: NodeJS.Platform } = {},
 ): Promise<string> {
   const platform = o.platform ?? process.platform;
   if (!bundleRoot()) throw new Error("not an installed release");
@@ -584,36 +531,24 @@ export async function setupRootfs(
   const channel: Channel =
     isPrerelease(currentVersion() ?? "0.0.0") || readChannel() === "nightly" ? "nightly" : "stable";
   const keys = (o.publicKeys ?? trustedKeys(channel)).filter((key) => key !== "");
-  const identities = o.identities ?? trustedIdentities(channel);
-  if (keys.length === 0 && identities.length === 0) {
-    throw new Error("this build trusts no release signer, so updates can't be verified");
-  }
+  if (keys.length === 0) throw new Error("this build has no release signing key, so updates can't be verified");
 
   const rel = await fetchRelease(`v${currentVersion()}`);
   const sumsAsset = rel.assets.find((a) => a.name === "SHA256SUMS");
-  const bundleAsset = rel.assets.find((a) => a.name === SIGNATURE_ASSET);
   const sigAsset = rel.assets.find((a) => a.name === "SHA256SUMS.sig");
-  if (!sumsAsset || (!bundleAsset && !sigAsset)) {
-    throw new Error(`release v${rel.version} has no linux-x86_64 build`);
-  }
+  if (!sumsAsset || !sigAsset) throw new Error(`release v${rel.version} has no linux-x86_64 build`);
 
   mkdirSync(dataDir(), { recursive: true });
   const tmp = mkdtempSync(join(dataDir(), ".tmp-"));
   try {
     const sumsPath = join(tmp, "SHA256SUMS");
+    const sigPath = join(tmp, "SHA256SUMS.sig");
     await download(sumsAsset, sumsPath);
+    await download(sigAsset, sigPath);
     const sums = readFileSync(sumsPath);
-    let signed: boolean;
-    if (bundleAsset !== undefined) {
-      const bundlePath = join(tmp, SIGNATURE_ASSET);
-      await download(bundleAsset, bundlePath);
-      signed = await verifyBundleAny(sums, readFileSync(bundlePath, "utf8"), identities, o.verify);
-    } else {
-      const sigPath = join(tmp, "SHA256SUMS.sig");
-      await download(sigAsset as ReleaseAsset, sigPath);
-      signed = verifySumsAny(sums, readFileSync(sigPath, "utf8"), keys);
+    if (!verifySumsAny(sums, readFileSync(sigPath, "utf8"), keys)) {
+      throw new Error("release signature check failed");
     }
-    if (!signed) throw new Error("release signature check failed");
     await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, o.onProgress, platform);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

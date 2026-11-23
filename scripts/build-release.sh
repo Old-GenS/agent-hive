@@ -12,7 +12,6 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 reuse_rootfs=""
-skip_sign=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reuse-rootfs)
@@ -25,10 +24,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --reuse-rootfs=*)
       reuse_rootfs=${1#*=}
-      shift
-      ;;
-    --skip-sign)
-      skip_sign=1
       shift
       ;;
     *)
@@ -50,7 +45,7 @@ fi
 # The bundled Node version is a pin too; HIVE_NODE_VERSION still overrides it.
 NODE_VERSION=${HIVE_NODE_VERSION:-$(node -p "require('./versions.json').node")}
 key=${HIVE_SIGNING_KEY:-$HOME/.config/agent-hive/release-signing-key.pem}
-if [[ -z "$skip_sign" && ! -f "$key" ]]; then
+if [[ ! -f "$key" ]]; then
   echo "build-release: signing key $key not found (create it with node scripts/keygen.mjs $key)" >&2
   exit 1
 fi
@@ -206,10 +201,6 @@ fi
 if [[ "${HIVE_RELEASE_SKIP_SOURCES:-}" != "1" ]]; then
   (cd "$out" && sha256sum libkrunfw-*-source.tar.gz kernel-source-* passt-*-source.tar.xz >> SHA256SUMS)
 fi
-if [[ -n "$skip_sign" ]]; then
-  echo "build-release: wrote $out/SHA256SUMS unsigned (--skip-sign)"
-else
-  node scripts/sign.mjs "$key" "$out/SHA256SUMS"
-fi
+node scripts/sign.mjs "$key" "$out/SHA256SUMS"
 
 ls -l "$out"
