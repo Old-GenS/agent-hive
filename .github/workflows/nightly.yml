@@ -10,6 +10,10 @@ on:
         description: Rebuild the VM rootfs instead of reusing the tested one
         type: boolean
         default: false
+  # Build as soon as the pin bump merges, instead of hoping the schedule and the bump land in the
+  # right order. The condition below ignores every other pull request.
+  pull_request:
+    types: [closed]
 
 permissions:
   contents: read
@@ -20,6 +24,12 @@ concurrency:
 
 jobs:
   plan:
+    # Scheduled runs and manual ones always proceed. A pull request only triggers a build when it
+    # merged and came from the bump workflow (auto/*), so ordinary PRs cost nothing.
+    if: >
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'auto/'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
