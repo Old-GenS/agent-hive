@@ -18,12 +18,8 @@ on:
         required: false
         default: ""
 
-# Written at the workflow level, like test.yml, because that is the shape that publishes: a
-# workflow-level `contents: read` with a job-level `contents: write` was refused with
-# "Resource not accessible by integration" even though the job's token reported Contents: write.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: stable-release
@@ -162,54 +158,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          dir="$RUNNER_TEMP/test"
-          fs_id=$(ls "$dir" | sed -n 's/^hive-rootfs-\([0-9a-f]\{12\}\)-linux-x86_64\.tar\.gz$/\1/p' | head -1)
-          app_mb=$(du -m "$dir"/hive-[0-9]*-linux-x86_64.tar.gz | cut -f1)
-          fs_mb=$(du -m "$dir"/hive-rootfs-*-linux-x86_64.tar.gz | cut -f1)
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Stable release v$VERSION.
 
-          # What changed since the last stable release: the useful part of "what am I shipping".
-          prev=$(gh release list --repo "${{ github.repository }}" --limit 200 \
-            --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.createdAt) | reverse | .[0].tagName // ""')
-          if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" >/dev/null; then
-            commits=$(git log --oneline "$prev..$SHA" | head -40)
-            [ -n "$commits" ] || commits="(no commits)"
-            changes="Changes since $prev:\n\n$commits"
-          else
-            changes="First stable release on this repository."
-          fi
+          Promoted from test build ${{ steps.build.outputs.tag }} at commit $SHA, which was booted
+          in a real VM before
+          publishing. The files are the tested ones: nothing was rebuilt for this release.
 
-          {
-            printf 'Stable release v%s.\n\n' "$VERSION"
-            printf 'Promoted from the test build `%s` of commit %s, which was booted in a real VM.\n' \
-              "${{ steps.build.outputs.tag }}" "$SHA"
-            printf 'Nothing was rebuilt: every file here is the file that build tested.\n\n'
-            printf 'VM filesystem: %s (%s MB) — unchanged when this id matches what you already have,\n' "$fs_id" "$fs_mb"
-            printf 'which is when `hive update` downloads nothing.\n\n'
-            printf '%b\n\n' "$changes"
-            printf 'Verified: every asset matched the tested SHA256SUMS, signed keyless by\n'
-            printf '.github/workflows/promote.yml@refs/heads/main.\n\n'
-            printf 'Files:\n'
-            for f in "$dir"/*; do printf -- '- %s (%s MB)\n' "$(basename "$f")" "$(du -m "$f" | cut -f1)"; done
-            printf '\nApp bundle: %s MB, VM filesystem: %s MB.\n' "$app_mb" "$fs_mb"
-            printf '\nInstall or update:\n'
-            printf '  curl -fsSL https://raw.githubusercontent.com/%s/main/install-cli.sh | sh\n' "$GITHUB_REPOSITORY"
-            printf '  hive update\n\n'
-            printf 'Run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-          } > "$RUNNER_TEMP/notes.md"
-          cat "$RUNNER_TEMP/notes.md"
-          # Created through the API rather than `gh release create` so a refusal prints GitHub's
-          # own message instead of a one-line summary: the create failed with 403 once and the
-          # token claimed contents: write, which is not enough to act on.
-          body=$(gh api -X POST "repos/${{ github.repository }}/releases" \
-            -f tag_name="v$VERSION" \
-            -f target_commitish="$SHA" \
-            -f name="v$VERSION" \
-            -f body="$(cat "$RUNNER_TEMP/notes.md")" \
-            -F draft=false -F prerelease=false) || {
-            echo "release create refused; token scopes:" >&2
-            gh api "repos/${{ github.repository }}" --jq .permissions >&2 || true
-            exit 1
-          }
-          id=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-          gh release upload "v$VERSION" --repo "${{ github.repository }}" "$RUNNER_TEMP"/test/*
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          EOF
+          gh release create "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --target "$SHA" \
+            --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP"/test/*
