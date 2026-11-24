@@ -99,8 +99,8 @@ export function compareVersions(a, b) {
 }
 
 /**
- * The newest release among `tags`, stable or nightly: `{ version, prerelease }`, or undefined when
- * there is no release tag. `0.5.9-nightly.12` is newer than `0.5.8`, and `0.5.9` is newer than
+ * The newest release among `tags`: `{ tag, version, prerelease }`, or undefined when there is no
+ * release tag. `0.5.9-nightly.12` is newer than `0.5.8`, and `0.5.9` is newer than
  * `0.5.9-nightly.12`.
  */
 export function newestRelease(tags) {
@@ -108,14 +108,15 @@ export function newestRelease(tags) {
   for (const tag of tags) {
     const parsed = parseReleaseTag(tag);
     if (parsed === undefined) continue;
+    const entry = { tag, ...parsed };
     if (best === undefined || compareVersions(parsed.version.join("."), best.version.join(".")) > 0) {
-      best = parsed;
+      best = entry;
     } else if (
       compareVersions(parsed.version.join("."), best.version.join(".")) === 0 &&
       best.prerelease &&
       !parsed.prerelease
     ) {
-      best = parsed;
+      best = entry;
     }
   }
   return best;
@@ -143,6 +144,23 @@ export function nextNightlyVersion(tags, run, fallbackVersion) {
     base = [newest.version[0], newest.version[1], newest.version[2] + 1];
   }
   return `${base[0]}.${base[1]}.${base[2]}-nightly.${run}`;
+}
+
+/**
+ * The version a stable release from main gets: the patch after the newest release, or the version
+ * the nightlies are already previewing. Nothing reads package.json in the normal case
+ * (`fallbackVersion` is for a repository that has never published a release).
+ */
+export function nextStableVersion(tags, fallbackVersion) {
+  const newest = newestRelease(tags);
+  if (newest === undefined) {
+    if (fallbackVersion === undefined || !/^\d+\.\d+\.\d+$/.test(fallbackVersion)) {
+      throw new Error("no release tag and no package.json version to number a release after");
+    }
+    return fallbackVersion;
+  }
+  if (newest.prerelease) return newest.version.join(".");
+  return `${newest.version[0]}.${newest.version[1]}.${newest.version[2] + 1}`;
 }
 
 /** The SHA-256 of `name` in a SHA256SUMS file (the plain `hash  name` format), or undefined. */
