@@ -78,6 +78,19 @@ jobs:
           HIVE_RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: npm run release -- --skip-sign
 
+      - name: Read what the image contains
+        run: |
+          set -euo pipefail
+          img=localhost/agent-hive-sandbox:latest
+          base=$(podman run --rm "$img" sh -c 'grep -m1 PRETTY_NAME /etc/os-release' | cut -d= -f2 | tr -d '"')
+          {
+            echo "base=$base"
+            echo "node=$(podman run --rm "$img" node --version)"
+            echo "chromium=$(podman run --rm "$img" chromium --version)"
+            echo "pi=$(podman run --rm "$img" pi --version)"
+          } > "$RUNNER_TEMP/image-info.txt"
+          cat "$RUNNER_TEMP/image-info.txt"
+
       # The artifact booted here is the one promotion hands out, so it cannot be something that was
       # never started in a VM.
       - name: Boot the build in a real VM
@@ -93,7 +106,8 @@ jobs:
           mkdir -p "$dest"
           tar -xzf "$rootfs_archive" -C "$dest" --no-same-owner
           touch "$dest/.complete"
-          HIVE_BUNDLE_ROOT="$RUNNER_TEMP/bundle/hive-$VERSION" HIVE_ROOTFS="$dest" node scripts/vm-smoke.mjs
+          HIVE_BUNDLE_ROOT="$RUNNER_TEMP/bundle/hive-$VERSION" HIVE_ROOTFS="$dest" \
+            node scripts/vm-smoke.mjs | tee "$RUNNER_TEMP/smoke.txt"
 
       # Each build keeps its own tag, and only the newest five survive: enough to promote a build
       # you tested a few days ago, without the pile-up the old nightlies caused.
@@ -105,12 +119,42 @@ jobs:
         run: |
           set -euo pipefail
           sha="${{ steps.release.outputs.sha }}"
-          cat > "$RUNNER_TEMP/notes.md" <<EOF
-          Test build of v$VERSION, from $sha.
-          Booted in a real VM before publishing. Not signed: promote it to release it.
+          rootfs_archive=$(ls "release/$VERSION"/hive-rootfs-*-linux-x86_64.tar.gz)
+          fs_id=$(basename "$rootfs_archive" | sed -E 's/^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$/\1/')
+          app_mb=$(du -m "release/$VERSION/hive-$VERSION-linux-x86_64.tar.gz" | cut -f1)
+          fs_mb=$(du -m "$rootfs_archive" | cut -f1)
 
-          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          EOF
+          # The previous test build, so the notes can say whether this one changed the filesystem:
+          # the id is what decides whether an installed hive downloads again.
+          prev_tag=$(gh release list --repo "${{ github.repository }}" --limit 100 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("test-"))] | sort_by(.createdAt) | reverse | .[0].tagName // ""')
+          prev_id=""
+          if [ -n "$prev_tag" ]; then
+            prev_id=$(gh release view "$prev_tag" --repo "${{ github.repository }}" --json assets \
+              --jq '.assets[].name' \
+              | sed -n 's/^hive-rootfs-\([0-9a-f]\{12\}\)-linux-x86_64\.tar\.gz$/\1/p')
+          fi
+          if [ -z "$prev_id" ]; then
+            fs_line="Filesystem: $fs_id (first build)"
+          elif [ "$prev_id" = "$fs_id" ]; then
+            fs_line="Filesystem: $fs_id, unchanged since $prev_tag — updating downloads nothing"
+          else
+            fs_line="Filesystem: $prev_id -> $fs_id (new) — updating downloads about ${fs_mb} MB"
+          fi
+
+          {
+            printf 'Test build of v%s, from %s.\n\n' "$VERSION" "$sha"
+            printf 'Not signed. Promote it to publish it as v%s; promotion copies these files and\n' "$VERSION"
+            printf 'builds nothing.\n\n'
+            printf '%s\n\n' "$fs_line"
+            printf 'Inside the image:\n'
+            while IFS= read -r line; do printf -- '- %s\n' "$line"; done < "$RUNNER_TEMP/image-info.txt"
+            printf '\nBooted in a real VM: egress proxy, LAN and metadata refusal, Chromium render and the\n'
+            printf 'model-key check all passed.\n\n'
+            printf 'Sizes:\n- app bundle: %s MB\n- VM filesystem: %s MB\n\n' "$app_mb" "$fs_mb"
+            printf 'Run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --target "$sha" \
