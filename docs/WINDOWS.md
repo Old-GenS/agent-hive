@@ -139,6 +139,10 @@ $env:HIVE_UNINSTALL = '1'; irm https://raw.githubusercontent.com/Old-GenS/agent-
   hive falls back to it.
 - **`hive: command not found`.** Open a new terminal (the installer adds `~/.local/bin` to the
   Linux `PATH`), or run `. ~/.profile`.
+- **`hive uninstall` says permission denied.** A run started with `sudo` leaves root-owned files
+  in the cache; the uninstall names each one, removes everything else first, and prints the
+  `sudo rm -rf` line that finishes the job. A background service it cannot stop (a distro with no
+  systemd user session) is skipped instead of blocking the rest.
 - **Check everything at once:** `hive doctor` reports KVM, pasta, libkrun and the VM filesystem,
   with the fix for anything that is missing.
 

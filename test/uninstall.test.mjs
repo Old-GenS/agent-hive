@@ -4,7 +4,17 @@
 // service is never touched. No real home folder is ever read or removed.
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -49,6 +59,16 @@ const serviceFile = servicePaths().file;
 
 function bytes(n) {
   return Buffer.alloc(n);
+}
+
+/** Whether the path itself is gone. `existsSync` follows symlinks, so a dangling link looks gone. */
+function gone(path) {
+  try {
+    lstatSync(path);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /** The installed-release + runs + keys + cache + profile fixture every test starts from. */
@@ -165,7 +185,7 @@ test("the path guard refuses HOME itself, /, and paths outside the hive folders"
 test("a dry run reports the actions and changes nothing", () => {
   const plan = uninstallPlan({ keepRuns: true, keepConfig: true });
   const before = readFileSync(profile, "utf8");
-  const lines = runUninstall(plan, { dryRun: true });
+  const { lines } = runUninstall(plan, { dryRun: true });
   assert.ok(lines.length > 0);
   assert.ok(lines.every((line) => line.startsWith("would ")), lines.join("\n"));
   assert.ok(lines.some((line) => line.includes(`remove ${dataDir}`)), lines.join("\n"));
@@ -181,7 +201,7 @@ test("a service file is reported in the plan and only reported by a dry run", ()
   addServiceFile();
   const plan = uninstallPlan({ keepRuns: true, keepConfig: true });
   assert.equal(plan.service, true);
-  const lines = runUninstall(plan, { dryRun: true });
+  const { lines } = runUninstall(plan, { dryRun: true });
   assert.ok(lines.some((line) => /background service/.test(line)));
   assert.ok(existsSync(serviceFile), "a dry run leaves the service file");
   rmSync(serviceFile);
@@ -297,12 +317,12 @@ test("the help output mentions hive uninstall", () => {
 
 test("runUninstall removes exactly the plan, keeps runs and config, and rewrites the profile", () => {
   const plan = uninstallPlan({ keepRuns: true, keepConfig: true });
-  const lines = runUninstall(plan);
+  const { lines } = runUninstall(plan);
 
   assert.ok(lines.some((line) => line === `remove ${dataDir} (${sizeLabel(plan.sizes[dataDir])})`));
   assert.ok(!lines.some((line) => line.startsWith("would ")));
   assert.equal(existsSync(dataDir), false, "the app data dir is gone");
-  assert.equal(existsSync(binLink), false, "the command symlink is gone");
+  assert.ok(gone(binLink), "the command symlink is gone");
   assert.equal(existsSync(join(cacheRoot, "update-check.json")), false);
   assert.equal(existsSync(join(cacheRoot, "vm-cache")), false);
   assert.equal(existsSync(runsDir), true, "runs are kept");
@@ -316,12 +336,43 @@ test("runUninstall removes exactly the plan, keeps runs and config, and rewrites
 
   // A second run with everything unkept removes the runs folder and the config folder too.
   const full = uninstallPlan({ keepRuns: false, keepConfig: false });
-  const more = runUninstall(full);
+  const { lines: more } = runUninstall(full);
   assert.ok(more.some((line) => line.startsWith(`remove ${runsDir}`)), more.join("\n"));
   assert.ok(more.some((line) => line.startsWith(`remove ${configDir}`)), more.join("\n"));
   assert.equal(existsSync(runsDir), false);
   assert.equal(existsSync(configDir), false);
 });
+
+test(
+  "a path it cannot remove is reported, and the rest of the uninstall still happens",
+  { skip: process.getuid?.() === 0 },
+  () => {
+    setup();
+    // A write-protected cache folder: the entries inside it cannot be unlinked, which is what a
+    // folder left behind by a run started with sudo looks like from the user's account.
+    chmodSync(cacheRoot, 0o555);
+    try {
+      const plan = uninstallPlan({ keepRuns: true, keepConfig: true });
+      const { lines, failed } = runUninstall(plan);
+      const stuck = join(cacheRoot, "update-check.json");
+      assert.ok(
+        lines.some((line) => line.startsWith(`could not remove ${stuck}`)),
+        lines.join("\n"),
+      );
+      assert.ok(failed.some((failure) => failure.path === stuck), JSON.stringify(failed));
+      const first = failed.find((failure) => failure.path === stuck);
+      assert.equal(first.reason, "permission denied");
+      assert.equal(first.kind, "path");
+
+      // Everything that was removable still went, including what the plan lists after the cache.
+      assert.equal(existsSync(dataDir), false, "the app data dir is gone");
+      assert.ok(gone(binLink), "the command symlink is gone");
+      assert.ok(!readFileSync(profile, "utf8").includes("added by agent-hive"), "the PATH line is gone");
+    } finally {
+      chmodSync(cacheRoot, 0o755);
+    }
+  },
+);
 
 test("uninstallPlan finds the zsh PATH line as well as the bash one", () => {
   setup();
