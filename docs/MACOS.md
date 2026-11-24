@@ -490,7 +490,7 @@ remaining step.**
 | Check | Result |
 |---|---|
 | Native build | libkrun 1.19.8 and libkrunfw 5.6.2, launcher signed with both entitlements; `hive-vm --check` loads the bundled dylibs |
-| Bundle | `hive-0.5.5-nightly.99-darwin-arm64.tar.gz` (55 MB); `hive doctor` reports HVF, bundled libkrun, vsock egress, launcher and image as ok |
+| Bundle | a `hive-0.5.5-darwin-arm64.tar.gz` bundle (55 MB); `hive doctor` reports HVF, bundled libkrun, vsock egress, launcher and image as ok |
 | Image | a CI-built `hive-rootfs-<id>-linux-arm64.img.gz` (~604 MB), ext4 superblock, `current.img` install path and a `rootfs-info.json` image-tree check |
 | Installer | the macOS branch installs a fake release under a temp HOME, picks the darwin asset, verifies with `shasum`, and writes the zsh PATH line once |
 | Isolation | `npm run smoke:macos` on the M4: no IP network, TSI off, proxy 200, LAN/metadata 403, direct LAN/public/DNS/ping refused (10/10) |
