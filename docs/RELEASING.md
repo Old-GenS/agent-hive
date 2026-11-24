@@ -11,29 +11,21 @@ names that workflow, in this repository, at `main`. There is no signing key on t
 
 ## How a stable release is signed
 
-Nothing to set up beyond the environment below, and nothing to remember: the version comes from
-the nightly tag you promote, so no input can disagree with the artifact.
+Nothing to set up beyond the environment below, and nothing to fill in.
 
-1. Actions → **Stable release** → *Run workflow*.
-2. Optional: put a nightly tag in `nightly` (`v0.5.9-nightly.12`, the `v` is optional) to release
-   exactly the commit and rootfs that nightly tested. Leave it empty to build `main`.
-3. The job waits for approval on the `stable-release` environment. Approve as the reviewer
+1. Actions → **Stable release** → *Run workflow*. The form has no fields.
+2. The job waits for approval on the `stable-release` environment. Approve as the reviewer
    account — the one that never runs coding agents.
-4. It works out the version itself (`v0.5.9-nightly.12` → `0.5.9`), refuses a version that is not
-   newer than the newest release, builds with `--skip-sign`, signs `SHA256SUMS` with
-   `cosign sign-blob` using the run's OIDC token, and writes `SHA256SUMS.sigstore.json`.
-5. Before publishing it checks the bundle twice: `cosign verify-blob` against the expected
-   identity, and the shipped client (`dist/verify-sigstore.js`). The second is the one that matters:
-   it proves an installed copy would accept the release.
+3. It works out the version (the patch after the newest release: `0.5.8` → `0.5.9`), builds the
+   bundle and a fresh VM rootfs, boots them in a real VM (`scripts/vm-smoke.mjs`), signs
+   `SHA256SUMS` keyless with the run's OIDC token, and publishes the release.
 
-There is no version bump to remember. `package.json`'s `version` is read only when the workflow
-builds `main` without a nightly; nightlies and releases take their numbers from the release tags.
+Nothing is bumped and nothing is copied between workflows. `package.json` is read only for the
+first release of a repository that has none.
 
-**How the numbers work.** A nightly previews the next patch: once `v0.5.8` is out, the nightlies
-are `0.5.9-nightly.<run>` and keep that `0.5.9` until it is released. A promotion takes the
-number from the tag, so `v0.5.9-nightly.12` releases `v0.5.9`. A version only ever moves
-forward: the workflow refuses anything that is not newer than the newest release, which is what
-turns a forgotten bump into a clear failure instead of a stale "latest".
+**How the numbers work.** A stable release is the next patch after the newest release, so
+`v0.5.8` → `v0.5.9`. Nightlies preview the same number (`0.5.9-nightly.12`); they are a preview
+channel and are not needed to release.
 
 The job refuses to sign when `stable-release` has no required reviewer, so an environment that was
 never configured cannot publish (GitHub would otherwise create it unprotected on first use).
@@ -42,7 +34,7 @@ never configured cannot publish (GitHub would otherwise create it unprotected on
 self-review* on, *Allow administrators to bypass* off, and deployment branches limited to `main`
 (set that policy on the environment: it is not there by default).
 
-Pick a nightly (or main), approve the environment, done.
+Press Run, approve the environment, done.
 
 The release build needs podman (it builds the VM image and packs the rootfs inside
 `podman unshare`, since the image has files only root may read).
@@ -261,14 +253,11 @@ still works, and build the distributable release on a Mac with the real key. The
 does not yet add macOS assets to a nightly; doing that requires publishing the combined
 `SHA256SUMS` after both platform jobs finish.
 
-### Promotion to stable
+### Nightlies are a preview channel
 
-Release a nightly that has been in use without trouble by dispatching **Stable release** with its
-tag in `nightly` and approving the environment. The job builds that tag's commit, verifies the
-nightly's own signature and rootfs (`SHA256SUMS`, the rootfs hash and its `imageTree`), and
-reuses that exact rootfs, so the stable release is the artifact the nightlies tested, re-signed
-keyless. Nothing is bumped first: the version is `0.5.9` for `v0.5.9-nightly.12`, and the
-workflow refuses a number that is not newer than the newest release.
+`nightly.yml` publishes prereleases on the `nightly` channel. A stable release does not promote a
+nightly — it builds, boots and signs `main` itself — so there is nothing to copy from the nightly
+page to the release page.
 
 ## What each file is
 

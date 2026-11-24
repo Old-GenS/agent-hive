@@ -6,6 +6,7 @@ import {
   compareVersions,
   newestRelease,
   nextNightlyVersion,
+  nextStableVersion,
   stableVersionFromTag,
 } from "../scripts/release-rootfs.mjs";
 
@@ -25,6 +26,21 @@ test("the newest release is the newest version, stable winning a tie", () => {
   assert.equal(newestRelease(["v0.5.6-dev.2", "a-tag", "v0.5.5"]).version.join("."), "0.5.6");
   assert.equal(newestRelease([]), undefined);
   assert.equal(newestRelease(["latest", "main"]), undefined);
+});
+
+test("a stable release is the patch after the newest release", () => {
+  assert.equal(nextStableVersion(["v0.5.8"], "0.5.9"), "0.5.9");
+  assert.equal(nextStableVersion(["v0.5.8", "v0.5.8-nightly.10"], "0.5.9"), "0.5.9");
+  // The nightlies already preview 0.5.9, so that is the version it releases as.
+  assert.equal(nextStableVersion(["v0.5.8", "v0.5.9-nightly.12"], "0.5.9"), "0.5.9");
+  // First release ever: package.json is the only thing to go on.
+  assert.equal(nextStableVersion([], "0.1.0"), "0.1.0");
+  assert.throws(() => nextStableVersion([], undefined), /no release tag/);
+});
+
+test("the newest release keeps its tag", () => {
+  assert.equal(newestRelease(["v0.5.7", "v0.5.8-nightly.10"]).tag, "v0.5.8-nightly.10");
+  assert.equal(newestRelease(["v0.5.8", "v0.5.8-nightly.10"]).tag, "v0.5.8");
 });
 
 test("a nightly after a stable release previews the next patch", () => {

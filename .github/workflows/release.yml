@@ -1,30 +1,19 @@
 name: Stable release
 
-# Builds a stable release and signs it keyless: the signature is made with this workflow's GitHub
-# OIDC token, so there is no signing key to hold or leak. Clients accept it only when the
-# certificate names `release.yml@refs/heads/main` (src/release-key.ts, RELEASE_SIGNING_IDENTITY).
+# Builds, boots, signs and publishes the next stable release of main. Press Run and approve: the
+# form has no fields because nothing on it needs a human. The version is the patch after the newest
+# release (0.5.8 -> 0.5.9), the VM rootfs is built fresh, and the bundle the smoke test boots is the
+# one that gets signed and published.
+#
+# Signing is keyless: the signature is made with this run's GitHub OIDC token, so there is no key
+# to hold or leak. Clients accept it only when the certificate names
+# `release.yml@refs/heads/main` (src/release-key.ts, RELEASE_SIGNING_IDENTITY).
 #
 # The `stable-release` environment must require a reviewer: that click is what makes a release a
 # deliberate act, and it needs a browser session, not a token on the build box.
-#
-# There is no version to type and none to bump. A nightly tag decides everything:
-# v0.5.9-nightly.12 releases as 0.5.9 and builds that commit. With no tag it builds `main` at
-# package.json's version. Either way it refuses to publish a version that is not newer than the
-# newest release, so a forgotten bump fails here instead of becoming "latest".
 
 on:
   workflow_dispatch:
-    inputs:
-      nightly:
-        description: Nightly tag to promote (v0.5.9-nightly.12, the v is optional). Empty builds main.
-        required: false
-        type: string
-      reuse_rootfs:
-        description: Reuse the rootfs of this release tag instead of building one
-        required: false
-        type: string
-
-run-name: Stable release ${{ inputs.nightly || 'from main' }}
 
 permissions:
   contents: read
@@ -46,67 +35,6 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      # Everything about the release is decided once, here: which commit, which version. No later
-      # step takes a version as an input, so no two steps can disagree about it.
-      - id: release
-        name: Work out what to release
-        env:
-          NIGHTLY: ${{ inputs.nightly }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if [ -z "$NIGHTLY" ]; then
-            tag=main
-            sha=$(git rev-parse HEAD)
-            version=$(node -p "require('./package.json').version")
-          else
-            git fetch --tags --force
-            tag="v${NIGHTLY#v}"
-            if ! sha=$(git rev-parse --verify --quiet "${tag}^{commit}"); then
-              echo "no tag $tag in this repository; pass the nightly tag with or without the v" >&2
-              exit 1
-            fi
-            version=$(node --input-type=module -e \
-              'import { stableVersionFromTag } from "./scripts/release-rootfs.mjs"; console.log(stableVersionFromTag(process.argv[1]))' \
-              "$tag")
-          fi
-
-          # A release only moves forward. Comparing against every published release (nightlies
-          # included) turns a forgotten version bump into a clear failure, not a stale "latest".
-          gh release list --repo "${{ github.repository }}" --limit 200 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags.txt"
-          VERSION="$version" node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { newestRelease, compareVersions } from "./scripts/release-rootfs.mjs";
-            const tags = readFileSync(process.env.RUNNER_TEMP + "/tags.txt", "utf8").split("\n").filter(Boolean);
-            const newest = newestRelease(tags);
-            if (newest === undefined) process.exit(0);
-            const published = newest.version.join(".");
-            // Same number is fine only when promoting its own nightly (0.5.9 after 0.5.9-nightly.12).
-            const cmp = compareVersions(process.env.VERSION, published);
-            if (cmp < 0 || (cmp === 0 && !newest.prerelease)) {
-              console.error(
-                "v" + process.env.VERSION + " is not newer than the newest release v" + published +
-                "; bump package.json on main, or promote a newer nightly",
-              );
-              process.exit(1);
-            }
-          '
-
-          if [ "$tag" != main ]; then
-            git checkout --detach "$sha"
-            # Priming an old nightly with a build script that has no --skip-sign (before keyless
-            # signing) would fail with a usage message; refuse it where the reason is obvious.
-            if ! grep -q -- "--skip-sign" scripts/build-release.sh; then
-              echo "$tag predates keyless signing; promote a newer nightly" >&2
-              exit 1
-            fi
-          fi
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Releasing v$version from $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
-
       - id: node
         run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -134,82 +62,48 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the nightly and reuse its rootfs
-        if: inputs.nightly != ''
+      # Everything the form used to ask for is worked out here: the version is the next patch, so
+      # there is nothing to type, bump, or copy from the releases page.
+      - id: release
+        name: Work out the version
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          dir="$RUNNER_TEMP/nightly"
-          mkdir -p "$dir"
-          gh release download "$TAG" \
-            --pattern SHA256SUMS --pattern SHA256SUMS.sig \
-            --pattern 'hive-rootfs-*-linux-x86_64.tar.gz' --pattern rootfs-info.json \
-            --dir "$dir"
-
-          # The nightly's own signature, then the rootfs bytes, then the image tree it says it
-          # came from. Any mismatch stops the promotion before anything is built.
-          node --input-type=module -e '
+          gh release list --repo "${{ github.repository }}" --limit 200 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags.txt"
+          version=$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
-            import { readPublicKey, sumsEntry, verifySums } from "./scripts/release-rootfs.mjs";
-            const dir = process.env.RUNNER_TEMP + "/nightly";
-            const sums = readFileSync(dir + "/SHA256SUMS");
-            const pem = readPublicKey(readFileSync("src/release-key.ts", "utf8"), "PRERELEASE_PUBLIC_KEY");
-            if (!verifySums(sums, readFileSync(dir + "/SHA256SUMS.sig", "utf8"), pem)) {
-              console.error("the nightly is not signed by the prerelease key");
-              process.exit(1);
-            }
-            const name = sums.toString("utf8").split("\n")
-              .map((l) => /^[0-9a-f]{64}\s+\*?(.+)$/.exec(l.trim())?.[1])
-              .find((n) => n && /^hive-rootfs-.*-linux-x86_64\.tar\.gz$/.test(n));
-            if (!name) { console.error("no rootfs asset in the nightly"); process.exit(1); }
-            console.log("rootfs=" + name);
-            console.log("sha256=" + sumsEntry(sums.toString("utf8"), name));
-          ' > "$RUNNER_TEMP/nightly/plan.txt"
-
-          rootfs=$(grep '^rootfs=' "$RUNNER_TEMP/nightly/plan.txt" | cut -d= -f2-)
-          expected=$(grep '^sha256=' "$RUNNER_TEMP/nightly/plan.txt" | cut -d= -f2-)
-          actual=$(sha256sum "$dir/$rootfs" | cut -d' ' -f1)
-          if [ "$actual" != "$expected" ]; then
-            echo "$rootfs does not match the nightly's SHA256SUMS" >&2
-            exit 1
-          fi
-
-          image_tree=$(git rev-parse HEAD:image)
-          info_tree=$(node -p "require('$dir/rootfs-info.json').imageTree")
-          if [ "$info_tree" != "$image_tree" ]; then
-            echo "the nightly's rootfs came from image tree $info_tree, not ${image_tree}" >&2
-            exit 1
-          fi
-
-          echo "HIVE_RELEASE_REUSE_ROOTFS=$dir/$rootfs" >> "$GITHUB_ENV"
-
-      - name: Reuse another release's rootfs, when asked
-        if: inputs.reuse_rootfs != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REUSE_TAG: ${{ inputs.reuse_rootfs }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/reuse"
-          gh release download "$REUSE_TAG" \
-            --pattern "hive-rootfs-*-linux-x86_64.tar.gz" \
-            --pattern "rootfs-info.json" \
-            --dir "$RUNNER_TEMP/reuse"
-          echo "HIVE_RELEASE_REUSE_ROOTFS=$(ls "$RUNNER_TEMP/reuse"/hive-rootfs-*-linux-x86_64.tar.gz)" >> "$GITHUB_ENV"
+            import { nextStableVersion } from "./scripts/release-rootfs.mjs";
+            const tags = readFileSync(process.env.RUNNER_TEMP + "/tags.txt", "utf8").split("\n").filter(Boolean);
+            const fallback = JSON.parse(readFileSync("./package.json", "utf8")).version;
+            console.log(nextStableVersion(tags, fallback));
+          ')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version from $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
       # --skip-sign: signing happens below, with the OIDC token. Nothing on this runner holds a key.
       - name: Build ${{ steps.release.outputs.version }}
         env:
           HIVE_RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: npm run release -- --skip-sign
+
+      # The artifact booted here is the one that gets signed and published below, so a release
+      # cannot ship something that was never started in a VM.
+      - name: Boot the release in a real VM
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          if [[ -n "${HIVE_RELEASE_REUSE_ROOTFS:-}" ]]; then
-            npm run release -- --skip-sign --reuse-rootfs "$HIVE_RELEASE_REUSE_ROOTFS"
-          else
-            npm run release -- --skip-sign
-          fi
+          mkdir -p "$RUNNER_TEMP/bundle"
+          tar -xzf "release/$VERSION/hive-$VERSION-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/bundle"
+          rootfs_archive=$(ls "release/$VERSION"/hive-rootfs-*-linux-x86_64.tar.gz)
+          rver=$(basename "$rootfs_archive" | sed -E 's/^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$/\1/')
+          dest="$RUNNER_TEMP/rootfs/$rver"
+          mkdir -p "$dest"
+          tar -xzf "$rootfs_archive" -C "$dest" --no-same-owner
+          touch "$dest/.complete"
+          HIVE_BUNDLE_ROOT="$RUNNER_TEMP/bundle/hive-$VERSION" HIVE_ROOTFS="$dest" node scripts/vm-smoke.mjs
 
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
