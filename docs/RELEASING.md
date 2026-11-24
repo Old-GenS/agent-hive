@@ -175,9 +175,10 @@ GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`). Ther
 the ed25519 key releases used before this is kept only so an install can still verify an older
 `SHA256SUMS.sig`.
 
-**Changing who may release:** edit `src/release-key.ts` and the `stable-release` environment. Both
-are gated: `CODEOWNERS` gives `.github/workflows/**` and `CODEOWNERS` itself to a code owner, and
-the environment requires the reviewer.
+**Changing who may release:** edit `src/release-key.ts` and the `stable-release` environment. The
+environment is the gate that requires a reviewer. The workflows themselves are not: the `main`
+ruleset asks for no approving review and does not require a code owner, and there is no
+`CODEOWNERS` file. A token that can push to `main` can change `release.yml`.
 
 ### Branches and pull requests
 

@@ -21,8 +21,9 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 - **`main` takes no direct pushes, from anyone.** The `main` ruleset requires a pull request plus
   the `test`, `vm` and `windows-installer` checks, and blocks force-pushes and deletion. There is
   **no bypass list**. Pull requests need no approval — the checks are the gate — and merge through
-  GitHub's auto-merge, always as a merge commit (the repo allows no squash or rebase merging, so a
-  merged branch keeps its commit SHAs and local `main` only ever fast-forwards).
+  GitHub's auto-merge, always as a merge commit (use that method: a merged branch then keeps its
+  commit SHAs and local `main` only ever fast-forwards, so don't squash or rebase. GitHub also
+  permits both on this repo, so the choice is ours to keep).
 - **Doing that without leaving a mess:**
   1. Start from GitHub's `main`: `git fetch origin && git switch -c <short-branch-name> origin/main`.
   2. Commit only on that branch. **Never commit on local `main`.**
