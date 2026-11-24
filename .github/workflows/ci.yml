@@ -113,9 +113,13 @@ jobs:
   # cannot be exercised on Linux, and a red suite on a Mac hides every regression. GitHub's macOS
   # runners are VMs without a usable HVF, so this builds the launcher and runs the unit tests; the
   # real VM is checked by hand (scripts/macos-spike and docs/MACOS.md).
+  # Manual only. A macOS runner on this repository queues for a quarter of an hour, it runs the
+  # same `npm test` the Linux job already runs, and it is not a required check, so it cannot block
+  # a merge. Run it from the Actions tab when a change actually needs macOS rather than paying the
+  # queue on every pull request.
   macos:
     needs: changes
-    if: needs.changes.outputs.macos == 'true'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
