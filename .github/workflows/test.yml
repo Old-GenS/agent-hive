@@ -1,0 +1,117 @@
+name: Test build
+
+# The test channel: what main looks like right now, with freshly pulled distro packages, built and
+# booted in a real VM. It publishes one rolling prerelease tagged `test` — each run replaces it, so
+# nothing piles up and there is only ever one build to promote.
+#
+# Promotion is the only thing that reaches users: `.github/workflows/promote.yml` copies these exact
+# files into a stable release without rebuilding anything, so what was tested here is what ships,
+# the microVM included.
+#
+# The version is the patch this build would be released as (0.5.9 -> 0.5.10). It is worked out at
+# build time and baked into the bundle, because a build that gets promoted must not be rebuilt to
+# change its version.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *" # daily: pulls in new distro packages even on a quiet week
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: test-build
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: node
+        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - run: npm ci
+      - name: Enable KVM and install pasta
+        run: bash scripts/ci-enable-kvm.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/native
+          key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
+
+      - id: release
+        name: Work out the version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list --repo "${{ github.repository }}" --limit 200 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags.txt"
+          version=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { nextStableVersion } from "./scripts/release-rootfs.mjs";
+            const tags = readFileSync(process.env.RUNNER_TEMP + "/tags.txt", "utf8").split("\n").filter(Boolean);
+            const fallback = JSON.parse(readFileSync("./package.json", "utf8")).version;
+            console.log(nextStableVersion(tags, fallback));
+          ')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Test build of v$version from $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      # --skip-sign: the test channel is not signed. A promoted build is signed by promote.yml, with
+      # that workflow's identity, so signing is the promotion's act, not the build's.
+      - name: Build ${{ steps.release.outputs.version }}
+        env:
+          HIVE_RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: npm run release -- --skip-sign
+
+      # The artifact booted here is the one promotion hands out, so it cannot be something that was
+      # never started in a VM.
+      - name: Boot the build in a real VM
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bundle"
+          tar -xzf "release/$VERSION/hive-$VERSION-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/bundle"
+          rootfs_archive=$(ls "release/$VERSION"/hive-rootfs-*-linux-x86_64.tar.gz)
+          rver=$(basename "$rootfs_archive" | sed -E 's/^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$/\1/')
+          dest="$RUNNER_TEMP/rootfs/$rver"
+          mkdir -p "$dest"
+          tar -xzf "$rootfs_archive" -C "$dest" --no-same-owner
+          touch "$dest/.complete"
+          HIVE_BUNDLE_ROOT="$RUNNER_TEMP/bundle/hive-$VERSION" HIVE_ROOTFS="$dest" node scripts/vm-smoke.mjs
+
+      # One rolling prerelease, replaced every run: nothing accumulates, and "the test build" is
+      # never ambiguous.
+      - name: Publish the rolling test build
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="${{ steps.release.outputs.sha }}"
+          gh release delete test --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Test build of v$VERSION, from $sha.
+          Booted in a real VM before publishing. Not signed: promote it to release it.
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          EOF
+          gh release create test \
+            --repo "${{ github.repository }}" \
+            --target "$sha" \
+            --prerelease \
+            --title "Test build of v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            release/"$VERSION"/*

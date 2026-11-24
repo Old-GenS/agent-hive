@@ -8,7 +8,7 @@ they're fully tested (see "Keeping it up to date").
 
 The first signed release, v0.4.0, is published and was tested end to end on a fresh home folder:
 `install-cli.sh`, `hive setup`, `hive doctor`, a real run, `hive update --check` and `hive serve`.
-Stable releases are now signed keyless in CI by `.github/workflows/release.yml`; no release key
+Stable releases are now signed keyless in CI by `.github/workflows/promote.yml`; no release key
 lives on any machine, and `docs/RELEASING.md` has the steps for the next release.
 
 - **Release build** (`scripts/build-release.sh`): an app bundle containing `bin/hive`, a bundled

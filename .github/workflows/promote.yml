@@ -1,0 +1,149 @@
+name: Promote to stable
+
+# Takes the current test build and publishes it as the stable release. Nothing is built here: the
+# files are downloaded from the `test` prerelease, checked against its own SHA256SUMS, signed, and
+# published under the version the test build was made for. So what users get is byte-for-byte what
+# the test run booted in a VM — the microVM filesystem included.
+#
+# Saying no to a build: don't run this. The test release is simply replaced by the next build.
+#
+# The `stable-release` environment must require a reviewer: that click is the only thing between a
+# test build and the users, so it has to need a browser session, not a token on a box.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: stable-release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: node
+        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - run: npm ci && npm run build
+
+      # Fails closed: GitHub creates environments unprotected when a workflow first references one,
+      # so a missing reviewer would make this step a no-op gate rather than a gate.
+      - name: Refuse to promote without a reviewer on the environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rules=$(gh api "repos/${{ github.repository }}/environments/stable-release" \
+            --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')
+          if [ "$rules" -lt 1 ]; then
+            echo "stable-release has no required reviewer; refusing to promote" >&2
+            exit 1
+          fi
+
+      # The version comes from the build, not from this run: a promoted build must keep the number
+      # it was made with, or the bundle inside the tarball would disagree with its release tag.
+      - id: build
+        name: Fetch the test build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/test"
+          mkdir -p "$dir"
+          gh release download test --repo "${{ github.repository }}" --dir "$dir"
+          version=$(basename "$(ls "$dir"/hive-*-linux-x86_64.tar.gz)" | sed -E 's/^hive-(.+-linux-x86_64\.tar\.gz)$/\1/; s/-linux-x86_64\.tar\.gz$//')
+          if [ -z "$version" ]; then
+            echo "the test release has no linux-x86_64 bundle" >&2
+            exit 1
+          fi
+          if gh release view "v$version" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "v$version is already released; the test build must be newer" >&2
+            exit 1
+          fi
+          sha=$(gh release view test --repo "${{ github.repository }}" --json targetCommitish --jq .targetCommitish)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Promoting v$version from $sha" >> "$GITHUB_STEP_SUMMARY"
+
+      # Same bytes in, same bytes out: if an asset does not match the tested SHA256SUMS, stop.
+      - name: Check the files against the tested SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/test"
+          sha256sum -c SHA256SUMS
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Sign the tested SHA256SUMS with this workflow's identity
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle "$RUNNER_TEMP/test/SHA256SUMS.sigstore.json" \
+            "$RUNNER_TEMP/test/SHA256SUMS"
+
+      - name: Check the signature names this workflow
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle "$RUNNER_TEMP/test/SHA256SUMS.sigstore.json" \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/promote.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$RUNNER_TEMP/test/SHA256SUMS"
+
+      # The shipped verifier is what users run: if it rejects this bundle, the release would be
+      # unusable, so fail before publishing rather than after.
+      - name: Check the client accepts it
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { verifySigstoreBundle } from "./dist/verify-sigstore.js";
+            import { RELEASE_IDENTITY } from "./dist/release-key.js";
+            const dir = process.env.RUNNER_TEMP + "/test";
+            const ok = await verifySigstoreBundle(
+              readFileSync(dir + "/SHA256SUMS"),
+              readFileSync(dir + "/SHA256SUMS.sigstore.json", "utf8"),
+              RELEASE_IDENTITY,
+            );
+            if (!ok) {
+              console.error("the client rejects the bundle this workflow produced");
+              process.exit(1);
+            }
+            console.log("client accepts the bundle");
+          '
+
+      - name: Publish
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+          SHA: ${{ steps.build.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Stable release v$VERSION.
+
+          Promoted from the test build of commit $SHA, which was booted in a real VM before
+          publishing. The files are the tested ones: nothing was rebuilt for this release.
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          EOF
+          gh release create "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --target "$SHA" \
+            --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP"/test/*

@@ -113,7 +113,7 @@ npm run smoke:macos
 ### Build the release bundle
 
 The release bundle is what an installed copy runs. Build it with the same image (see
-[RELEASING.md](RELEASING.md)). Stable **Linux** releases are signed keyless by the `release.yml`
+[RELEASING.md](RELEASING.md)). Stable **Linux** releases are signed keyless by the `promote.yml`
 workflow; the macOS bundle has no keyless workflow yet, so it is still signed locally:
 
 ```bash
