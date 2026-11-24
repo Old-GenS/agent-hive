@@ -93,9 +93,17 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    ```
 
    A hand build always rebuilds the VM filesystem from a freshly pulled base image with podman's
-   cache skipped, so Fedora and Chromium security updates are in and the new rootfs id makes users
-   download it again (about 660 MB). Reusing a rootfs another machine already built is possible by
-   handing over a tarball whose `rootfs-info.json` (next to it) names this checkout's `image/` tree:
+   cache skipped, so Fedora and Chromium security updates are in.
+
+   **What users re-download.** A release names its VM filesystem by the id from
+   `scripts/rootfs-id.mjs`: the `image/` tree plus the exact set of installed RPMs. An installed
+   hive downloads it only when that id differs from the one it has, so rebuilding an unchanged
+   image — which `build:image:fresh` does on every release — costs the user nothing. It used to be
+   the podman image id, which changed on every build because of `--no-cache`, so every release
+   made every install download the whole 660 MB again.
+
+   Reusing a rootfs another machine already built is possible by handing over a tarball whose
+   `rootfs-info.json` (next to it) names this checkout's `image/` tree:
 
    ```bash
    npm run release -- --reuse-rootfs <path to hive-rootfs-<rver>-linux-x86_64.tar.gz>

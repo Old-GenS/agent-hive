@@ -30,9 +30,14 @@ case "$(uname -m)" in
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
 
-id=$(podman image inspect --format "{{.Id}}" "$IMAGE" 2>/dev/null | cut -c1-12) \
-  || die "no image $IMAGE; build it with npm run build:image"
-[[ "$id" =~ ^[0-9a-f]{12}$ ]] || die "unexpected podman image id: $id"
+podman image inspect "$IMAGE" >/dev/null 2>&1 || die "no image $IMAGE; build it with npm run build:image"
+# Same id the Linux rootfs uses: the image/ tree plus the installed RPMs, so a rebuild of an
+# unchanged image keeps the id and nobody re-downloads the filesystem (see scripts/rootfs-id.mjs).
+image_tree=$(git -C "$repo_root" rev-parse HEAD:image 2>/dev/null) \
+  || die "$repo_root is not a git checkout, so the image/ tree is unknown"
+packages=$(podman run --rm "$IMAGE" rpm -qa | LC_ALL=C sort)
+id=$(printf '%s\n' "$packages" | node "$repo_root/scripts/rootfs-id.mjs" --image-tree "$image_tree")
+[[ "$id" =~ ^[0-9a-f]{12}$ ]] || die "unexpected rootfs id: $id"
 
 name=$(node "$repo_root/scripts/rootfs-image.mjs" name "$id" "$platform")
 img=${name%.gz}

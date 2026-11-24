@@ -7,7 +7,19 @@ IMAGE=${HIVE_IMAGE:-localhost/agent-hive-sandbox:latest}
 BASE=${HIVE_ROOTFS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs}
 mkdir -p "$BASE"
 
-id=$(podman image inspect --format '{{.Id}}' "$IMAGE" | cut -c1-12)
+# The id must change when the image changes and stay put when it did not, because an installed
+# hive downloads the VM filesystem only when the id differs. A podman image id cannot do that:
+# `build:image:fresh` builds with --no-cache, so an unchanged image still gets a new id and every
+# release would make every install re-download the whole thing. The `image/` tree this checkout
+# built from plus the installed RPMs is what a task actually sees, so that is the id.
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+image_tree=$(git -C "$repo_root" rev-parse HEAD:image 2>/dev/null || true)
+if [[ -z "$image_tree" ]]; then
+  echo "hive-vm: $repo_root is not a git checkout, so the image/ tree is unknown; the rootfs id would not be stable" >&2
+  exit 1
+fi
+packages=$(podman run --rm "$IMAGE" rpm -qa | LC_ALL=C sort)
+id=$(printf '%s\n' "$packages" | node "$repo_root/scripts/rootfs-id.mjs" --image-tree "$image_tree")
 dest="$BASE/$id"
 
 if [[ -e "$dest/.complete" ]]; then

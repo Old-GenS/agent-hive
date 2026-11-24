@@ -21,8 +21,9 @@ export const MIN_IMAGE_BYTES = 1024 ** 3;
 const MIB = 1024 ** 2;
 
 /**
- * The release asset name. The rootfs id is the 12-hex podman image id prefix, the same id the
- * Linux folder rootfs tarball uses, so one build's pieces are recognisable as a set.
+ * The release asset name. The rootfs id comes from scripts/rootfs-id.mjs — the `image/` tree plus
+ * the installed RPMs — the same id the Linux folder rootfs tarball uses, so one build's pieces are
+ * recognisable as a set.
  */
 export function rootfsImageName(rootfsId, platform = "linux-arm64") {
   if (!/^[0-9a-f]{12}$/.test(rootfsId)) {
