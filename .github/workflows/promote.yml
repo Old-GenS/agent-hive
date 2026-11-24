@@ -159,18 +159,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # No --target: the release call makes the tag on main's head. Pointing it at the tested
+          # commit works only until main moves on through .github/workflows: GitHub then wants the
+          # "Workflows" permission for that commit, which a workflow's own token can never have,
+          # and answers 403 "Resource not accessible by integration" (create-a-release docs). The
+          # tested commit goes in the notes, which is where it is useful.
+          head=$(git rev-parse HEAD)
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           Stable release v$VERSION.
 
-          Promoted from test build ${{ steps.build.outputs.tag }} at commit $SHA, which was booted
-          in a real VM before
-          publishing. The files are the tested ones: nothing was rebuilt for this release.
+          Promoted from test build ${{ steps.build.outputs.tag }}, built from commit $SHA and booted
+          in a real VM before publishing. The files are the tested ones: nothing was rebuilt for
+          this release. The tag is on main's head.
+
+          The tag v$VERSION is on $head, main's head when this ran: a workflow's token may not tag
+          an older commit once main has changed .github/workflows since it.
 
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
           gh release create "v$VERSION" \
             --repo "${{ github.repository }}" \
-            --target "$SHA" \
             --title "v$VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             "$RUNNER_TEMP"/test/*

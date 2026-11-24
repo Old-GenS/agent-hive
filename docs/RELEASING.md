@@ -39,7 +39,10 @@ file, named by its content.
 3. Approve the `stable-release` environment as the reviewer account — the one that never runs
    coding agents.
 4. It reads the version from the tested bundle, refuses if that version is already released,
-   verifies every file, signs `SHA256SUMS`, and publishes.
+   verifies every file, signs `SHA256SUMS`, and publishes. The tag goes on `main`'s head, not on
+   the tested commit: a workflow's own token may not tag an older commit once `main` has changed
+   `.github/workflows` since it (GitHub answers 403 "Resource not accessible by integration",
+   because that would need the Workflows permission). The tested commit is named in the notes.
 
 **How the numbers work.** `test.yml` works out the next patch (the newest release is `v0.5.8`, so
 the build is `0.5.9`) and bakes it into the bundle. Promotion reuses that number rather than
