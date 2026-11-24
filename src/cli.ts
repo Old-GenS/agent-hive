@@ -56,7 +56,7 @@ hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>
 hive uninstall [--yes] [--all] [--dry-run]
 hive setup
 hive doctor
-hive update [--check | --rollback]
+hive update [--check | --rollback | --tag <tag>]
 hive --version
 `;
 
@@ -1698,6 +1698,9 @@ async function cmdUpdate(args: string[]): Promise<number> {
     options: {
       check: { type: "boolean" },
       rollback: { type: "boolean" },
+      // A specific signed release, e.g. `v0.5.8`. Stable releases are the default. Test builds are
+      // unsigned, so they cannot be installed this way: run one from source, or promote it first.
+      tag: { type: "string" },
     },
   });
   const {
@@ -1724,7 +1727,24 @@ async function cmdUpdate(args: string[]): Promise<number> {
     return 0;
   }
 
-  const rel = await fetchRelease();
+  const wanted = values.tag;
+  const rel = await fetchRelease(wanted);
+
+  // Asking for a tag means asking for exactly that build, so the 'you are newer than stable'
+  // guard and the version comparison below do not apply: an explicit tag is installed as it is.
+  if (wanted !== undefined) {
+    process.stdout.write(`hive: installing ${wanted} (you have ${cur})\n`);
+    const progress = downloadProgress(`the VM filesystem for ${wanted}`);
+    try {
+      await installRelease(rel, { onProgress: progress.onProgress });
+    } finally {
+      progress.done();
+    }
+    activate(rel.version);
+    prune();
+    process.stdout.write(`hive: updated ${cur} → ${rel.version} (${wanted})\n`);
+    return 0;
+  }
 
   // An install left on an old prerelease must not be downgraded by the move to stable.
   if (isPrerelease(cur) && compareVersions(cur, rel.version) > 0) {

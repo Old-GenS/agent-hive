@@ -49,7 +49,7 @@ Every pinned version lives in one place (`versions.json`, `image/Containerfile`,
 There is one channel: **releases**. `hive update` installs the newest published release after
 checking its signature. There are no nightly or beta prereleases to follow.
 
-`hive update --check` only reports, `hive update --rollback` goes back one version, and a build
+`hive update --check` only reports, `hive update --rollback` goes back one version, `hive update --tag <tag>` installs a specific signed release (`hive update --tag v0.5.8`; a test build is unsigned and is run from source instead), and a build
 that was installed while prereleases existed still moves to the next full release (never a
 downgrade).
 
