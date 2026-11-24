@@ -80,11 +80,10 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init), `hive-netd` (guest TCP → vsock relay, macOS) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh` (ad-hoc signs on macOS), `hive-vm.entitlements`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
-| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` on Linux and macOS, plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `nightly.yml` (daily signed nightly prerelease, reusing the tested rootfs when it is current), `macos-image.yml` (the arm64 macOS VM image, built and inspected on an arm64 runner, and reusable), `macos-release.yml` (a manual macOS bundle build on `macos-15`, uploading a test artifact); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
+| `.github/workflows/` | CI and the update automation: `ci.yml` (`npm test` on Linux and macOS, plus a real microVM smoke test on `pull_request` and `push`), `bump.yml` (daily check for upstream pin updates, one pull request per component), `dependabot-automerge.yml` (enables GitHub's auto-merge on Dependabot's PRs), `security.yml` (daily rebuild of the VM image from scratch, booted and smoke-tested in a real VM; publishes nothing), `macos-image.yml` (the arm64 macOS VM image, built and inspected on an arm64 runner, and reusable), `macos-release.yml` (a manual macOS bundle build on `macos-15`, uploading a test artifact); `.github/dependabot.yml` groups npm and Actions updates onto `main`. Merging is GitHub's auto-merge, driven by the `main` ruleset's required checks; no custom merge workflow |
 | `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for Linux releases), `native-in-container.sh` (its manylinux_2_28 half), `build-native-macos.sh` (the macOS arm64 dylibs, launcher and signatures), `build-release-macos.sh` (the darwin bundle, image and sources), `build-rootfs-image.sh` and `rootfs-image.mjs` (the macOS arm64 VM image and its naming), `macos-smoke.mjs` (real-VM isolation check on a Mac), `kernel-remote.mjs` (libkrunfw's kernel URL without GNU make), release build and signing |
 | `scripts/check-updates.mjs` | The daily bump check: newest upstream version of every pin in `versions.json` and `image/Containerfile` (`--list` as JSON, `--apply <component>`); pure parsers and `applyUpdate` are exported for tests |
-| `scripts/rootfs-plan.mjs` | The nightly build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
-| `scripts/release-rootfs.mjs` | The rootfs checks shared by the release build and the release workflow: the tarball name, its `rootfs-info.json` rootfs id and `imageTree` must agree with the release's `image/` tree. It is also the one place release numbering lives: the next nightly previews the patch after the newest release (`nextNightlyVersion`), a stable release is the next patch (`nextStableVersion`), and the newest release is found by version, a stable release winning a tie with its own nightly (`newestRelease`, `compareVersions`); both workflows call it |
+| `scripts/release-rootfs.mjs` | The rootfs checks shared by the release build and the release workflow: the tarball name, its `rootfs-info.json` rootfs id and `imageTree` must agree with the release's `image/` tree. It is also where release numbering lives: a release is the next patch (`nextStableVersion`), found from the newest release by version (`newestRelease`, `compareVersions`); `release.yml` calls it |
 | `scripts/vm-smoke.mjs` | The real-VM release check: HTTPS through the egress proxy, LAN and metadata addresses refused, headless Chromium renders a page, and a run with a fake OpenRouter key gets a 401 and no network error |
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
 | `scripts/macos-spike/` | The Phase 0 macOS harness: libkrun build recipe, throwaway launcher, vsock/egress bridge and guest probes; not used by the product build |
@@ -239,13 +238,13 @@ launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, R
 the Windows one-line installer (`install.ps1`: a dedicated WSL2 Ubuntu distro, `hive.cmd` on the
 Windows `PATH`, guide in `docs/WINDOWS.md`), in daily use on a real Windows 11 machine;
 `install-cli.sh` VM-filesystem download progress and KVM/pasta/PATH advice; `hive update` with
-rollback; a nightly channel signed by a separate CI prerelease key; `.github/workflows/release.yml`
+rollback; `.github/workflows/release.yml`
 builds the next patch of main, boots that bundle and rootfs in a real VM, signs it keyless and
 publishes it — the dispatch form has no fields, nothing is bumped and nothing is copied between
 workflows; CI that boots a real VM for every change
 and parses/analyses `install.ps1`; a daily check that
-opens tested pin-bump PRs; Dependabot; a daily nightly prerelease (`.github/workflows/`,
-`docs/RELEASING.md`).
+opens tested pin-bump PRs; Dependabot; a daily security rebuild that boots the fresh image in a
+real VM (`.github/workflows/security.yml`).
 
 **Not built yet:**
 - server: refusing to restart, or finishing runs first, while runs are in progress

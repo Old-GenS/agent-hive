@@ -30,28 +30,23 @@ Every pinned version lives in one place (`versions.json`, `image/Containerfile`,
   reaches the model API. An update's pull request is armed with GitHub's own auto-merge (the
   workflow only makes the enable call, since a bot may not merge its own work), so it merges as soon
   as the required checks pass; the maintainer only steps in when something fails (it stays open).
-- **The VM filesystem is refreshed when it needs it:** the daily build checks the current one for
-  pending Fedora updates and rebuilds it straight away for security fixes, or after 14 days for
-  other updates. Otherwise it is reused, so you don't download 660 MB for nothing.
-- **A nightly build comes out every day `main` changed:** a signed prerelease with everything that
-  has passed so far.
+- **The VM filesystem is rebuilt from scratch every day** (`security.yml`): no podman cache, the
+  Fedora base pulled again, so Chromium, git and every other package a task uses get their security
+  updates. The result is booted in a real VM and put through the same smoke test as a release. This
+  publishes nothing — a failure is a red daily run, so a broken package update is found here and not
+  in someone's task. No VM filesystem is downloaded for it: the next release carries whatever the
+  last good rebuild proved.
 - **GitHub's security checks** watch the code: Dependabot alerts, secret scanning with push
   protection, and private vulnerability reporting (the Security tab).
 
 ## How updates reach you
 
-There are two channels:
+There is one channel: **releases**. `hive update` installs the newest published release after
+checking its signature. There are no nightly or beta prereleases to follow.
 
-| Channel | What you get | How |
-|---|---|---|
-| **stable** (the default) | releases the maintainer publishes by hand, after a nightly build has been used for a while | `hive update` |
-| **nightly** | the daily signed prerelease: newest fixes first, tested by CI but not yet used much | `hive update --channel nightly` (`dev` and `beta` are aliases) |
-
-`hive update` checks the release's signature before installing it (stable releases are signed
-with a key that never leaves the maintainer's machine; nightly builds with a separate key that
-stable installs never accept). `hive update --rollback` goes back one version, and
-`hive update --channel stable` returns to the stable channel (it waits for the next stable release
-rather than downgrading).
+`hive update --check` only reports, `hive update --rollback` goes back one version, and a build
+that was installed while prereleases existed still moves to the next full release (never a
+downgrade).
 
 hive also tells you once a day, when you run it, if a newer release is out.
 

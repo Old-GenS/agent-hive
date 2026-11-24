@@ -56,7 +56,7 @@ hive service <install|status|restart|logs|uninstall> [--host <addr>] [--port <n>
 hive uninstall [--yes] [--all] [--dry-run]
 hive setup
 hive doctor
-hive update [--check | --rollback | --channel stable|nightly]
+hive update [--check | --rollback]
 hive --version
 `;
 
@@ -1423,7 +1423,7 @@ async function cmdDoctor(args: string[]): Promise<number> {
   const { hardwareVirtualization, libkrunAvailable, networkBackend } = await import("./sandbox.js");
   const { libkrunChoice, libkrunLabel } = await import("./libkrun.js");
   const { pastaChoice, pastaLabel } = await import("./pasta.js");
-  const { currentVersion, readChannel } = await import("./release.js");
+  const { currentVersion } = await import("./release.js");
   const { fixFor, hostInfo } = await import("./fixes.js");
   type CheckId = Parameters<typeof fixFor>[0];
   const host = hostInfo();
@@ -1537,7 +1537,6 @@ async function cmdDoctor(args: string[]): Promise<number> {
   notes.push(`thinking: ${def.thinking}`);
 
   const lines: string[] = [];
-  const channel = readChannel();
   const fixLines = (check: (typeof checks)[number], tty: boolean): void => {
     if (check.ok || check.id === undefined) return;
     const fix = fixFor(check.id, host, check.detail);
@@ -1548,7 +1547,6 @@ async function cmdDoctor(args: string[]): Promise<number> {
   };
   if (colorEnabled(process.stdout)) {
     lines.push(bold(version));
-    lines.push(dim(`update channel   ${channel}`, true));
     for (const check of checks) {
       lines.push(`${check.ok ? green(symbols.done, true) : red(symbols.failed, true)} ${check.label}  ${check.detail}`);
       fixLines(check, true);
@@ -1556,7 +1554,6 @@ async function cmdDoctor(args: string[]): Promise<number> {
     for (const note of notes) lines.push(dim(note, true));
   } else {
     lines.push(version);
-    lines.push(`update channel   ${channel}`);
     for (const check of checks) {
       lines.push(`${check.label}: ${check.detail}`);
       fixLines(check, false);
@@ -1701,15 +1698,8 @@ async function cmdUpdate(args: string[]): Promise<number> {
     options: {
       check: { type: "boolean" },
       rollback: { type: "boolean" },
-      channel: { type: "string" },
     },
   });
-  // `dev` and `beta` are the old channel names; they now mean `nightly`.
-  const wanted =
-    values.channel === "dev" || values.channel === "beta" ? "nightly" : values.channel;
-  if (wanted !== undefined && wanted !== "stable" && wanted !== "nightly") {
-    throw new Error("--channel must be stable or nightly");
-  }
   const {
     activate,
     bundleRoot,
@@ -1719,14 +1709,8 @@ async function cmdUpdate(args: string[]): Promise<number> {
     installRelease,
     isPrerelease,
     prune,
-    readChannel,
     rollback,
-    writeChannel,
   } = await import("./release.js");
-  if (wanted !== undefined) {
-    writeChannel(wanted);
-    process.stdout.write(`hive: update channel is now ${wanted}\n`);
-  }
   if (!bundleRoot()) {
     throw new Error(
       "hive update works for installed releases; this copy runs from source (git pull && npm run build)",
@@ -1740,12 +1724,10 @@ async function cmdUpdate(args: string[]): Promise<number> {
     return 0;
   }
 
-  const channel = readChannel();
-  const suffix = channel === "nightly" ? " (nightly channel)" : "";
-  const rel = await fetchRelease(undefined, undefined, channel);
+  const rel = await fetchRelease();
 
-  // Switching to stable must not downgrade an install that is already on a newer prerelease.
-  if (channel === "stable" && isPrerelease(cur) && compareVersions(cur, rel.version) > 0) {
+  // An install left on an old prerelease must not be downgraded by the move to stable.
+  if (isPrerelease(cur) && compareVersions(cur, rel.version) > 0) {
     process.stdout.write(
       `hive ${cur} is newer than the latest stable release (${rel.version}); you'll get the next stable release\n`,
     );
@@ -1754,15 +1736,15 @@ async function cmdUpdate(args: string[]): Promise<number> {
 
   if (values.check) {
     if (compareVersions(rel.version, cur) > 0) {
-      process.stdout.write(`hive ${rel.version} is available (you have ${cur})${suffix}\n`);
+      process.stdout.write(`hive ${rel.version} is available (you have ${cur})\n`);
     } else {
-      process.stdout.write(`hive ${cur} is up to date${suffix}\n`);
+      process.stdout.write(`hive ${cur} is up to date\n`);
     }
     return 0;
   }
 
   if (compareVersions(rel.version, cur) <= 0) {
-    process.stdout.write(`hive ${cur} is up to date${suffix}\n`);
+    process.stdout.write(`hive ${cur} is up to date\n`);
     return 0;
   }
   // The VM filesystem is ~700 MB: say so and show it moving, or an update looks frozen.

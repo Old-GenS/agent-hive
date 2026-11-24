@@ -1,0 +1,82 @@
+name: Security rebuild
+
+# Rebuilds the VM image from scratch every day and boots the result in a real VM.
+#
+# The image does not pin Fedora, Chromium, git or the other packages a task uses, so a fresh build
+# is how their security updates arrive: `build-release.sh` runs `build:image:fresh`
+# (podman build --pull=always --no-cache) and exports a new rootfs. Booting that rootfs with
+# scripts/vm-smoke.mjs proves the update did not break the sandbox — HTTPS through the egress
+# proxy, LAN and metadata addresses refused, a headless Chromium page, and a run with a fake
+# OpenRouter key getting a 401 and no network error.
+#
+# This publishes nothing and signs nothing. It needs no key, no environment and no version
+# number: a failure is a red run, which GitHub mails to the repository owner. A stable release
+# ships the image this job last proved good, built fresh by release.yml.
+on:
+  schedule:
+    # 23:00 America/Vancouver (BC is UTC-7 year-round, so 06:00 UTC).
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-rebuild
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - id: node
+        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+      - run: npm ci
+      - name: Enable KVM and install pasta
+        run: bash scripts/ci-enable-kvm.sh
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/native
+          key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
+
+      # A fresh image and a fresh rootfs: no podman cache, base image pulled again. --skip-sign
+      # because nothing here is published.
+      - name: Build the image, the rootfs and the bundle
+        env:
+          HIVE_RELEASE_SKIP_SOURCES: "1"
+        run: npm run release -- --skip-sign
+
+      # The bundle booted here is the one those packages produced, so a broken update fails this
+      # run instead of surfacing in someone's task.
+      - name: Boot it in a real VM
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          mkdir -p "$RUNNER_TEMP/bundle"
+          tar -xzf "release/$version/hive-$version-linux-x86_64.tar.gz" -C "$RUNNER_TEMP/bundle"
+          rootfs_archive=$(ls "release/$version"/hive-rootfs-*-linux-x86_64.tar.gz)
+          rver=$(basename "$rootfs_archive" | sed -E 's/^hive-rootfs-([0-9a-f]{12})-linux-x86_64\.tar\.gz$/\1/')
+          dest="$RUNNER_TEMP/rootfs/$rver"
+          mkdir -p "$dest"
+          tar -xzf "$rootfs_archive" -C "$dest" --no-same-owner
+          touch "$dest/.complete"
+          HIVE_BUNDLE_ROOT="$RUNNER_TEMP/bundle/hive-$version" HIVE_ROOTFS="$dest" node scripts/vm-smoke.mjs
+
+      - name: Say what to do when it goes red
+        if: failure()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          The daily rebuild failed. Two likely causes, both worth checking in this order:
+
+          1. A Fedora/Chromium/package update broke the sandbox (the smoke test above).
+             Fix `image/Containerfile` or `image/hive-*`, then run this workflow again.
+          2. An upstream pin moved and a rebuild from scratch stopped working.
+             `node scripts/check-updates.mjs --list` shows the pins; `bump.yml` opens the PRs.
+          EOF

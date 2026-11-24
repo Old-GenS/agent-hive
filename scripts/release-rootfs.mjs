@@ -5,10 +5,10 @@
  *
  * A rootfs asset answers two questions: which `image/` tree it was built from (`rootfs-info.json`'s
  * `imageTree`) and which rootfs id it is (`rootfs-info.json`'s `rootfs`, which must match the
- * `hive-rootfs-<id>-linux-x86_64.tar.gz` file name). The nightly plan compares the image tree
- * before it reuses a rootfs; `scripts/build-release.sh` runs the same check for a hand-built
- * release, and the build runs it before it packs the rootfs, so a release cannot be paired with
- * a rootfs from another image tree (an old pi, old Fedora packages, or a different `image/`).
+ * `hive-rootfs-<id>-linux-x86_64.tar.gz` file name). `scripts/build-release.sh` runs the check, so
+ * a release cannot be paired with a rootfs from another image tree (an old pi, old Fedora packages,
+ * or a different `image/`). It also holds the release numbering: the next stable version, computed
+ * from the release list.
  *
  * CLI, used by build-release.sh: prints the rootfs id, or exits 1 with the reason:
  *
@@ -54,27 +54,11 @@ export function validateRootfs({ name, info, imageTree }) {
   if (info.imageTree !== imageTree) {
     throw new Error(
       `the rootfs was built from image/ tree ${info.imageTree}, but this release's tree is ` +
-        `${imageTree}; wait for a nightly built from the current tree and promote that, or build a ` +
-        `fresh rootfs (the release build does that on its own when no rootfs is handed to it)`,
+        `${imageTree}; build the rootfs from this tree, which npm run release does when no ` +
+        `rootfs is handed to it`,
     );
   }
   return rver;
-}
-
-/** The stable version a nightly tag promotes to: v0.5.6-nightly.3 → 0.5.6. */
-export function stableVersionFromTag(tag) {
-  const m = /^v?(\d+\.\d+\.\d+)-(?:nightly|dev|beta)\.\d+$/.exec(tag);
-  if (!m) {
-    throw new Error(
-      `"${tag}" is not a nightly tag (expected v<major>.<minor>.<patch>-nightly.<n>)`,
-    );
-  }
-  return m[1];
-}
-
-/** True when `tag` is a nightly prerelease tag (the old dev and beta spellings are aliases). */
-export function isPrereleaseTag(tag) {
-  return /^v?\d+\.\d+\.\d+-(?:nightly|dev|beta)\.\d+$/.test(tag);
 }
 
 /** A release tag's version and whether it is a prerelease, or undefined for anything else. */
@@ -120,30 +104,6 @@ export function newestRelease(tags) {
     }
   }
   return best;
-}
-
-/**
- * The version the next nightly gets: one patch past the newest stable release, or the version the
- * nightlies already preview when the newest release is itself a nightly. Nothing here reads
- * package.json (`fallbackVersion` is only for a repository that has never published a release), so
- * a forgotten version bump cannot make a nightly collide with a released version.
- */
-export function nextNightlyVersion(tags, run, fallbackVersion) {
-  if (!Number.isInteger(run) || run <= 0) throw new Error(`bad nightly run number "${run}"`);
-  const newest = newestRelease(tags);
-  let base;
-  if (newest === undefined) {
-    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(fallbackVersion ?? "");
-    if (m === null) {
-      throw new Error("no release tag and no package.json version to number a nightly after");
-    }
-    base = [Number(m[1]), Number(m[2]), Number(m[3]) + 1];
-  } else if (newest.prerelease) {
-    base = newest.version;
-  } else {
-    base = [newest.version[0], newest.version[1], newest.version[2] + 1];
-  }
-  return `${base[0]}.${base[1]}.${base[2]}-nightly.${run}`;
 }
 
 /**

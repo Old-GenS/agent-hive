@@ -38,12 +38,7 @@ import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
-import {
-  PRERELEASE_IDENTITY,
-  PRERELEASE_PUBLIC_KEY,
-  RELEASE_IDENTITY,
-  RELEASE_PUBLIC_KEY,
-} from "./release-key.js";
+import { RELEASE_IDENTITY, RELEASE_PUBLIC_KEY } from "./release-key.js";
 import { SIGNATURE_ASSET, verifySigstoreBundle, type SigningIdentity } from "./verify-sigstore.js";
 
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -180,38 +175,18 @@ export function isPrerelease(version: string): boolean {
   return /^v?\d+(?:\.\d+)*-(?:nightly|dev|beta)\.\d+$/.test(version);
 }
 
-export type Channel = "stable" | "nightly";
-
-/** Where the update channel is remembered: a file in the data dir. */
-export function channelFile(): string {
-  return join(dataDir(), "channel");
+/**
+ * The release keys this build trusts: the ed25519 key older releases were signed with. Empty
+ * strings are dropped. New releases are keyless (see `trustedIdentities`), so this is only for
+ * verifying an older `SHA256SUMS.sig`.
+ */
+export function trustedKeys(): string[] {
+  return [RELEASE_PUBLIC_KEY].filter((key) => key !== "");
 }
 
-/** The channel this install follows; the old `dev` and `beta` file values are aliases for nightly. */
-export function readChannel(): Channel {
-  try {
-    const saved = readFileSync(channelFile(), "utf8").trim();
-    return saved === "nightly" || saved === "dev" || saved === "beta" ? "nightly" : "stable";
-  } catch {
-    return "stable";
-  }
-}
-
-export function writeChannel(channel: Channel): void {
-  mkdirSync(dataDir(), { recursive: true });
-  writeFileSync(channelFile(), channel + "\n");
-}
-
-/** The release keys this channel trusts. Empty strings are dropped. */
-export function trustedKeys(channel: Channel): string[] {
-  return (channel === "nightly" ? [RELEASE_PUBLIC_KEY, PRERELEASE_PUBLIC_KEY] : [RELEASE_PUBLIC_KEY]).filter(
-    (key) => key !== "",
-  );
-}
-
-/** The keyless identities this channel trusts: stable releases, plus nightlies on that channel. */
-export function trustedIdentities(channel: Channel): SigningIdentity[] {
-  return channel === "nightly" ? [RELEASE_IDENTITY, PRERELEASE_IDENTITY] : [RELEASE_IDENTITY];
+/** The keyless identities this build trusts: the release workflow on `main`. */
+export function trustedIdentities(): SigningIdentity[] {
+  return [RELEASE_IDENTITY];
 }
 
 /** The directory that holds the running bundle, when this copy was installed from a release. */
@@ -341,44 +316,15 @@ async function fetchReleaseJson(url: string, timeoutMs: number): Promise<unknown
 }
 
 /**
- * Look up the latest release, or a specific tag, on GitHub (or HIVE_RELEASE_API). Without a tag,
- * the stable channel uses `/releases/latest`; the nightly channel lists the recent releases and picks
- * the highest version, prereleases included.
+ * Look up the latest release, or a specific tag, on GitHub (or HIVE_RELEASE_API). Without a tag
+ * this is `/releases/latest`, which GitHub only points at a released, non-prerelease version.
  */
-export async function fetchRelease(tag?: string, timeoutMs = 30_000, channel: Channel = "stable"): Promise<Release> {
-  if (tag !== undefined) {
-    const json = (await fetchReleaseJson(
-      `${releaseApi()}/repos/${releaseRepo()}/releases/tags/${tag}`,
-      timeoutMs,
-    )) as RawRelease;
-    return toRelease(json);
-  }
-  if (channel === "stable") {
-    const json = (await fetchReleaseJson(
-      `${releaseApi()}/repos/${releaseRepo()}/releases/latest`,
-      timeoutMs,
-    )) as RawRelease;
-    return toRelease(json);
-  }
-
-  const json = await fetchReleaseJson(
-    `${releaseApi()}/repos/${releaseRepo()}/releases?per_page=30`,
-    timeoutMs,
-  );
-  if (!Array.isArray(json)) throw new Error("no releases found");
-  let best: Release | undefined;
-  for (const item of json as RawRelease[]) {
-    if (item === null || typeof item !== "object" || item.draft) continue;
-    const release = toRelease(item);
-    try {
-      compareVersions(release.version, release.version);
-    } catch {
-      continue;
-    }
-    if (best === undefined || compareVersions(release.version, best.version) > 0) best = release;
-  }
-  if (best === undefined) throw new Error("no releases found");
-  return best;
+export async function fetchRelease(tag?: string, timeoutMs = 30_000): Promise<Release> {
+  const url =
+    tag !== undefined
+      ? `${releaseApi()}/repos/${releaseRepo()}/releases/tags/${tag}`
+      : `${releaseApi()}/repos/${releaseRepo()}/releases/latest`;
+  return toRelease((await fetchReleaseJson(url, timeoutMs)) as RawRelease);
 }
 
 /** How far a download has got: bytes received and the total when the server sent one. */
@@ -490,8 +436,8 @@ export async function installRelease(
     onProgress?: OnProgress;
   } = {},
 ): Promise<string> {
-  const keys = (o.publicKeys ?? trustedKeys(readChannel())).filter((key) => key !== "");
-  const identities = o.identities ?? trustedIdentities(readChannel());
+  const keys = (o.publicKeys ?? trustedKeys()).filter((key) => key !== "");
+  const identities = o.identities ?? trustedIdentities();
   if (keys.length === 0 && identities.length === 0) {
     throw new Error("this build trusts no release signer, so updates can't be verified");
   }
@@ -582,11 +528,8 @@ export async function setupRootfs(
     return rootfsBootPath(rver, platform);
   }
 
-  // A prerelease build trusts the prerelease key too, whether or not the channel file says so.
-  const channel: Channel =
-    isPrerelease(currentVersion() ?? "0.0.0") || readChannel() === "nightly" ? "nightly" : "stable";
-  const keys = (o.publicKeys ?? trustedKeys(channel)).filter((key) => key !== "");
-  const identities = o.identities ?? trustedIdentities(channel);
+  const keys = (o.publicKeys ?? trustedKeys()).filter((key) => key !== "");
+  const identities = o.identities ?? trustedIdentities();
   if (keys.length === 0 && identities.length === 0) {
     throw new Error("this build trusts no release signer, so updates can't be verified");
   }
@@ -756,7 +699,7 @@ export async function updateNotice(): Promise<string | undefined> {
       latest = undefined;
     }
     if (latest === undefined) {
-      const rel = await fetchRelease(undefined, 3000, readChannel());
+      const rel = await fetchRelease(undefined, 3000);
       latest = rel.version;
       mkdirSync(dirname(cacheFile()), { recursive: true });
       writeFileSync(cacheFile(), JSON.stringify({ checkedAt: Date.now(), latest }));
