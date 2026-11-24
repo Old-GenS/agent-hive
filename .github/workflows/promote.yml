@@ -30,10 +30,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: stable-release
-    # write-all rather than just contents: the release create is refused with "not accessible by
-    # integration" while the token can already create and delete tags, so a scope beyond contents
-    # is apparently involved. Narrow this once it publishes.
-    permissions: write-all
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
