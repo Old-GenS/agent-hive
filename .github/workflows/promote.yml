@@ -18,8 +18,12 @@ on:
         required: false
         default: ""
 
+# Written at the workflow level, like test.yml, because that is the shape that publishes: a
+# workflow-level `contents: read` with a job-level `contents: write` was refused with
+# "Resource not accessible by integration" even though the job's token reported Contents: write.
 permissions:
-  contents: read
+  contents: write
+  id-token: write
 
 concurrency:
   group: stable-release
