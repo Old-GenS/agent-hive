@@ -1,8 +1,8 @@
 name: Test build
 
 # The test channel: what main looks like right now, with freshly pulled distro packages, built and
-# booted in a real VM. It publishes one rolling prerelease tagged `test` — each run replaces it, so
-# nothing piles up and there is only ever one build to promote.
+# booted in a real VM. Each run publishes a prerelease tagged `test-<run>-<version>`; the newest
+# five are kept, so nothing accumulates but a build you tested days ago can still be promoted.
 #
 # Promotion is the only thing that reaches users: `.github/workflows/promote.yml` copies these exact
 # files into a stable release without rebuilding anything, so what was tested here is what ships,
@@ -15,6 +15,23 @@ name: Test build
 on:
   push:
     branches: [main]
+    # Only changes that can alter the artifact are worth a build. A merge that touched docs, the
+    # workflows themselves or the repository plumbing used to produce a fresh ~500 MB filesystem, a
+    # VM boot and a new prerelease — ten-plus minutes and gigabytes, for nothing.
+    paths:
+      - "image/**"
+      - "src/**"
+      - "scripts/**"
+      - "vm/**"
+      - "ui/**"
+      - "test/**"
+      - "package.json"
+      - "package-lock.json"
+      - "versions.json"
+      - "tsconfig.json"
+      - "install.sh"
+      - "install-cli.sh"
+      - "install.ps1"
   schedule:
     # Weekly, not daily: Debian stable moves slowly (point releases every couple of months plus
     # security updates), so a daily rebuild mostly rebuilt the same thing. Chromium is the one

@@ -41,6 +41,18 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 - **Never rewrite `main`'s history:** no force-push, no rebase or reset of commits that are already
   on GitHub.
 
+## Before anything else
+
+- `git fetch --prune && git switch main && git pull --ff-only` at the start of a session, and
+  again before creating a branch. Branching from a stale `main` silently reverted a change once:
+  the older copy of `test.yml` overwrote the newer one when it merged.
+- Never commit on `main`. Branch first, from current `main`, and delete the branch once its pull
+  request merges.
+- When reporting what a file or the repo contains, read it from `origin/main`
+  (`git show origin/main:<path>`), not from the working tree, and not from a branch. Quote the
+  command and its output rather than summarising — "it's there" has already been wrong once
+  because the wrong section of the file was checked.
+
 ## How to work with the maintainer
 
 - **Do not commit, push, or open a pull request unless asked.** Make the change locally, show the
