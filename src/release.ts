@@ -486,6 +486,8 @@ export async function installRelease(
     identities?: SigningIdentity[];
     verify?: SignatureVerifier;
     platform?: NodeJS.Platform;
+    /** Progress of the VM filesystem download, when it has one to do. */
+    onProgress?: OnProgress;
   } = {},
 ): Promise<string> {
   const keys = (o.publicKeys ?? trustedKeys(readChannel())).filter((key) => key !== "");
@@ -549,7 +551,7 @@ export async function installRelease(
 
     const rver = readFileSync(join(dest, "ROOTFS_VERSION"), "utf8").trim();
     if (rver !== "none") {
-      await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, undefined, platform);
+      await ensureRootfs(rel, rver, parseSums(sums.toString("utf8")), tmp, o.onProgress, platform);
     }
     return dest;
   } finally {

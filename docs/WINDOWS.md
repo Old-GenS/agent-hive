@@ -78,6 +78,10 @@ Inside WSL, the same commands work directly (which is where you'll want to be fo
 wsl -d agent-hive --cd ~
 ```
 
+`wsl -d agent-hive -- <command>` runs the command without your shell, so `~/.local/bin` is never
+added to `PATH` and `hive` is "command not found" that way. Enter the distro as above, or use
+`wsl -d agent-hive -- bash -lc "hive --version"`.
+
 Keep **projects in the Linux home folder**, for example `\\wsl$\agent-hive\home\<user>\code`, not
 under `C:\`: files under `/mnt/c` are much slower and make builds crawl.
 
@@ -112,6 +116,17 @@ Updating works the same as on Linux:
 ```powershell
 hive update
 ```
+
+For the beta (nightly prereleases), switch the channel once:
+
+```powershell
+hive update --channel nightly
+```
+
+The channel is remembered, so plain `hive update` keeps following it, and `--channel stable` goes
+back. The installer always installs the newest stable first, so this is how a fresh machine reaches
+the beta; that first switch also downloads the beta's VM filesystem (about 690 MB, once). Updates
+are never automatic: hive only says a newer version exists.
 
 To remove hive from inside WSL but keep the distro, run `hive uninstall` (it asks first, and keeps
 runs and saved keys unless you pass `--all`; `--dry-run` only shows what would go).

@@ -1573,10 +1573,11 @@ function megabytes(bytes: number): string {
 }
 
 /**
- * Progress for `hive setup`'s one-time VM filesystem download, on stderr: one redrawn line on a
- * terminal, a line every 10% otherwise. `done` finishes the line.
+ * Progress for a release download (`hive setup` and `hive update`), on stderr: one redrawn line on
+ * a terminal, a line every 10% otherwise. `label` says what is being downloaded; `done` finishes
+ * the line.
  */
-function setupDownloadProgress(): {
+function downloadProgress(label: string): {
   onProgress: (p: { received: number; total: number | undefined }) => void;
   done: () => void;
 } {
@@ -1589,8 +1590,8 @@ function setupDownloadProgress(): {
   const onProgress = (p: { received: number; total: number | undefined }): void => {
     if (!started) {
       started = true;
-      const size = p.total === undefined ? "about 660 MB" : `${megabytes(p.total)} MB`;
-      process.stderr.write(`hive: downloading the VM filesystem (${size}, one time)…\n`);
+      const size = p.total === undefined ? "" : ` — ${megabytes(p.total)} MB`;
+      process.stderr.write(`hive: downloading ${label}${size}…\n`);
     }
     const total = p.total;
     const pct =
@@ -1675,7 +1676,7 @@ async function cmdSetup(args: string[]): Promise<number> {
   parseArgs({ args, allowPositionals: true });
   const { bundleRoot, setupRootfs } = await import("./release.js");
   if (bundleRoot()) {
-    const progress = setupDownloadProgress();
+    const progress = downloadProgress("the VM filesystem (one time)");
     const path = await setupRootfs({ onProgress: progress.onProgress });
     progress.done();
     process.stdout.write(`hive: VM filesystem ready: ${path}\n`);
@@ -1764,7 +1765,14 @@ async function cmdUpdate(args: string[]): Promise<number> {
     process.stdout.write(`hive ${cur} is up to date${suffix}\n`);
     return 0;
   }
-  await installRelease(rel);
+  // The VM filesystem is ~700 MB: say so and show it moving, or an update looks frozen.
+  process.stdout.write(`hive: updating ${cur} → ${rel.version}\n`);
+  const progress = downloadProgress(`the VM filesystem for ${rel.version}`);
+  try {
+    await installRelease(rel, { onProgress: progress.onProgress });
+  } finally {
+    progress.done();
+  }
   activate(rel.version);
   prune();
   process.stdout.write(`hive: updated ${cur} → ${rel.version}\n`);
