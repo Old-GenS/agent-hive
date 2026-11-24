@@ -30,9 +30,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: stable-release
-    permissions:
-      contents: write
-      id-token: write
+    # write-all rather than just contents: the release create is refused with "not accessible by
+    # integration" while the token can already create and delete tags, so a scope beyond contents
+    # is apparently involved. Narrow this once it publishes.
+    permissions: write-all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,26 +111,6 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/test"
           sha256sum -c SHA256SUMS
-
-      # Temporary: does this job's token have write access at all? A release create was refused
-      # while the job reported Contents: write, so this separates "cannot write anything" from
-      # "cannot create a release". Creates a throwaway tag and deletes it.
-      - name: Probe write access
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -uo pipefail
-          echo "repo workflow-permission setting:"
-          gh api "repos/${{ github.repository }}/actions/permissions/workflow" || echo "  (cannot read)"
-          ref="refs/tags/probe-${{ github.run_id }}"
-          if out=$(gh api -X POST "repos/${{ github.repository }}/git/refs" \
-            -f ref="$ref" -f sha="$(git rev-parse HEAD)" 2>&1); then
-            echo "PROBE: write works (tag created)"
-            gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/probe-${{ github.run_id }}" >/dev/null \
-              && echo "PROBE: cleanup ok" || echo "PROBE: cleanup FAILED"
-          else
-            echo "PROBE: write refused -> $out"
-          fi
 
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
