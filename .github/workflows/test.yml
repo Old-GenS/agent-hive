@@ -92,26 +92,46 @@ jobs:
           touch "$dest/.complete"
           HIVE_BUNDLE_ROOT="$RUNNER_TEMP/bundle/hive-$VERSION" HIVE_ROOTFS="$dest" node scripts/vm-smoke.mjs
 
-      # One rolling prerelease, replaced every run: nothing accumulates, and "the test build" is
-      # never ambiguous.
-      - name: Publish the rolling test build
+      # Each build keeps its own tag, and only the newest five survive: enough to promote a build
+      # you tested a few days ago, without the pile-up the old nightlies caused.
+      - name: Publish the test build
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          TAG: test-${{ steps.release.outputs.version }}-${{ github.run_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sha="${{ steps.release.outputs.sha }}"
-          gh release delete test --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           Test build of v$VERSION, from $sha.
           Booted in a real VM before publishing. Not signed: promote it to release it.
 
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
-          gh release create test \
+          gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --target "$sha" \
             --prerelease \
-            --title "Test build of v$VERSION" \
+            --title "Test build of v$VERSION (#${{ github.run_number }})" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             release/"$VERSION"/*
+
+          # Newest first, then drop everything past the fifth: the pruning the nightly had, kept
+          # here so the test channel cannot grow without bound.
+          mapfile -t tags < <(gh release list --repo "${{ github.repository }}" --limit 200 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("test-"))] | sort_by(.createdAt) | reverse | .[].tagName')
+          # A build can be kept on purpose. GitHub has no 'pin this release', so the marker is the
+          # pin: a title starting with KEEP (one click in the UI), or an asset named KEEP (a
+          # command), or an unreleased draft.
+          for old in "${tags[@]:5}"; do
+            keep=$(gh release view "$old" --repo "${{ github.repository }}" \
+              --json isDraft,name,assets \
+              --jq '(.isDraft) or (.name | startswith("KEEP")) or ([.assets[].name] | index("KEEP") != null)')
+            if [ "$keep" = "true" ]; then
+              echo "keeping $old (title starts with KEEP, KEEP asset, or draft)"
+              continue
+            fi
+            echo "pruning $old"
+            gh release delete "$old" --repo "${{ github.repository }}" --yes --cleanup-tag
+          done

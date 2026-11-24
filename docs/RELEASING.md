@@ -12,10 +12,20 @@ names that workflow, in this repository, at `main`. There is no signing key on t
 ## Two channels: test, then promote
 
 `test.yml` runs on **every push to `main`** and **daily**. It builds the VM image from freshly
-pulled distro packages, builds the bundle, boots both in a real VM (`scripts/vm-smoke.mjs`), and
-replaces a rolling prerelease tagged `test`. That is the test channel: always the newest packages,
-always booted before it is published, and never what users get. One build exists at a time, so
-nothing accumulates.
+pulled distro packages, builds the bundle, boots both in a real VM (`scripts/vm-smoke.mjs`), and publishes a prerelease
+tagged `test-<version>-<run number>`. That is the test channel: always the newest packages, always
+booted before it is published, and never what users get. The newest **five** builds are kept and
+older ones are deleted, so a build you tested a few days ago can still be promoted, while the
+channel cannot grow without bound.
+
+To keep a specific test build past that window, mark it — either way works:
+
+- **In the UI:** *Edit release* and start the title with `KEEP`.
+- **From a shell:** `gh release upload <tag> KEEP` (an asset named `KEEP`).
+
+The pruning step deletes nothing whose title starts with `KEEP`, that carries a `KEEP` asset, or
+that is still a draft. (A published release cannot be turned back into a draft, so that last one
+only applies to releases created as drafts.)
 
 `promote.yml` is the only thing that reaches users. It **builds nothing**: it downloads the files
 from the `test` release, checks them against the tested `SHA256SUMS`, signs that file keyless with
@@ -24,7 +34,8 @@ what the test run booted — the microVM filesystem included, because the rootfs
 file, named by its content.
 
 1. Wait for the **Test build** run on `main` to pass (or run it yourself).
-2. Actions → **Promote to stable** → *Run workflow*. The form has no fields.
+2. Actions → **Promote to stable** → *Run workflow*. Leave the build field empty to promote the
+   newest test build, or name an older tag (`test-0.5.9-42`) to promote the one you tested.
 3. Approve the `stable-release` environment as the reviewer account — the one that never runs
    coding agents.
 4. It reads the version from the tested bundle, refuses if that version is already released,
