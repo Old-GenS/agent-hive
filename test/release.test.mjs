@@ -191,14 +191,15 @@ test("compareVersions orders prereleases below their release", () => {
 });
 
 
-test("this build trusts the release workflow and the old ed25519 key", () => {
+test("this build trusts the promote workflow and the old ed25519 key", () => {
   const keys = release.trustedKeys();
   assert.equal(keys.length, 1);
   assert.match(keys[0], /^-----BEGIN PUBLIC KEY-----/);
   const identities = release.trustedIdentities();
   assert.equal(identities.length, 1);
   assert.equal(identities[0].issuer, "https://token.actions.githubusercontent.com");
-  assert.match(identities[0].identity, /\.github\/workflows\/release\.yml@refs\/heads\/main$/);
+  // Signing happens at promotion, so the certificate names promote.yml, not the build workflow.
+  assert.match(identities[0].identity, /\.github\/workflows\/promote\.yml@refs\/heads\/main$/);
 });
 
 test("verifySums accepts only the right key and body", () => {

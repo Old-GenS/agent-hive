@@ -5,35 +5,38 @@ bundled Node.js, the hardened VM launcher, libkrun, libkrunfw and a static pasta
 the VM rootfs as a separate download. On Apple silicon, `scripts/build-release-macos.sh` builds
 the arm64 bundle and its `.img.gz` image the same way (no pasta: the VM has no IP network). Each
 release also uploads the GPL corresponding source of the kernel libkrunfw contains and, on Linux,
-of the passt sources the static pasta is built from. `SHA256SUMS` covers all of it. Stable releases are signed **keyless** in CI: `release.yml` signs
+of the passt sources the static pasta is built from. `SHA256SUMS` covers all of it. Stable releases are signed **keyless** in CI: `promote.yml` signs
 with the run's GitHub OIDC token, and `hive update` accepts the result only when the certificate
 names that workflow, in this repository, at `main`. There is no signing key on this machine.
 
-## How a stable release is signed
+## Two channels: test, then promote
 
-Nothing to set up beyond the environment below, and nothing to fill in.
+`test.yml` runs on **every push to `main`** and **daily**. It builds the VM image from freshly
+pulled distro packages, builds the bundle, boots both in a real VM (`scripts/vm-smoke.mjs`), and
+replaces a rolling prerelease tagged `test`. That is the test channel: always the newest packages,
+always booted before it is published, and never what users get. One build exists at a time, so
+nothing accumulates.
 
-1. Actions → **Stable release** → *Run workflow*. The form has no fields.
-2. The job waits for approval on the `stable-release` environment. Approve as the reviewer
-   account — the one that never runs coding agents.
-3. It works out the version (the patch after the newest release: `0.5.8` → `0.5.9`), builds the
-   bundle and a fresh VM rootfs, boots them in a real VM (`scripts/vm-smoke.mjs`), signs
-   `SHA256SUMS` keyless with the run's OIDC token, and publishes the release.
+`promote.yml` is the only thing that reaches users. It **builds nothing**: it downloads the files
+from the `test` release, checks them against the tested `SHA256SUMS`, signs that file keyless with
+this run's OIDC token, and publishes it as `v<version>`. So what a user installs is byte-for-byte
+what the test run booted — the microVM filesystem included, because the rootfs tarball is the same
+file, named by its content.
 
-Nothing is bumped and nothing is copied between workflows. `package.json` is read only for the
-first release of a repository that has none.
+1. Wait for the **Test build** run on `main` to pass (or run it yourself).
+2. Actions → **Promote to stable** → *Run workflow*. The form has no fields.
+3. Approve the `stable-release` environment as the reviewer account — the one that never runs
+   coding agents.
+4. It reads the version from the tested bundle, refuses if that version is already released,
+   verifies every file, signs `SHA256SUMS`, and publishes.
 
-**How the numbers work.** A release is the next patch after the newest release, so
-`v0.5.8` → `v0.5.9`. There is nothing to bump and no prerelease line to track.
+**How the numbers work.** `test.yml` works out the next patch (the newest release is `v0.5.8`, so
+the build is `0.5.9`) and bakes it into the bundle. Promotion reuses that number rather than
+working it out again: a promoted build must keep the version it was built and tested with, or the
+bundle inside the tarball would disagree with its release tag.
 
 The job refuses to sign when `stable-release` has no required reviewer, so an environment that was
 never configured cannot publish (GitHub would otherwise create it unprotected on first use).
-
-**The environment** needs: a required reviewer that is not an account agents can use, *Prevent
-self-review* on, *Allow administrators to bypass* off, and deployment branches limited to `main`
-(set that policy on the environment: it is not there by default).
-
-Press Run, approve the environment, done.
 
 The release build needs podman (it builds the VM image and packs the rootfs inside
 `podman unshare`, since the image has files only root may read).
@@ -110,7 +113,7 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    ```
 
    The build refuses a rootfs from another image tree; that check is `scripts/release-rootfs.mjs`.
-   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (`release.yml` uses it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
+   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (`test.yml` uses it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
 
    **macOS (Apple silicon)** needs the arm64 image, which is built on arm64 Linux (the
    `macos-image` workflow, or `npm run build:rootfs-image` on a `podman machine`), plus the
@@ -168,9 +171,9 @@ Set once, in the `Old-GenS` organization and its `agent-hive` repository:
 
 ### What signs what
 
-Releases are signed keyless by `.github/workflows/release.yml`, which runs on `main`. Installers
+Releases are signed keyless by `.github/workflows/promote.yml`, which runs on `main`. Installers
 accept them when the certificate names
-`https://github.com/Old-GenS/agent-hive/.github/workflows/release.yml@refs/heads/main` under the
+`https://github.com/Old-GenS/agent-hive/.github/workflows/promote.yml@refs/heads/main` under the
 GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`). There is no signing key:
 the ed25519 key releases used before this is kept only so an install can still verify an older
 `SHA256SUMS.sig`.
@@ -178,7 +181,7 @@ the ed25519 key releases used before this is kept only so an install can still v
 **Changing who may release:** edit `src/release-key.ts` and the `stable-release` environment. The
 environment is the gate that requires a reviewer. The workflows themselves are not: the `main`
 ruleset asks for no approving review and does not require a code owner, and there is no
-`CODEOWNERS` file. A token that can push to `main` can change `release.yml`.
+`CODEOWNERS` file. A token that can push to `main` can change `promote.yml`.
 
 ### Branches and pull requests
 
@@ -241,7 +244,7 @@ version number, no rootfs reuse rule and no key: the whole workflow is the build
 `ubuntu-24.04-arm`, then builds the bundle on `macos-15` and uploads it as a workflow artifact.
 It signs with a throwaway key and does not publish: GitHub's macOS runners cannot nest
 Hypervisor.framework, and the stable key must not be in CI. Use it to check that the macOS build
-still works, and build the distributable release on a Mac. `release.yml` only builds Linux assets;
+still works, and build the distributable release on a Mac. `test.yml` only builds Linux assets;
 a macOS release is a separate, manual build.
 
 
