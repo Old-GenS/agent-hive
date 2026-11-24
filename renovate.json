@@ -3,9 +3,10 @@
   "extends": ["config:recommended", ":dependencyDashboard"],
   "labels": ["dependencies"],
   "prConcurrentLimit": 3,
+  "enabledManagers": ["custom.regex"],
   "packageRules": [
     {
-      "description": "A new major of anything here changes what the sandbox boots; ask on the dashboard, do not open a PR.",
+      "description": "A major of anything here changes what the sandbox boots. List it on the dashboard, open no PR.",
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
     },
@@ -13,23 +14,30 @@
       "description": "libkrunfw 5.6.4 boots but breaks DNS in the VM (docs/RELEASING.md).",
       "matchPackageNames": ["containers/libkrunfw"],
       "allowedVersions": "<5.6.4"
+    },
+    {
+      "description": "These pins are several fields at once (version, URLs that embed it, a SHA-256). Renovate cannot update them together, and a half-updated pin must never be merged, so it lists them on the dashboard for `node scripts/check-updates.mjs --apply <component>`.",
+      "matchPackageNames": ["containers/libkrun", "containers/libkrunfw", "passt"],
+      "dependencyDashboardApproval": true
     }
   ],
   "customManagers": [
     {
-      "description": "libkrun is built from source; the tag is the pin and the build verifies its commit.",
+      "description": "libkrun is built from source at a tag; the build verifies the tag's commit.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["\"libkrun\":\\s*\\{[^}]*?\"tag\":\\s*\"(?<currentValue>v?[0-9.]+)\""],
+      "matchStrings": ["(?<prefix>\"tag\":\\s*\")(?<currentValue>v?[0-9.]+)(?<suffix>\")"],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
       "depNameTemplate": "containers/libkrun",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
     },
     {
-      "description": "libkrunfw: upstream's prebuilt kernel, one release asset per platform.",
+      "description": "libkrunfw: the prebuilt guest kernel, one release asset per platform.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["\"libkrunfw\":\\s*\\{\\s*\"version\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "matchStrings": ["(?<prefix>\"libkrunfw\":\\s*\\{\\s*\"version\":\\s*\")(?<currentValue>[^\"]+)(?<suffix>\")"],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
       "depNameTemplate": "containers/libkrunfw",
       "datasourceTemplate": "github-releases"
     },
@@ -37,7 +45,8 @@
       "description": "passt lives on passt.top, not GitHub; its tags are dated snapshots.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["\"passt\":\\s*\\{[^}]*?\"version\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "matchStrings": ["(?<prefix>\"passt\":\\s*\\{\\s*\"version\":\\s*\")(?<currentValue>[^\"]+)(?<suffix>\")"],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
       "depNameTemplate": "passt",
       "packageNameTemplate": "https://passt.top/passt",
       "datasourceTemplate": "git-tags"
@@ -46,24 +55,27 @@
       "description": "The Rust toolchain the native pieces are built with.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["\"rust\":\\s*\"(?<currentValue>[0-9.]+)\""],
+      "matchStrings": ["(?<prefix>\"rust\":\\s*\")(?<currentValue>[0-9.]+)(?<suffix>\")"],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
       "depNameTemplate": "rust-lang/rust",
       "datasourceTemplate": "github-tags"
     },
     {
-      "description": "The pinned manylinux container the native build runs in (digest-pinned).",
+      "description": "The digest-pinned manylinux container the native build runs in.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
       "matchStrings": [
-        "\"buildImage\":\\s*\"(?<depName>quay\\.io/pypa/manylinux_2_28_x86_64)@(?<currentDigest>sha256:[0-9a-f]+)\""
+        "(?<prefix>\"buildImage\":\\s*\"(?<depName>quay\\.io/pypa/manylinux_2_28_x86_64)@)(?<currentDigest>sha256:[0-9a-f]+)(?<suffix>\")"
       ],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newDigest}}}{{{suffix}}}",
       "datasourceTemplate": "docker"
     },
     {
       "description": "The Node.js the release bundle ships.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["\"node\":\\s*\"(?<currentValue>[0-9.]+)\""],
+      "matchStrings": ["(?<prefix>\"node\":\\s*\")(?<currentValue>[0-9.]+)(?<suffix>\")"],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
       "depNameTemplate": "node",
       "datasourceTemplate": "node-version"
     },
@@ -71,7 +83,8 @@
       "description": "pi, the agent inside the VM, pinned in the image.",
       "customType": "regex",
       "managerFilePatterns": ["/^image\\/Containerfile$/"],
-      "matchStrings": ["ARG PI_VERSION=(?<currentValue>[0-9.]+)"],
+      "matchStrings": ["(?<prefix>ARG PI_VERSION=)(?<currentValue>[0-9.]+)"],
+      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}",
       "depNameTemplate": "@earendil-works/pi-coding-agent",
       "datasourceTemplate": "npm"
     }
