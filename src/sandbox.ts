@@ -9,7 +9,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { config } from "./config.js";
 import { proxyEnv, sharedEgressProxy } from "./egress.js";
 import { GUEST_PROXY_PORT, startVsockBridge, VSOCK_PORT, type VsockBridge } from "./vsock.js";
@@ -542,6 +542,37 @@ export function systemInfo(): {
     if (!check.ok) check.fix = fixFor(check.id, host, check.detail);
   }
   return { isolation: runtimeInfo.isolation, runtime: runtimeInfo.runtime, warning: runtimeInfo.warning, checks };
+}
+
+/**
+ * What VM filesystem is installed: its content id (the directory name on Linux, the parent of
+ * `rootfs.img` on macOS) and the distro inside it, when it can be read. Paths and names only.
+ */
+export function vmFilesystemInfo(): { path?: string; id?: string; distro?: string; ok: boolean } {
+  let path: string;
+  try {
+    path = realpathSync(config.sandbox.rootfs);
+  } catch {
+    return { ok: false };
+  }
+  let ok = false;
+  let id: string | undefined;
+  let distro: string | undefined;
+  try {
+    const isImage = statSync(path).isFile();
+    ok = isImage ? path.endsWith(".img") : existsSync(join(path, "usr/local/bin/hive-vm-init"));
+    if (!ok) return { path, ok };
+    // The id is the directory holding the tree (Linux) or the image (macOS).
+    id = (isImage ? basename(dirname(path)) : basename(path)) || undefined;
+    if (!isImage) {
+      const osRelease = readFileSync(join(path, "etc/os-release"), "utf8");
+      const pretty = /^PRETTY_NAME="?([^"\n]+)"?$/m.exec(osRelease)?.[1];
+      distro = pretty;
+    }
+  } catch {
+    // An unreadable rootfs is still worth reporting as installed, just without the details.
+  }
+  return { path, ok, ...(id ? { id } : {}), ...(distro ? { distro } : {}) };
 }
 
 /** Startup self-check: the libkrun launcher and rootfs present. Returns problems found. */

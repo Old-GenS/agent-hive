@@ -8,7 +8,10 @@ import { config } from "../config.js";
 import { githubLogin } from "../git.js";
 import { githubScopes } from "../github-login.js";
 import { currentVersion } from "../release.js";
-import { systemInfo } from "../sandbox.js";
+import { systemInfo, vmFilesystemInfo } from "../sandbox.js";
+import { libkrunChoice, libkrunLabel } from "../libkrun.js";
+import { pastaChoice, pastaLabel } from "../pasta.js";
+import { readFileSync } from "node:fs";
 import { usageNow } from "../usage.js";
 import { capacity } from "../web-runs.js";
 import { hostname } from "node:os";
@@ -37,6 +40,40 @@ export async function githubStatus(): Promise<{
   };
 }
 
+/**
+ * The version to show: a release's own VERSION, or the checkout's package.json marked as source.
+ * "dev" told the reader nothing about which code they were looking at.
+ */
+function versionLabel(): string {
+  const released = currentVersion();
+  if (released) return released;
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+      version?: string;
+    };
+    if (typeof pkg.version === "string") return `${pkg.version} (from source)`;
+  } catch {
+    // A bundle without package.json: the VERSION file is the answer, and that path is above.
+  }
+  return "unknown";
+}
+
+/** What the sandbox is made of, and which versions of each piece this server would use. */
+function components(): {
+  libkrun: string;
+  pasta: string;
+  vmImage: { id?: string; distro?: string; ok: boolean };
+} {
+  const libkrun = libkrunChoice();
+  const pasta = pastaChoice();
+  const image = vmFilesystemInfo();
+  return {
+    libkrun: `${libkrunLabel(libkrun)}${libkrun.ok ? "" : " (not usable)"}`,
+    pasta: `${pastaLabel(pasta)}${pasta.ok ? "" : " (not usable)"}`,
+    vmImage: { id: image.id, distro: image.distro, ok: image.ok },
+  };
+}
+
 export default async function systemRoutes(app: FastifyInstance) {
   app.get("/api/system", async () => ({
     ...systemInfo(),
@@ -51,7 +88,8 @@ export default async function systemRoutes(app: FastifyInstance) {
     // `vmCache` is the current name; `npmCache` is kept because the UI reads it.
     vmCache: Boolean(config.sandbox.vmCache),
     npmCache: Boolean(config.sandbox.vmCache),
-    version: currentVersion() ?? "dev (from source)",
+    version: versionLabel(),
+    components: components(),
   }));
 
   // The "Right now" tiles on the same page; polled every few seconds while it is open.
