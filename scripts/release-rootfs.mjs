@@ -6,9 +6,9 @@
  * A rootfs asset answers two questions: which `image/` tree it was built from (`rootfs-info.json`'s
  * `imageTree`) and which rootfs id it is (`rootfs-info.json`'s `rootfs`, which must match the
  * `hive-rootfs-<id>-linux-x86_64.tar.gz` file name). `scripts/build-release.sh` runs the check, so
- * a release cannot be paired with a rootfs from another image tree (an old pi, old Fedora packages,
- * or a different `image/`). It also holds the release numbering: the next stable version, computed
- * from the release list.
+ * a release cannot be paired with a rootfs from another image tree (an old pi, older distro
+ * packages, or a different `image/`). It also holds the release numbering: the next stable
+ * version, computed from the release list.
  *
  * CLI, used by build-release.sh: prints the rootfs id, or exits 1 with the reason:
  *

@@ -35,7 +35,7 @@ podman image inspect "$IMAGE" >/dev/null 2>&1 || die "no image $IMAGE; build it 
 # unchanged image keeps the id and nobody re-downloads the filesystem (see scripts/rootfs-id.mjs).
 image_tree=$(git -C "$repo_root" rev-parse HEAD:image 2>/dev/null) \
   || die "$repo_root is not a git checkout, so the image/ tree is unknown"
-packages=$(podman run --rm "$IMAGE" rpm -qa | LC_ALL=C sort)
+packages=$(podman run --rm "$IMAGE" hive-packages)
 id=$(printf '%s\n' "$packages" | node "$repo_root/scripts/rootfs-id.mjs" --image-tree "$image_tree")
 [[ "$id" =~ ^[0-9a-f]{12}$ ]] || die "unexpected rootfs id: $id"
 
@@ -63,8 +63,9 @@ cid=$(podman create "$IMAGE" true)
 podman export "$cid" | tar -x -C "$tmp" --exclude="dev/*"
 podman rm "$cid" >/dev/null
 cid=""
-# Fedora ships directories the owner cannot read or write (ca-trust is 0555, systemd's
-# dissect-root is not readable); du and mke2fs run as this user, so restore owner access first.
+# The base image ships directories its owner cannot read or write (ca-certificates is 0555,
+# systemd's dissect-root is not readable); du and mke2fs run as this user, so restore owner access
+# first. True of Debian and Fedora alike.
 chmod -R u+rwX "$tmp"
 
 [[ -f "$tmp/usr/local/bin/hive-vm-init" ]] || die "$IMAGE has no /usr/local/bin/hive-vm-init; rebuild it with npm run build:image"

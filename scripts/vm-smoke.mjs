@@ -118,7 +118,7 @@ fi
 code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 http://169.254.169.254/ 2>/dev/null || true)
 if [ "$code" = "403" ]; then emit metadata-refused true "$code"; else emit metadata-refused false "status $code"; fi
 
-dom=$(timeout 90 chromium-browser --headless --no-sandbox --disable-gpu --dump-dom https://example.com 2>/dev/null || true)
+dom=$(timeout 90 chromium --headless --no-sandbox --disable-gpu --dump-dom https://example.com 2>/dev/null || true)
 if printf '%s' "$dom" | grep -q "Example Domain"; then
   emit chromium true "Example Domain"
 else

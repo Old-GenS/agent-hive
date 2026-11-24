@@ -4,21 +4,46 @@
 # pi's session, event log), its repo's ~/.cache and one LLM API key: no SSH keys, no gh token, no
 # git remote.
 #
-# Packages here are not pinned, so a rebuild picks up Fedora's security updates (Chromium
-# included) only when podman's layer cache is skipped: npm run build:image:fresh.
-FROM registry.fedoraproject.org/fedora:45
+# Debian stable, not Fedora: this image is built rarely and booted for years, so the base has to
+# stay supported that long. Fedora's ~13-month lifecycle meant the filesystem changed on every
+# rebuild and a release could land a whole new Chromium by accident. Debian trixie is supported
+# ~5 years, so the same recipe produces the same filesystem until someone deliberately refreshes
+# it: npm run build:image:fresh.
+#
+# Packages here are not pinned, so a refresh picks up Debian's security updates (Chromium
+# included) only when podman's layer cache is skipped.
+FROM debian:13-slim
 
-RUN dnf -y install --setopt=install_weak_deps=False \
-      nodejs24 nodejs24-bin nodejs24-npm nodejs24-npm-bin \
-      chromium git-core findutils procps-ng which diffutils \
-      ripgrep fd-find jq curl unzip tar gzip xz patch less file tree python3 iputils \
-      gcc gcc-c++ make glibc-static \
-    && dnf clean all
+ENV DEBIAN_FRONTEND=noninteractive
 
-# pi runs as root in the VM, so it can dnf install what a task needs. That root is your own
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      chromium git findutils procps debianutils diffutils \
+      ripgrep fd-find jq curl ca-certificates unzip tar gzip xz-utils patch less file tree \
+      python3 iputils-ping \
+      gcc g++ make libc6-dev \
+      gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Debian installs fd as `fdfind` (the name `fd` belongs to another package). Agents and pi expect
+# `fd`, so give the image the name everyone types.
+RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+# Node 24 from NodeSource: Debian trixie's own nodejs is older than pi needs. The repo is added
+# with its key pinned to a file rather than piped from the network at build time.
+RUN install -d /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+         -o /etc/apt/keyrings/nodesource.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main" \
+         > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# pi runs as root in the VM, so it can install what a task needs. That root is your own
 # unprivileged user on the host, behind the VM boundary. Chromium refuses to run as root without
-# --no-sandbox; the VM is the sandbox here.
-RUN echo 'CHROMIUM_FLAGS+=" --no-sandbox"' >> /etc/chromium/chromium.conf
+# --no-sandbox; the VM is the sandbox here. Debian's chromium wrapper does not read Fedora's
+# /etc/chromium/chromium.conf, so the flag goes in a wrapper earlier on PATH instead.
+RUN printf '#!/bin/sh\nexec /usr/bin/chromium --no-sandbox "$@"\n' > /usr/local/bin/chromium \
+    && chmod 755 /usr/local/bin/chromium
 
 # libkrun's TSI networking has a kernel bug: getsockopt(IPPROTO_IPV6, IPV6_V6ONLY) on some TSI
 # stream sockets calls a null function pointer and oopses the guest kernel (Chromium's network
@@ -40,5 +65,5 @@ RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" corepack && c
 # No update checks or install telemetry from inside the VM.
 ENV HOME=/root PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0
 RUN mkdir -p /root/.pi/agent && echo '{ "enableInstallTelemetry": false }' > /root/.pi/agent/settings.json
-COPY hive-agent hive-export hive-vm-init /usr/local/bin/
+COPY hive-agent hive-export hive-vm-init hive-packages /usr/local/bin/
 WORKDIR /work

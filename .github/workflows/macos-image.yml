@@ -78,13 +78,13 @@ jobs:
 
           echo "ext4: $(sudo dumpe2fs -h "$img" 2>/dev/null | grep -m1 "^Filesystem features")"
           node_version=$(sudo chroot /mnt/hive-image /usr/bin/node --version)
-          chromium_version=$(sudo chroot /mnt/hive-image /usr/bin/chromium-browser --no-sandbox --version 2>&1)
+          chromium_version=$(sudo chroot /mnt/hive-image /usr/bin/chromium --no-sandbox --version 2>&1)
           pi_version=$(sudo chroot /mnt/hive-image /usr/bin/env HOME=/tmp PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 /usr/local/bin/pi --version)
           echo "node: $node_version"
           echo "chromium: $chromium_version"
           echo "pi: $pi_version"
           [[ "$node_version" == v24.* ]] || { echo "expected Node 24, got $node_version"; exit 1; }
-          [[ "$chromium_version" == *Chromium* ]] || { echo "chromium-browser did not report a version"; exit 1; }
+          [[ "$chromium_version" == *Chromium* ]] || { echo "chromium did not report a version"; exit 1; }
           [[ -n "$pi_version" ]] || { echo "pi did not report a version"; exit 1; }
           sudo chroot /mnt/hive-image /bin/bash -n /usr/local/bin/hive-vm-init
           sudo chroot /mnt/hive-image test -x /usr/local/bin/hive-netd
