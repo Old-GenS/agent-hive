@@ -34,10 +34,11 @@ Every pinned version lives in one place (`versions.json`, `image/Containerfile`,
   reaches the model API. An update's pull request is armed with GitHub's own auto-merge (the
   workflow only makes the enable call, since a bot may not merge its own work), so it merges as soon
   as the required checks pass; the maintainer only steps in when something fails (it stays open).
-- **The VM filesystem is rebuilt from scratch every day** (`security.yml`): no podman cache, the
-  Fedora base pulled again, so Chromium, git and every other package a task uses get their security
-  updates. The result is booted in a real VM and put through the same smoke test as a release. This
-  publishes nothing — a failure is a red daily run, so a broken package update is found here and not
+- **The VM filesystem is rebuilt from scratch every week** (`test.yml`): no podman cache, the
+  distro base pulled again, so Chromium, git and every other package a task uses get their security
+  updates. The result is booted in a real VM and put through the same smoke test as a release, then
+  published as a test build — so a failure is a red run and a success is something you can promote,
+  rather than a broken package update found here and not
   in someone's task. No VM filesystem is downloaded for it: the next release carries whatever the
   last good rebuild proved.
 - **GitHub's security checks** watch the code: Dependabot alerts, secret scanning with push

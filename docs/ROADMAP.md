@@ -1,7 +1,7 @@
 # Roadmap
 
 Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine.
-`main` is the one branch; the daily security rebuild exercises the newest dependencies before
+`main` is the one branch; the weekly test build exercises the newest dependencies before
 they're fully tested (see "Keeping it up to date").
 
 ## Step 1 — Releases, `hive update`, system libkrun *(done: v0.4.0)*
@@ -184,7 +184,7 @@ How they stay current:
    rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`). Every change reaches
    `main` as a pull request that GitHub's auto-merge merges once `test`, `vm` and
    `windows-installer` pass; there is no bypass, for anyone.
-4. **The VM image is rebuilt from scratch every day** *(done)*. `security.yml` pulls the Fedora base
+4. **The VM image is rebuilt from scratch every week** *(done)*. `test.yml` pulls the distro base
    again, skips the podman cache and boots the new rootfs through the same smoke test as a release,
    so package security updates are exercised daily. It publishes nothing.
 5. **Security fixes skip the wait** *(done)*. A libkrun, libkrunfw or Chromium security fix reaches
@@ -196,7 +196,7 @@ How they stay current:
   updates merge by GitHub's auto-merge once `test`, `vm` and `windows-installer` pass. Those three
   check names always report; the work inside them is skipped when a change cannot affect it (a
   documentation pull request does not boot a VM), so a small change merges in minutes.
-- **A daily security rebuild** *(done)*: `security.yml` rebuilds the VM image from scratch every
+- **A weekly security rebuild** *(done)*: `test.yml` rebuilds the VM image from scratch every
   day — no podman cache, the Fedora base pulled again — and boots the result in a real VM with the
   same smoke test as a release. It publishes nothing: if a package update breaks the sandbox, the
   run is red instead of a user finding out.

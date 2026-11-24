@@ -4,22 +4,12 @@ name: macOS VM image (arm64)
 # no mkfs, so the image is built on Linux arm64: the sandbox image natively, then the ext4 image.
 # GitHub arm64 runners cannot nest Hypervisor.framework, so this job checks the image and the
 # guest tools but does not boot the VM; a Mac does that by hand.
+# Manual, or called by macos-release.yml. It used to run on every `image/**` change, on the pull
+# request and again on the merge, at ~15 minutes on a scarce arm64 runner — for a platform no one
+# can install yet (there is no macOS release). The Debian image is checked on Linux by ci.yml.
 on:
   workflow_call:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "image/**"
-      - "scripts/build-rootfs-image.sh"
-      - "scripts/rootfs-image.mjs"
-      - ".github/workflows/macos-image.yml"
-  push:
-    branches: [main]
-    paths:
-      - "image/**"
-      - "scripts/build-rootfs-image.sh"
-      - "scripts/rootfs-image.mjs"
-      - ".github/workflows/macos-image.yml"
 
 permissions:
   contents: read
