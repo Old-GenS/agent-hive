@@ -77,6 +77,74 @@ export function isPrereleaseTag(tag) {
   return /^v?\d+\.\d+\.\d+-(?:nightly|dev|beta)\.\d+$/.test(tag);
 }
 
+/** A release tag's version and whether it is a prerelease, or undefined for anything else. */
+function parseReleaseTag(tag) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(?:nightly|dev|beta)\.(\d+))?$/.exec(tag);
+  if (m === null) return undefined;
+  return {
+    version: [Number(m[1]), Number(m[2]), Number(m[3])],
+    prerelease: m[4] !== undefined,
+  };
+}
+
+/** Compare two `x.y.z` versions numerically: -1, 0 or 1. */
+export function compareVersions(a, b) {
+  const pa = parseReleaseTag(a);
+  const pb = parseReleaseTag(b);
+  if (pa === undefined || pb === undefined) throw new Error(`cannot compare "${a}" with "${b}"`);
+  for (let i = 0; i < 3; i += 1) {
+    if (pa.version[i] !== pb.version[i]) return pa.version[i] < pb.version[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * The newest release among `tags`, stable or nightly: `{ version, prerelease }`, or undefined when
+ * there is no release tag. `0.5.9-nightly.12` is newer than `0.5.8`, and `0.5.9` is newer than
+ * `0.5.9-nightly.12`.
+ */
+export function newestRelease(tags) {
+  let best;
+  for (const tag of tags) {
+    const parsed = parseReleaseTag(tag);
+    if (parsed === undefined) continue;
+    if (best === undefined || compareVersions(parsed.version.join("."), best.version.join(".")) > 0) {
+      best = parsed;
+    } else if (
+      compareVersions(parsed.version.join("."), best.version.join(".")) === 0 &&
+      best.prerelease &&
+      !parsed.prerelease
+    ) {
+      best = parsed;
+    }
+  }
+  return best;
+}
+
+/**
+ * The version the next nightly gets: one patch past the newest stable release, or the version the
+ * nightlies already preview when the newest release is itself a nightly. Nothing here reads
+ * package.json (`fallbackVersion` is only for a repository that has never published a release), so
+ * a forgotten version bump cannot make a nightly collide with a released version.
+ */
+export function nextNightlyVersion(tags, run, fallbackVersion) {
+  if (!Number.isInteger(run) || run <= 0) throw new Error(`bad nightly run number "${run}"`);
+  const newest = newestRelease(tags);
+  let base;
+  if (newest === undefined) {
+    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(fallbackVersion ?? "");
+    if (m === null) {
+      throw new Error("no release tag and no package.json version to number a nightly after");
+    }
+    base = [Number(m[1]), Number(m[2]), Number(m[3]) + 1];
+  } else if (newest.prerelease) {
+    base = newest.version;
+  } else {
+    base = [newest.version[0], newest.version[1], newest.version[2] + 1];
+  }
+  return `${base[0]}.${base[1]}.${base[2]}-nightly.${run}`;
+}
+
 /** The SHA-256 of `name` in a SHA256SUMS file (the plain `hash  name` format), or undefined. */
 export function sumsEntry(sums, name) {
   for (const line of sums.split("\n")) {

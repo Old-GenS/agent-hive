@@ -5,7 +5,7 @@
 # docs/RELEASING.md.
 #
 # --reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz> ships a rootfs another machine already
-# built and tested (the nightly workflow, scripts/promote.mjs) instead of rebuilding one; the
+# built and tested (the nightly workflow, release.yml) instead of rebuilding one; the
 # rootfs-info.json next to it must name this checkout's image/ tree or the build refuses.
 set -euo pipefail
 
@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     *)
-      echo "usage: build-release.sh [--reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz>]" >&2
+      echo "usage: build-release.sh [--reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz>] [--skip-sign]" >&2
       exit 2
       ;;
   esac
@@ -77,7 +77,7 @@ fi
 # VERSION/ROOTFS_VERSION in the bundle point at.
 #
 # A release may only ship a rootfs it can vouch for. Either a machine that already tested one hands
-# it over (the nightly workflow, scripts/promote.mjs): then its rootfs-info.json must name this
+# it over (the nightly workflow, release.yml): then its rootfs-info.json must name this
 # checkout's image/ tree, so a release cannot be paired with a rootfs from another tree (an older
 # pi, older Fedora packages). Otherwise the rootfs is rebuilt from a freshly pulled base image with
 # podman's cache skipped, so a hand-built release never ships packages older than this checkout.
