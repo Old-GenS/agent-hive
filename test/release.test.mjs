@@ -477,3 +477,10 @@ test("uiDistCandidates tries HIVE_UI_DIR, the bundle, then the checkout", () => 
     source,
   ]);
 });
+
+test("fetchRelease with a tag asks for that tag", async () => {
+  current = makeRelease("1.4.0", "aaaaaaaaaaaa", { image: {} });
+  const rel = await release.fetchRelease(`v${current.version}`);
+  assert.equal(rel.version, current.version);
+  await assert.rejects(release.fetchRelease("v9.9.9"), /404/);
+});
