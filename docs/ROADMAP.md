@@ -1,7 +1,7 @@
 # Roadmap
 
 Decisions and next steps for the `hive` CLI. Each step ships on its own, tested on a real machine.
-`main` is the one branch; the daily nightly prereleases carry the newest dependencies before
+`main` is the one branch; the daily security rebuild exercises the newest dependencies before
 they're fully tested (see "Keeping it up to date").
 
 ## Step 1 — Releases, `hive update`, system libkrun *(done: v0.4.0)*
@@ -178,33 +178,33 @@ How they stay current:
    scripts read it.
 2. **A daily check** *(done)*. `scripts/check-updates.mjs` in `bump.yml` looks for a new upstream
    release of each pinned piece and, when there is one, opens a pull request against `main` that
-   bumps the pin (`scripts/rootfs-plan.mjs` decides whether the rootfs is rebuilt).
+   bumps the pin.
 3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
    rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`). Every change reaches
    `main` as a pull request that GitHub's auto-merge merges once `test`, `vm` and
    `windows-installer` pass; there is no bypass, for anyone.
-4. **The rootfs is reused while it is current** *(done)*. The daily nightly build reuses the tested
-   rootfs unless `image/` changed, it has pending security updates, it is 14+ days old with
-   updates, or it was dispatched with `fresh_rootfs`.
-5. **Security fixes skip the wait** *(done)*. A libkrun, libkrunfw or Chromium security fix goes to
-   `main` and gets a nightly prerelease the same night; a stable release is a manual bump from `main`.
+4. **The VM image is rebuilt from scratch every day** *(done)*. `security.yml` pulls the Fedora base
+   again, skips the podman cache and boots the new rootfs through the same smoke test as a release,
+   so package security updates are exercised daily. It publishes nothing.
+5. **Security fixes skip the wait** *(done)*. A libkrun, libkrunfw or Chromium security fix reaches
+   `main` as a pull request; the next release, cut with one button, carries it.
 
-### The nightly channel
+### Releases
 
 - **One branch:** `main`, reached only through pull requests. Bump pull requests and Dependabot
-  updates merge by GitHub's auto-merge once `test`, `vm` and `windows-installer` pass, so it's
-  always the latest, but only CI-tested, not used in real work yet.
-- **Nightly releases** *(done)*: every day with new commits, `nightly.yml` publishes a signed GitHub
-  prerelease, `v<version>-nightly.<n>`, after a real VM smoke test. `hive update --channel nightly`
-  follows them (`dev` and `beta` are accepted as aliases); the default channel follows only full
-  releases. `hive doctor` shows the channel.
-- **Stable releases:** cut by hand from `main` after a nightly build has run real tasks for a few
-  days without trouble.
-- **Rollback:** `hive update --rollback` works the same on both channels; going back to stable is
-  `hive update --channel stable` (never a downgrade: it waits for the next stable release).
-- **Setup:** see "Automation and the nightly channel" in [RELEASING.md](RELEASING.md) for the two
-  signing keys, the ruleset and repository settings the automation needs, and how to rotate the
-  prerelease key.
+  updates merge by GitHub's auto-merge once `test`, `vm` and `windows-installer` pass. Those three
+  check names always report; the work inside them is skipped when a change cannot affect it (a
+  documentation pull request does not boot a VM), so a small change merges in minutes.
+- **A daily security rebuild** *(done)*: `security.yml` rebuilds the VM image from scratch every
+  day — no podman cache, the Fedora base pulled again — and boots the result in a real VM with the
+  same smoke test as a release. It publishes nothing: if a package update breaks the sandbox, the
+  run is red instead of a user finding out.
+- **Releases** *(done)*: Actions → **Stable release** → *Run workflow*, approve the environment. The
+  version is the patch after the newest release, the rootfs is built fresh, the bundle is booted in
+  a real VM, and the result is signed keyless with the run's GitHub OIDC token and published.
+- **Rollback:** `hive update --rollback` goes back one version on the installed machine.
+- **Setup:** see "Automation" in [RELEASING.md](RELEASING.md) for the environment, the ruleset and
+  the repository settings the automation needs.
 
 ## Step 3 — gVisor fallback when there is no KVM
 

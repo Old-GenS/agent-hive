@@ -98,8 +98,6 @@ function makeRelease(version, rver, { tamper, image } = {}) {
 
 // The release the local API currently serves.
 let current = null;
-// The releases the nightly channel's list endpoint serves: [{ version, files, draft }].
-let releaseList = null;
 let baseUrl = "";
 const requestCounts = new Map();
 
@@ -129,20 +127,6 @@ const server = await listenOnEphemeralPort((req, res) => {
   const path = new URL(req.url, "http://127.0.0.1").pathname;
   requestCounts.set(path, (requestCounts.get(path) ?? 0) + 1);
 
-  if (path === "/repos/o/r/releases" && releaseList !== null) {
-    const releases = releaseList.map((entry) => ({
-      tag_name: `v${entry.version}`,
-      draft: entry.draft === true,
-      assets: [...entry.files.keys()].map((name) => ({
-        name,
-        url: `${baseUrl}/api/${name}`,
-        browser_download_url: `${baseUrl}/dl/${name}`,
-      })),
-    }));
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(releases));
-    return;
-  }
   if (current === null) {
     res.writeHead(404).end();
     return;
@@ -206,29 +190,15 @@ test("compareVersions orders prereleases below their release", () => {
   assert.equal(release.isPrerelease("0.5.1"), false);
 });
 
-test("readChannel/writeChannel keep the channel in the data dir", () => {
-  assert.equal(release.channelFile(), join(dataDir, "channel"));
-  assert.equal(release.readChannel(), "stable");
-  release.writeChannel("nightly");
-  assert.equal(release.readChannel(), "nightly");
-  assert.equal(readFileSync(release.channelFile(), "utf8"), "nightly\n");
-  // An install that saved an old channel name keeps working: dev and beta mean nightly.
-  for (const old of ["dev", "beta"]) {
-    writeFileSync(release.channelFile(), `${old}\n`);
-    assert.equal(release.readChannel(), "nightly");
-  }
-  writeFileSync(release.channelFile(), "something else\n");
-  assert.equal(release.readChannel(), "stable");
-  release.writeChannel("stable");
-});
 
-test("trustedKeys adds the prerelease key only on the nightly channel", () => {
-  const stable = release.trustedKeys("stable");
-  const nightly = release.trustedKeys("nightly");
-  assert.equal(stable.length, 1);
-  assert.equal(nightly.length, 2);
-  assert.equal(nightly[0], stable[0]);
-  assert.match(nightly[1], /^-----BEGIN PUBLIC KEY-----/);
+test("this build trusts the release workflow and the old ed25519 key", () => {
+  const keys = release.trustedKeys();
+  assert.equal(keys.length, 1);
+  assert.match(keys[0], /^-----BEGIN PUBLIC KEY-----/);
+  const identities = release.trustedIdentities();
+  assert.equal(identities.length, 1);
+  assert.equal(identities[0].issuer, "https://token.actions.githubusercontent.com");
+  assert.match(identities[0].identity, /\.github\/workflows\/release\.yml@refs\/heads\/main$/);
 });
 
 test("verifySums accepts only the right key and body", () => {
@@ -384,26 +354,12 @@ test("a release signed by a second key installs only when that key is trusted", 
   assert.ok(existsSync(join(dir, "VERSION")));
 });
 
-test("fetchRelease picks the newest release from the nightly channel's list", async () => {
+test("fetchRelease asks GitHub for the latest release", async () => {
   current = makeRelease("1.7.0", "aaaaaaaaaaaa");
-  releaseList = [
-    { version: "2.0.0", files: new Map(), draft: true },
-    { version: "1.7.0", files: current.files },
-    { version: "1.8.0-dev.10", files: new Map() },
-    { version: "1.8.0-beta.9", files: new Map() },
-    { version: "1.8.0-nightly.11", files: new Map() },
-    { version: "not-a-version", files: new Map() },
-  ];
-  const nightly = await release.fetchRelease(undefined, 30_000, "nightly");
-  assert.equal(nightly.version, "1.8.0-nightly.11");
-  assert.equal(nightly.assets.length, 0);
-  releaseList = null;
-
-  // The stable channel still asks for /releases/latest.
   const latestPath = "/repos/o/r/releases/latest";
   const hits = requestCounts.get(latestPath) ?? 0;
-  const stableRel = await release.fetchRelease(undefined, 30_000, "stable");
-  assert.equal(stableRel.version, "1.7.0");
+  const rel = await release.fetchRelease();
+  assert.equal(rel.version, "1.7.0");
   assert.equal(requestCounts.get(latestPath), hits + 1);
 });
 
@@ -454,42 +410,6 @@ test("CLI update refuses to run outside an installed release", () => {
   assert.match(result.stderr, /runs from source/);
 });
 
-test("CLI update accepts nightly and the old dev and beta aliases, and rejects other channels", () => {
-  delete process.env.HIVE_BUNDLE_ROOT;
-  const run = (channel) =>
-    spawnSync(process.execPath, ["dist/cli.js", "update", "--channel", channel], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      env: { ...process.env },
-    });
-
-  for (const [arg, expected] of [
-    ["nightly", "nightly"],
-    ["dev", "nightly"],
-    ["beta", "nightly"],
-    ["stable", "stable"],
-  ]) {
-    // The channel is written before the source-checkout refusal, so stdout still has the message.
-    const result = run(arg);
-    assert.match(result.stdout, new RegExp(`hive: update channel is now ${expected}`));
-    assert.equal(readFileSync(release.channelFile(), "utf8"), `${expected}\n`);
-  }
-
-  const bad = run("nightly-dev");
-  assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /--channel must be stable or nightly/);
-
-  // hive doctor shows the remembered channel name; the update writes the channel before it
-  // refuses to run outside an installed release.
-  const nightly = run("nightly");
-  assert.match(nightly.stderr, /runs from source/);
-  const doctor = spawnSync(process.execPath, ["dist/cli.js", "doctor"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: { ...process.env },
-  });
-  assert.match(doctor.stdout, /^update channel   nightly$/m);
-});
 
 test("a bundle's rootfs path follows the release layout", () => {
   const bundle = mkdtempSync(join(root, "bundle-rootfs-"));

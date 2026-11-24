@@ -23,9 +23,8 @@ Nothing to set up beyond the environment below, and nothing to fill in.
 Nothing is bumped and nothing is copied between workflows. `package.json` is read only for the
 first release of a repository that has none.
 
-**How the numbers work.** A stable release is the next patch after the newest release, so
-`v0.5.8` → `v0.5.9`. Nightlies preview the same number (`0.5.9-nightly.12`); they are a preview
-channel and are not needed to release.
+**How the numbers work.** A release is the next patch after the newest release, so
+`v0.5.8` → `v0.5.9`. There is nothing to bump and no prerelease line to track.
 
 The job refuses to sign when `stable-release` has no required reviewer, so an environment that was
 never configured cannot publish (GitHub would otherwise create it unprotected on first use).
@@ -103,8 +102,7 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    ```
 
    The build refuses a rootfs from another image tree; that check is `scripts/release-rootfs.mjs`.
-   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (the nightly workflow and `release.yml` use
-   it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
+   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (`release.yml` uses it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
 
    **macOS (Apple silicon)** needs the arm64 image, which is built on arm64 Linux (the
    `macos-image` workflow, or `npm run build:rootfs-image` on a `podman machine`), plus the
@@ -141,10 +139,10 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    gh release create v<version> release/<version>/* --title v<version> --notes "<notes>"
    ```
 
-## Automation and the nightly channel
+## Automation
 
-`.github/workflows/` keeps `main` at the newest upstream pins and publishes a signed nightly
-prerelease every day. Stable releases are built from `main` by `release.yml`.
+`.github/workflows/` keeps `main` at the newest upstream pins, rebuilds the VM image from scratch
+every day to pick up Fedora's security updates, and publishes releases from `main` when asked.
 
 ### Repository settings the automation depends on
 
@@ -159,25 +157,15 @@ Set once, in the `Old-GenS` organization and its `agent-hive` repository:
 | Workflow permissions | Organization Settings › Actions › General | "Read and write permissions" — the org default is read-only, which makes publishing a release fail with `Resource not accessible by integration`; workflows ask for write explicitly |
 | Allow GitHub Actions to create pull requests | Organization Settings › Actions › General | on — `bump.yml` opens its PRs with `GITHUB_TOKEN` |
 | Secret scanning + push protection | Settings › Code security | on (free on a public repo); non-provider patterns is GHAS-only |
-| `BETA_SIGNING_KEY` | Settings › Environments › `beta-release` (kept under its old name) | the prerelease key, as an environment secret |
 
 ### What signs what
 
-- **Stable releases** are signed keyless by `.github/workflows/release.yml`, which runs on `main`.
-  Installers accept them when the certificate names
-  `https://github.com/Old-GenS/agent-hive/.github/workflows/release.yml@refs/heads/main` under the
-  GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`).
-- **Nightly prereleases** are still signed with an ed25519 key: the `BETA_SIGNING_KEY` secret of the
-  `beta-release` environment, whose public half is `PRERELEASE_PUBLIC_KEY` in
-  `src/release-key.ts`. `nightly.yml` writes it to a temporary file, signs, and deletes it.
-
-A stable install trusts only the stable identity, so a nightly key (or a GitHub compromise that
-only reaches the nightly workflow) cannot sign an update for it. The nightly channel trusts both, so
-a nightly install can move back to a stable release.
-
-**Rotating the nightly key:** generate a keypair with `node scripts/keygen.mjs <file>`, put the
-private half in the `BETA_SIGNING_KEY` environment secret, commit the new public half as
-`PRERELEASE_PUBLIC_KEY`, and publish the next nightly. Stable releases are untouched.
+Releases are signed keyless by `.github/workflows/release.yml`, which runs on `main`. Installers
+accept them when the certificate names
+`https://github.com/Old-GenS/agent-hive/.github/workflows/release.yml@refs/heads/main` under the
+GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`). There is no signing key:
+the ed25519 key releases used before this is kept only so an install can still verify an older
+`SHA256SUMS.sig`.
 
 **Changing who may release:** edit `src/release-key.ts` and the `stable-release` environment. Both
 are gated: `CODEOWNERS` gives `.github/workflows/**` and `CODEOWNERS` itself to a code owner, and
@@ -219,29 +207,16 @@ For each update it creates the branch `auto/<component>-<version>`, applies the 
 the old → new version and the source URL. `--list` prints the updates as JSON, which the workflow
 reads.
 
-### The daily nightly prerelease
+### The daily security rebuild
 
-`nightly.yml` (daily at 06:00 UTC — 23:00 in Vancouver — or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
-`v<next patch>-nightly.<run number>` when `main` has moved since the last nightly tag or
-the rootfs needs rebuilding:
+`security.yml` runs daily at 06:00 UTC — 23:00 in Vancouver — and can be dispatched by hand. It
+builds nothing that gets published: it runs the release build with `--skip-sign`, which pulls the
+Fedora base again, skips the podman cache and exports a new rootfs, so Chromium, git and the other
+packages a task uses pick up their security updates. It then boots that rootfs in a real VM with
+`scripts/vm-smoke.mjs`.
 
-- `plan` compares `main`'s HEAD with the newest `v*-nightly.*` tag (aliases: the old `v*-dev.*` /
-  `v*-beta.*` tags, which count as previous prereleases too), finds the newest release that carries
-  a `rootfs-info.json`, and reuses its rootfs unless the rule below says to rebuild.
-- `release` (the `beta-release` environment) builds with `HIVE_RELEASE_VERSION`, signs with
-  `BETA_SIGNING_KEY`, verifies `SHA256SUMS.sig` against `PRERELEASE_PUBLIC_KEY`, boots a real VM
-  (`scripts/vm-smoke.mjs`), and only then publishes the prerelease: the commits since the previous
-  prerelease tag, which rootfs it uses, and `hive update --channel nightly`.
-
-The rootfs rule (`scripts/rootfs-plan.mjs`) reuses the tested rootfs unless
-
-- the `image/` tree changed,
-- the rootfs has pending security updates,
-- it is 14 or more days old and has any pending updates,
-- or the run was dispatched with `fresh_rootfs`.
-
-A reuse copies the previous release's rootfs tarball and `rootfs-info.json` into the new release;
-only a rebuild pays the ~660 MB rootfs build and download.
+A failure is a red daily run, which GitHub mails to the repository owner. There is no plan, no
+version number, no rootfs reuse rule and no key: the whole workflow is the build and the boot.
 
 ### macOS builds
 
@@ -249,15 +224,9 @@ only a rebuild pays the ~660 MB rootfs build and download.
 `ubuntu-24.04-arm`, then builds the bundle on `macos-15` and uploads it as a workflow artifact.
 It signs with a throwaway key and does not publish: GitHub's macOS runners cannot nest
 Hypervisor.framework, and the stable key must not be in CI. Use it to check that the macOS build
-still works, and build the distributable release on a Mac with the real key. The nightly workflow
-does not yet add macOS assets to a nightly; doing that requires publishing the combined
-`SHA256SUMS` after both platform jobs finish.
+still works, and build the distributable release on a Mac. `release.yml` only builds Linux assets;
+a macOS release is a separate, manual build.
 
-### Nightlies are a preview channel
-
-`nightly.yml` publishes prereleases on the `nightly` channel. A stable release does not promote a
-nightly — it builds, boots and signs `main` itself — so there is nothing to copy from the nightly
-page to the release page.
 
 ## What each file is
 
@@ -273,7 +242,7 @@ page to the release page.
 | `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and the source tarballs. |
 | `release/<version>/SHA256SUMS.sigstore.json` | The keyless signature over `SHA256SUMS` (a sigstore bundle), verified by `hive update` against the release workflow's identity. |
 | `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature, used by the nightlies. |
-| `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it); the nightly rootfs plan does. |
+| `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it). |
 
 `install-cli.sh` checks the download against `SHA256SUMS` over HTTPS but does not verify the
 signature; `hive update` checks both before switching versions.

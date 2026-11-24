@@ -5,7 +5,7 @@
 # docs/RELEASING.md.
 #
 # --reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz> ships a rootfs another machine already
-# built and tested (the nightly workflow, release.yml) instead of rebuilding one; the
+# built and tested (a workflow that ran one) instead of rebuilding one; the
 # rootfs-info.json next to it must name this checkout's image/ tree or the build refuses.
 set -euo pipefail
 
@@ -77,7 +77,7 @@ fi
 # VERSION/ROOTFS_VERSION in the bundle point at.
 #
 # A release may only ship a rootfs it can vouch for. Either a machine that already tested one hands
-# it over (the nightly workflow, release.yml): then its rootfs-info.json must name this
+# it over: then its rootfs-info.json must name this
 # checkout's image/ tree, so a release cannot be paired with a rootfs from another tree (an older
 # pi, older Fedora packages). Otherwise the rootfs is rebuilt from a freshly pulled base image with
 # podman's cache skipped, so a hand-built release never ships packages older than this checkout.
@@ -112,7 +112,7 @@ else
   # /run at boot, and the export can leave unreadable mount points there.
   podman unshare tar -C "$rootfs" --exclude=./.complete --exclude='./run/*' \
     -czf "$out/hive-rootfs-$rver-linux-x86_64.tar.gz" .
-  # What the nightly channel's rootfs plan compares next time: which image tree this rootfs came from
+  # What a release that reuses a rootfs checks before shipping it: which image tree it came from
   # and when it was built. Clients never read it, so it is not in SHA256SUMS.
   built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '{"rootfs":"%s","imageTree":"%s","built":"%s"}\n' "$rver" "$image_tree" "$built" > "$out/rootfs-info.json"

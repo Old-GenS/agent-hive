@@ -51,7 +51,7 @@ export interface PathLineFile {
  * a missing folder is simply absent from it.
  */
 export interface UninstallPlan {
-  /** The release data dir: versions, current, previous, rootfs and the channel file. */
+  /** The release data dir: versions, current, previous and rootfs. */
   app: string;
   /** The `~/.local/bin/hive` symlink, when it belongs to this install. */
   bin?: string;

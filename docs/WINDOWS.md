@@ -117,16 +117,8 @@ Updating works the same as on Linux:
 hive update
 ```
 
-For the beta (nightly prereleases), switch the channel once:
-
-```powershell
-hive update --channel nightly
-```
-
-The channel is remembered, so plain `hive update` keeps following it, and `--channel stable` goes
-back. The installer always installs the newest stable first, so this is how a fresh machine reaches
-the beta; that first switch also downloads the beta's VM filesystem (about 690 MB, once). Updates
-are never automatic: hive only says a newer version exists.
+`hive update --check` only reports, `hive update --rollback` goes back one version. Updates are
+never automatic: hive only says a newer version exists.
 
 To remove hive from inside WSL but keep the distro, run `hive uninstall` (it asks first, and keeps
 runs and saved keys unless you pass `--all`; `--dry-run` only shows what would go).

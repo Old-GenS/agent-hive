@@ -483,7 +483,7 @@ remaining step.**
 - Docs: the macOS section in `docs/INSTALL.md`, the README, `AGENTS.md`, `docs/RELEASING.md`
   and this page.
 - Later: publish and notarize a Developer ID build for distribution; Homebrew tap or cask; wire
-  the macOS assets into the nightly release and stable promotion.
+  the macOS assets into a published release.
 
 ### Phase 4 results
 
@@ -528,7 +528,7 @@ Done in Phase 1 unless the row says otherwise.
 | `scripts/macos-smoke.mjs` (new) | **Phase 4:** the real-VM isolation check (`npm run smoke:macos`) |
 | `scripts/kernel-remote.mjs` (new) | reads libkrunfw's `KERNEL_REMOTE` without GNU make, for the macOS GPL source asset |
 | `versions.json`, `scripts/check-updates.mjs` | **Phase 4:** arm64 pins and their digests (done) |
-| `.github/workflows/` | **Phase 3/4:** macOS unit-test job and arm64 rootfs image (done); the dispatchable macOS bundle build (done); nightly/stable assets (open) |
+| `.github/workflows/` | **Phase 3/4:** macOS unit-test job and arm64 rootfs image (done); the dispatchable macOS bundle build (done); macOS assets in a published release (open) |
 
 ## Risks
 
