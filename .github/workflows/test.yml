@@ -16,7 +16,10 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: "0 6 * * *" # daily: pulls in new distro packages even on a quiet week
+    # Weekly, not daily: Debian stable moves slowly (point releases every couple of months plus
+    # security updates), so a daily rebuild mostly rebuilt the same thing. Chromium is the one
+    # fast-moving package; run this by hand when a Chromium security fix matters.
+    - cron: "0 6 * * 1"
   workflow_dispatch:
 
 permissions:

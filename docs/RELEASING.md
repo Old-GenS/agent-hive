@@ -11,7 +11,7 @@ names that workflow, in this repository, at `main`. There is no signing key on t
 
 ## Two channels: test, then promote
 
-`test.yml` runs on **every push to `main`** and **daily**. It builds the VM image from freshly
+`test.yml` runs on **every push to `main`** and **weekly**. It builds the VM image from freshly
 pulled distro packages, builds the bundle, boots both in a real VM (`scripts/vm-smoke.mjs`), and publishes a prerelease
 tagged `test-<version>-<run number>`. That is the test channel: always the newest packages, always
 booted before it is published, and never what users get. The newest **five** builds are kept and
