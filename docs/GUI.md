@@ -30,7 +30,7 @@ Built at `#setup`; `hive doctor` prints the same fix text and commands.
 1. **Welcome:** what hive does, in three points.
 2. **Check this computer:** the `hive doctor` checks (KVM, libkrun, pasta, launcher, VM filesystem).
    A failed check shows the exact command for this distro, with **Copy**; WSL gets its own note
-   about nested virtualization and the Fedora WSL distro. An installed release whose VM
+   about nested virtualization and the Ubuntu WSL distro the installer creates. An installed release whose VM
    filesystem is missing offers **Download VM filesystem** with a progress bar and **Check again**.
    Next becomes **Continue anyway** when a check fails, so a key can be added first.
 3. **Add a model key:** pick a provider, paste the key, then **Test and save** (the key is tested

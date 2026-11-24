@@ -1,5 +1,10 @@
 # macOS (Apple silicon)
 
+> The VM filesystem changed base on 2026-11-24: it is Debian 13 (trixie) instead of Fedora, from
+> the same `image/Containerfile`. Everything below that describes Fedora is the history of what was
+> tried and measured on the earlier base; the mechanics (case-insensitive APFS, ownership, device
+> nodes) still apply.
+
 **Status: Phases 0–2 are done (November 2026); Phase 3 has a green macOS test suite, while the
 run image and `/proc`-free recovery are still open. Phase 4's native build, release bundle,
 installer and CI build are in place; the signed public macOS release is the remaining distribution

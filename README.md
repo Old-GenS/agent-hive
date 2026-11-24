@@ -169,8 +169,8 @@ builds and maintains them:
   [containers](https://github.com/containers) project.
 - **[passt / pasta](https://passt.top)**: rootless networking that gives each VM its one way out,
   to that proxy, without root.
-- **[Fedora](https://fedoraproject.org)**: the base of the VM's filesystem, which also packages
-  libkrun and passt.
+- **[Debian](https://www.debian.org)**: the base of the VM's filesystem — stable, so the image can
+  be reused for years between rebuilds.
 - **[Chromium](https://www.chromium.org)**, **[Node.js](https://nodejs.org)** and
   **[git](https://git-scm.com)**: inside every VM, and behind half of what the agent does.
 - **[Fastify](https://fastify.dev)**, **[Vite](https://vite.dev)**,

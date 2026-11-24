@@ -114,7 +114,9 @@ jobs:
       - name: Publish the test build
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          TAG: test-${{ steps.release.outputs.version }}-${{ github.run_number }}
+          # Run number first: version-first tags sort `test-0.5.10-9` under `test-0.5.9-*`,
+          # which put the newest build at the bottom of the pre-release list.
+          TAG: test-${{ github.run_number }}-${{ steps.release.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
