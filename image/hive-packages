@@ -1,0 +1,15 @@
+#!/bin/sh
+# The installed package set, one `name=version` per line, sorted.
+#
+# The VM filesystem's id is a hash of this list plus the image/ tree, so it must mean the same
+# thing on every base image hive might build from: rpm on Fedora, dpkg on Debian. Keeping it in
+# the image means the host scripts stay distro-neutral.
+set -eu
+if command -v rpm >/dev/null 2>&1; then
+  rpm -qa | LC_ALL=C sort
+elif command -v dpkg-query >/dev/null 2>&1; then
+  dpkg-query -W -f='${Package}=${Version}\n' | LC_ALL=C sort
+else
+  echo "hive-packages: neither rpm nor dpkg-query is installed" >&2
+  exit 1
+fi

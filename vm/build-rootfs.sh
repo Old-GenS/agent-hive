@@ -18,7 +18,7 @@ if [[ -z "$image_tree" ]]; then
   echo "hive-vm: $repo_root is not a git checkout, so the image/ tree is unknown; the rootfs id would not be stable" >&2
   exit 1
 fi
-packages=$(podman run --rm "$IMAGE" rpm -qa | LC_ALL=C sort)
+packages=$(podman run --rm "$IMAGE" hive-packages)
 id=$(printf '%s\n' "$packages" | node "$repo_root/scripts/rootfs-id.mjs" --image-tree "$image_tree")
 dest="$BASE/$id"
 
