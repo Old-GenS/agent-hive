@@ -77,9 +77,16 @@ jobs:
           sudo mount -t tmpfs tmpfs /mnt/hive-image/tmp
 
           echo "ext4: $(sudo dumpe2fs -h "$img" 2>/dev/null | grep -m1 "^Filesystem features")"
-          node_version=$(sudo chroot /mnt/hive-image /usr/bin/node --version)
-          chromium_version=$(sudo chroot /mnt/hive-image /usr/bin/chromium --no-sandbox --version 2>&1)
-          pi_version=$(sudo chroot /mnt/hive-image /usr/bin/env HOME=/tmp PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 /usr/local/bin/pi --version)
+          # Ask the image where its tools are instead of assuming a prefix: Debian's NodeSource
+          # install puts node and pi in /usr/bin, Fedora's npm used /usr/local/bin.
+          node_bin=$(sudo chroot /mnt/hive-image /bin/sh -c 'command -v node')
+          chromium_bin=$(sudo chroot /mnt/hive-image /bin/sh -c 'command -v chromium || command -v chromium-browser')
+          pi_bin=$(sudo chroot /mnt/hive-image /bin/sh -c 'command -v pi')
+          [[ -n "$node_bin" && -n "$chromium_bin" && -n "$pi_bin" ]] || {
+            echo "a guest tool is missing: node=$node_bin chromium=$chromium_bin pi=$pi_bin"; exit 1; }
+          node_version=$(sudo chroot /mnt/hive-image "$node_bin" --version)
+          chromium_version=$(sudo chroot /mnt/hive-image "$chromium_bin" --no-sandbox --version 2>&1)
+          pi_version=$(sudo chroot /mnt/hive-image /usr/bin/env HOME=/tmp PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 "$pi_bin" --version)
           echo "node: $node_version"
           echo "chromium: $chromium_version"
           echo "pi: $pi_version"
