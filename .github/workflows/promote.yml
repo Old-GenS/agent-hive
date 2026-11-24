@@ -156,10 +156,7 @@ jobs:
         env:
           VERSION: ${{ steps.build.outputs.version }}
           SHA: ${{ steps.build.outputs.sha }}
-          # The built-in token is refused here ("Resource not accessible by integration") even
-          # though it reports Contents: write, on a command that published fine before. Until that
-          # is explained, publishing uses a repository secret with contents access to this repo.
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/notes.md" <<EOF
