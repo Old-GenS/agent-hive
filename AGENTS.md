@@ -41,6 +41,17 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 - **Never rewrite `main`'s history:** no force-push, no rebase or reset of commits that are already
   on GitHub.
 
+## How to work with the maintainer
+
+- **Do not commit, push, or open a pull request unless asked.** Make the change locally, show the
+  diff, and wait for "ship".
+- **One branch, one pull request per session of changes.** A one-line docs fix does not get its own
+  PR; it goes in the same one as the rest of that session's work.
+- **Ask before changing CI, workflows or the release path.** They cost the maintainer a wait on the
+  Actions page, and a wrong guess is expensive.
+- **If the request is ambiguous, ask — do not build.** A guess that lands as a PR is worse than a
+  question.
+
 ## Layout
 
 | Path | What |

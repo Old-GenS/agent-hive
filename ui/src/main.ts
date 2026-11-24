@@ -2945,6 +2945,11 @@ interface SystemInfo {
   };
   npmCache: boolean;
   version: string;
+  components?: {
+    libkrun: string;
+    pasta: string;
+    vmImage: { id?: string; distro?: string; ok: boolean };
+  };
 }
 
 const ISOLATION_TEXT: Record<string, string> = {
@@ -3235,12 +3240,21 @@ function computerSections(info: SystemInfo): HTMLElement[] {
   }
   table.append(tbody);
 
+  // What the sandbox is made of: the distro and image id inside the VM, and which libkrun and
+  // pasta this server would use. Absent from an older server, so every row is optional.
+  const parts = info.components;
+  const vmImage = parts?.vmImage;
+  const vmImageText = vmImage?.ok
+    ? [vmImage.distro ?? "VM filesystem", vmImage.id ? `image ${vmImage.id}` : ""].filter(Boolean).join(", ")
+    : "not installed";
   const facts: [string, string][] = [
+    ["hive version", info.version],
+    ...(parts ? ([["libkrun", parts.libkrun], ["pasta", parts.pasta]] as [string, string][]) : []),
+    ["VM filesystem", vmImageText],
     ["VM size", `${info.vm.memory} memory, ${info.vm.cpus} CPU${info.vm.cpus === "1" ? "" : "s"}`],
     ["Time limit per run", `${info.vm.timeoutMin} minutes`],
     ["Runs at once (worker bees)", `${info.capacity.running} busy of ${info.capacity.max}, ${info.capacity.queued} queued`],
     ["Shared npm cache", info.npmCache ? "On" : "Off"],
-    ["hive version", info.version],
   ];
   const list = el("dl", { class: "facts" });
   for (const [term, value] of facts) list.append(el("div", { class: "fact" }, el("dt", {}, term), el("dd", {}, value)));
