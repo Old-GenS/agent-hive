@@ -1,6 +1,6 @@
 name: Promote to stable
 
-# Takes the current test build and publishes it as the stable release. Nothing is built here: the
+# Takes a test build and publishes it as the stable release. Nothing is built here: the
 # files are downloaded from the `test` prerelease, checked against its own SHA256SUMS, signed, and
 # published under the version the test build was made for. So what users get is byte-for-byte what
 # the test run booted in a VM — the microVM filesystem included.
@@ -12,6 +12,11 @@ name: Promote to stable
 
 on:
   workflow_dispatch:
+    inputs:
+      build:
+        description: "Test build tag to promote (empty: the newest)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -60,24 +65,41 @@ jobs:
         name: Fetch the test build
         env:
           GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.build }}
         run: |
           set -euo pipefail
+          # Default to the newest test build; anything older can still be named explicitly, which
+          # is the point of keeping five around.
+          if [ -n "$WANTED" ]; then
+            tag="$WANTED"
+          else
+            tag=$(gh release list --repo "${{ github.repository }}" --limit 200 \
+              --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("test-"))] | sort_by(.createdAt) | reverse | .[0].tagName // ""')
+          fi
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "no test build to promote" >&2
+            exit 1
+          fi
+
           dir="$RUNNER_TEMP/test"
           mkdir -p "$dir"
-          gh release download test --repo "${{ github.repository }}" --dir "$dir"
-          version=$(basename "$(ls "$dir"/hive-*-linux-x86_64.tar.gz)" | sed -E 's/^hive-(.+-linux-x86_64\.tar\.gz)$/\1/; s/-linux-x86_64\.tar\.gz$//')
+          gh release download "$tag" --repo "${{ github.repository }}" --dir "$dir"
+          version=$(basename "$(ls "$dir"/hive-*-linux-x86_64.tar.gz)" | sed -E 's/-linux-x86_64\.tar\.gz$//; s/^hive-//')
           if [ -z "$version" ]; then
-            echo "the test release has no linux-x86_64 bundle" >&2
+            echo "the test build has no linux-x86_64 bundle" >&2
             exit 1
           fi
           if gh release view "v$version" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "v$version is already released; the test build must be newer" >&2
+            echo "v$version is already released; pick a test build made after that release" >&2
             exit 1
           fi
-          sha=$(gh release view test --repo "${{ github.repository }}" --json targetCommitish --jq .targetCommitish)
+          sha=$(gh release view "$tag" --repo "${{ github.repository }}" --json targetCommitish --jq .targetCommitish)
+          created=$(gh release view "$tag" --repo "${{ github.repository }}" --json createdAt --jq .createdAt)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Promoting v$version from $sha" >> "$GITHUB_STEP_SUMMARY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Promoting v$version from $tag ($created, commit $sha)" >> "$GITHUB_STEP_SUMMARY"
 
       # Same bytes in, same bytes out: if an asset does not match the tested SHA256SUMS, stop.
       - name: Check the files against the tested SHA256SUMS
@@ -136,7 +158,8 @@ jobs:
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           Stable release v$VERSION.
 
-          Promoted from the test build of commit $SHA, which was booted in a real VM before
+          Promoted from test build ${{ steps.build.outputs.tag }} at commit $SHA, which was booted
+          in a real VM before
           publishing. The files are the tested ones: nothing was rebuilt for this release.
 
           Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
