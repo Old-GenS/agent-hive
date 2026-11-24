@@ -176,9 +176,10 @@ How they stay current:
 1. **One pin file.** Every version above is pinned in one file (`versions.json`), so a release is
    reproducible and a bump is a small change you can review. `image/Containerfile` and the release
    scripts read it.
-2. **A daily check** *(done)*. `scripts/check-updates.mjs` in `bump.yml` looks for a new upstream
-   release of each pinned piece and, when there is one, opens a pull request against `main` that
-   bumps the pin.
+2. **A daily check** *(done)*. Renovate, through `renovate.json`, reads every pin and lists what
+   moved on the Dependency Dashboard. A pin it can update in one field becomes a pull request
+   against `main`; a pin whose value appears in several fields is a dashboard entry and
+   `node scripts/check-updates.mjs --apply <component>`.
 3. **CI on every bump** *(done)*. `ci.yml` runs `npm test`, then builds libkrun, the bundle and the
    rootfs on a runner with KVM and boots a real VM (`scripts/vm-smoke.mjs`). Every change reaches
    `main` as a pull request that GitHub's auto-merge merges once `test`, `vm` and
