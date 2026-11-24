@@ -129,7 +129,17 @@ jobs:
             build=false
           fi
 
-          version=$(RUN_NUMBER="${{ github.run_number }}" node -e 'const v=require("./package.json").version.split("."); console.log([v[0],v[1],Number(v[2])+1].join(".")+"-nightly."+process.env.RUN_NUMBER)')
+          # The nightly previews the next patch: one past the newest stable release, or the version
+          # the nightlies are already previewing. package.json is only a fallback for a repository
+          # with no releases yet, so a forgotten bump cannot make the numbers collide.
+          gh release list --repo "$repo" --limit 200 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags.txt"
+          version=$(RUN_NUMBER="${{ github.run_number }}" node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { nextNightlyVersion } from "./scripts/release-rootfs.mjs";
+            const tags = readFileSync(process.env.RUNNER_TEMP + "/tags.txt", "utf8").split("\n").filter(Boolean);
+            const fallback = JSON.parse(readFileSync("./package.json", "utf8")).version;
+            console.log(nextNightlyVersion(tags, Number(process.env.RUN_NUMBER), fallback));
+          ')
 
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "rootfs=$action" >> "$GITHUB_OUTPUT"

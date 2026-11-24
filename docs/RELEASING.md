@@ -11,25 +11,38 @@ names that workflow, in this repository, at `main`. There is no signing key on t
 
 ## How a stable release is signed
 
-Nothing to set up beyond the environment below.
+Nothing to set up beyond the environment below, and nothing to remember: the version comes from
+the nightly tag you promote, so no input can disagree with the artifact.
 
-1. Bump `version` in `package.json` and merge it to `main`.
-2. Actions → **Stable release** → *Run workflow* with that version.
+1. Actions → **Stable release** → *Run workflow*.
+2. Optional: put a nightly tag in `nightly` (`v0.5.9-nightly.12`, the `v` is optional) to release
+   exactly the commit and rootfs that nightly tested. Leave it empty to build `main`.
 3. The job waits for approval on the `stable-release` environment. Approve as the reviewer
    account — the one that never runs coding agents.
-4. It builds with `--skip-sign`, signs `SHA256SUMS` with `cosign sign-blob` using the run's OIDC
-   token, and writes `SHA256SUMS.sigstore.json`.
+4. It works out the version itself (`v0.5.9-nightly.12` → `0.5.9`), refuses a version that is not
+   newer than the newest release, builds with `--skip-sign`, signs `SHA256SUMS` with
+   `cosign sign-blob` using the run's OIDC token, and writes `SHA256SUMS.sigstore.json`.
 5. Before publishing it checks the bundle twice: `cosign verify-blob` against the expected
    identity, and the shipped client (`dist/verify-sigstore.js`). The second is the one that matters:
    it proves an installed copy would accept the release.
+
+There is no version bump to remember. `package.json`'s `version` is read only when the workflow
+builds `main` without a nightly; nightlies and releases take their numbers from the release tags.
+
+**How the numbers work.** A nightly previews the next patch: once `v0.5.8` is out, the nightlies
+are `0.5.9-nightly.<run>` and keep that `0.5.9` until it is released. A promotion takes the
+number from the tag, so `v0.5.9-nightly.12` releases `v0.5.9`. A version only ever moves
+forward: the workflow refuses anything that is not newer than the newest release, which is what
+turns a forgotten bump into a clear failure instead of a stale "latest".
 
 The job refuses to sign when `stable-release` has no required reviewer, so an environment that was
 never configured cannot publish (GitHub would otherwise create it unprotected on first use).
 
 **The environment** needs: a required reviewer that is not an account agents can use, *Prevent
-self-review* on, *Allow administrators to bypass* off, and deployment branches limited to `main`.
+self-review* on, *Allow administrators to bypass* off, and deployment branches limited to `main`
+(set that policy on the environment: it is not there by default).
 
-Bump-and-approve is the whole process.
+Pick a nightly (or main), approve the environment, done.
 
 The release build needs podman (it builds the VM image and packs the rootfs inside
 `podman unshare`, since the image has files only root may read).
@@ -98,7 +111,7 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    ```
 
    The build refuses a rootfs from another image tree; that check is `scripts/release-rootfs.mjs`.
-   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (the nightly workflow and `promote` use
+   `HIVE_RELEASE_VERSION` overrides `package.json`'s version (the nightly workflow and `release.yml` use
    it), and `HIVE_RELEASE_SKIP_SOURCES=1` skips the GPL source assets.
 
    **macOS (Apple silicon)** needs the arm64 image, which is built on arm64 Linux (the
@@ -217,7 +230,7 @@ reads.
 ### The daily nightly prerelease
 
 `nightly.yml` (daily at 06:00 UTC — 23:00 in Vancouver — or `workflow_dispatch` with `fresh_rootfs`) builds and publishes
-`v<package.json patch + 1>-nightly.<run number>` when `main` has moved since the last nightly tag or
+`v<next patch>-nightly.<run number>` when `main` has moved since the last nightly tag or
 the rootfs needs rebuilding:
 
 - `plan` compares `main`'s HEAD with the newest `v*-nightly.*` tag (aliases: the old `v*-dev.*` /
@@ -250,8 +263,12 @@ does not yet add macOS assets to a nightly; doing that requires publishing the c
 
 ### Promotion to stable
 
-Promote a nightly that has been in use without trouble; see "Promote a nightly to stable" above.
-Stable installs accept only the stable key, so the promotion re-signs the tested content.
+Release a nightly that has been in use without trouble by dispatching **Stable release** with its
+tag in `nightly` and approving the environment. The job builds that tag's commit, verifies the
+nightly's own signature and rootfs (`SHA256SUMS`, the rootfs hash and its `imageTree`), and
+reuses that exact rootfs, so the stable release is the artifact the nightlies tested, re-signed
+keyless. Nothing is bumped first: the version is `0.5.9` for `v0.5.9-nightly.12`, and the
+workflow refuses a number that is not newer than the newest release.
 
 ## What each file is
 

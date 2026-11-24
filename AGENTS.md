@@ -84,8 +84,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `scripts/` | `run-tests.mjs` (test runner with a throwaway `TMPDIR`), `ui-smoke.mjs` (headless browser check with a faked run), `build-native.sh` (libkrun, libkrunfw and the hardened launcher for Linux releases), `native-in-container.sh` (its manylinux_2_28 half), `build-native-macos.sh` (the macOS arm64 dylibs, launcher and signatures), `build-release-macos.sh` (the darwin bundle, image and sources), `build-rootfs-image.sh` and `rootfs-image.mjs` (the macOS arm64 VM image and its naming), `macos-smoke.mjs` (real-VM isolation check on a Mac), `kernel-remote.mjs` (libkrunfw's kernel URL without GNU make), release build and signing |
 | `scripts/check-updates.mjs` | The daily bump check: newest upstream version of every pin in `versions.json` and `image/Containerfile` (`--list` as JSON, `--apply <component>`); pure parsers and `applyUpdate` are exported for tests |
 | `scripts/rootfs-plan.mjs` | The nightly build's rootfs reuse decision (`decide()`): rebuild on a forced build, no previous rootfs, an `image/` tree change, pending security updates, or 14+ days old with updates; else reuse |
-| `scripts/release-rootfs.mjs` | The rootfs checks shared by the release build and `promote`: the tarball name, its `rootfs-info.json` rootfs id and `imageTree` must agree with the release's `image/` tree, and the nightly tag maps to its stable version; `build-release.sh` calls it before it reuses a rootfs |
-| `scripts/promote.mjs` | Promotes a tested nightly to a stable release and proves the two match: verifies the nightly's `SHA256SUMS` signature and `imageTree`, builds from the nightly's commit in a throwaway worktree with that rootfs, checks the stable signature, writes `release/<version>/`, and with `--publish` creates the stable GitHub release; `--dry-run` checks without building |
+| `scripts/release-rootfs.mjs` | The rootfs checks shared by the release build and the release workflow: the tarball name, its `rootfs-info.json` rootfs id and `imageTree` must agree with the release's `image/` tree. It is also the one place release numbering lives: a nightly tag maps to the version it promotes to (`stableVersionFromTag`), the next nightly previews the patch after the newest release (`nextNightlyVersion`), and a release may only move forward (`newestRelease`, `compareVersions`); both workflows call it |
 | `scripts/vm-smoke.mjs` | The real-VM release check: HTTPS through the egress proxy, LAN and metadata addresses refused, headless Chromium renders a page, and a run with a fake OpenRouter key gets a 401 and no network error |
 | `scripts/ci-enable-kvm.sh` | Makes `/dev/kvm` usable and installs pasta on GitHub's Ubuntu runners |
 | `scripts/macos-spike/` | The Phase 0 macOS harness: libkrun build recipe, throwaway launcher, vsock/egress bridge and guest probes; not used by the product build |
@@ -240,9 +239,10 @@ launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, R
 the Windows one-line installer (`install.ps1`: a dedicated WSL2 Ubuntu distro, `hive.cmd` on the
 Windows `PATH`, guide in `docs/WINDOWS.md`), still awaiting its first test on a real machine;
 `install-cli.sh` VM-filesystem download progress and KVM/pasta/PATH advice; `hive update` with
-rollback; a nightly channel signed by a separate CI prerelease key; `npm run promote` takes a tested
-nightly to a stable release with the same app commit and VM filesystem, re-signed with the stable
-key; CI that boots a real VM for every change and parses/analyses `install.ps1`; a daily check that
+rollback; a nightly channel signed by a separate CI prerelease key; `.github/workflows/release.yml`
+takes a tested nightly to a stable release with the same app commit and VM filesystem, keyless, with
+the version taken from the nightly tag and nothing to bump; CI that boots a real VM for every change
+and parses/analyses `install.ps1`; a daily check that
 opens tested pin-bump PRs; Dependabot; a daily nightly prerelease (`.github/workflows/`,
 `docs/RELEASING.md`).
 

@@ -7,24 +7,24 @@ name: Stable release
 # The `stable-release` environment must require a reviewer: that click is what makes a release a
 # deliberate act, and it needs a browser session, not a token on the build box.
 #
-# Bump `version` in package.json and merge that first; this refuses to build a version that main
-# does not carry.
+# There is no version to type and none to bump. A nightly tag decides everything:
+# v0.5.9-nightly.12 releases as 0.5.9 and builds that commit. With no tag it builds `main` at
+# package.json's version. Either way it refuses to publish a version that is not newer than the
+# newest release, so a forgotten bump fails here instead of becoming "latest".
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: Version to release, as merged on main (e.g. 0.5.6)
-        required: true
+      nightly:
+        description: Nightly tag to promote (v0.5.9-nightly.12, the v is optional). Empty builds main.
+        required: false
         type: string
       reuse_rootfs:
         description: Reuse the rootfs of this release tag instead of building one
         required: false
         type: string
-      nightly:
-        description: Nightly tag to promote (builds that commit and reuses its rootfs)
-        required: false
-        type: string
+
+run-name: Stable release ${{ inputs.nightly || 'from main' }}
 
 permissions:
   contents: read
@@ -46,16 +46,66 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      # Promoting builds the commit the nightly tested, not `main`, so the artifact is exactly
-      # what CI built and booted. Without this input the workflow builds `main`.
-      - name: Check out the nightly's commit
-        if: inputs.nightly != ''
+      # Everything about the release is decided once, here: which commit, which version. No later
+      # step takes a version as an input, so no two steps can disagree about it.
+      - id: release
+        name: Work out what to release
         env:
-          TAG: ${{ inputs.nightly }}
+          NIGHTLY: ${{ inputs.nightly }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git fetch --tags --force
-          git checkout --detach "${TAG}^{commit}"
+          if [ -z "$NIGHTLY" ]; then
+            tag=main
+            sha=$(git rev-parse HEAD)
+            version=$(node -p "require('./package.json').version")
+          else
+            git fetch --tags --force
+            tag="v${NIGHTLY#v}"
+            if ! sha=$(git rev-parse --verify --quiet "${tag}^{commit}"); then
+              echo "no tag $tag in this repository; pass the nightly tag with or without the v" >&2
+              exit 1
+            fi
+            version=$(node --input-type=module -e \
+              'import { stableVersionFromTag } from "./scripts/release-rootfs.mjs"; console.log(stableVersionFromTag(process.argv[1]))' \
+              "$tag")
+          fi
+
+          # A release only moves forward. Comparing against every published release (nightlies
+          # included) turns a forgotten version bump into a clear failure, not a stale "latest".
+          gh release list --repo "${{ github.repository }}" --limit 200 --json tagName --jq '.[].tagName' > "$RUNNER_TEMP/tags.txt"
+          VERSION="$version" node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { newestRelease, compareVersions } from "./scripts/release-rootfs.mjs";
+            const tags = readFileSync(process.env.RUNNER_TEMP + "/tags.txt", "utf8").split("\n").filter(Boolean);
+            const newest = newestRelease(tags);
+            if (newest === undefined) process.exit(0);
+            const published = newest.version.join(".");
+            // Same number is fine only when promoting its own nightly (0.5.9 after 0.5.9-nightly.12).
+            const cmp = compareVersions(process.env.VERSION, published);
+            if (cmp < 0 || (cmp === 0 && !newest.prerelease)) {
+              console.error(
+                "v" + process.env.VERSION + " is not newer than the newest release v" + published +
+                "; bump package.json on main, or promote a newer nightly",
+              );
+              process.exit(1);
+            }
+          '
+
+          if [ "$tag" != main ]; then
+            git checkout --detach "$sha"
+            # Priming an old nightly with a build script that has no --skip-sign (before keyless
+            # signing) would fail with a usage message; refuse it where the reason is obvious.
+            if ! grep -q -- "--skip-sign" scripts/build-release.sh; then
+              echo "$tag predates keyless signing; promote a newer nightly" >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version from $tag ($sha)" >> "$GITHUB_STEP_SUMMARY"
 
       - id: node
         run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
@@ -84,23 +134,11 @@ jobs:
             exit 1
           fi
 
-      - name: The version must already be merged on main
-        if: inputs.nightly == ''
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          merged=$(node -p "require('./package.json').version")
-          if [ "$merged" != "$VERSION" ]; then
-            echo "package.json on main is $merged, not $VERSION; bump and merge it first" >&2
-            exit 1
-          fi
-
       - name: Verify the nightly and reuse its rootfs
         if: inputs.nightly != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.nightly }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/nightly"
@@ -162,9 +200,9 @@ jobs:
           echo "HIVE_RELEASE_REUSE_ROOTFS=$(ls "$RUNNER_TEMP/reuse"/hive-rootfs-*-linux-x86_64.tar.gz)" >> "$GITHUB_ENV"
 
       # --skip-sign: signing happens below, with the OIDC token. Nothing on this runner holds a key.
-      - name: Build ${{ inputs.version }}
+      - name: Build ${{ steps.release.outputs.version }}
         env:
-          HIVE_RELEASE_VERSION: ${{ inputs.version }}
+          HIVE_RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           if [[ -n "${HIVE_RELEASE_REUSE_ROOTFS:-}" ]]; then
@@ -177,7 +215,7 @@ jobs:
 
       - name: Sign SHA256SUMS with the workflow's identity
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           cosign sign-blob --yes \
@@ -186,7 +224,7 @@ jobs:
 
       - name: Check the bundle names this workflow
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           cosign verify-blob \
@@ -199,7 +237,7 @@ jobs:
       # would be unusable, so fail here instead of after publishing.
       - name: Check the client accepts it
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
@@ -220,11 +258,11 @@ jobs:
 
       - name: Publish
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.release.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          sha=$(git rev-parse HEAD)
+          sha="${{ steps.release.outputs.sha }}"
           cat > "$RUNNER_TEMP/release-notes.md" <<EOF
           Stable release v$VERSION.
 
