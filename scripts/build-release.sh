@@ -73,7 +73,7 @@ if [[ -z "$native" || ! -f "$native/libexec/hive-vm" || ! -f "$native/libexec/pa
   exit 1
 fi
 
-# The rootfs is exported from the sandbox image; its directory name is the image id prefix that
+# The rootfs is exported from the sandbox image; its directory name is the id from scripts/rootfs-id.mjs (the image/ tree plus the installed RPMs) that
 # VERSION/ROOTFS_VERSION in the bundle point at.
 #
 # A release may only ship a rootfs it can vouch for. Either a machine that already tested one hands
@@ -101,7 +101,7 @@ if [[ -n "$reuse_rootfs" ]]; then
   cp "$reuse_info" "$out/rootfs-info.json"
 else
   # A fresh base and no podman cache: Fedora and Chromium security updates are in, and the rootfs
-  # id (the image id prefix) changes when the image really changed, so users download it only then.
+  # id changes when the packages or image/ really changed, so users download it only then.
   npm run build:image:fresh
   npm run build:rootfs
   rootfs=$(realpath "${XDG_DATA_HOME:-$HOME/.local/share}/agent-hive/rootfs/current")
