@@ -85,7 +85,10 @@ jobs:
           dir="$RUNNER_TEMP/test"
           mkdir -p "$dir"
           gh release download "$tag" --repo "${{ github.repository }}" --dir "$dir"
-          version=$(basename "$(ls "$dir"/hive-*-linux-x86_64.tar.gz)" | sed -E 's/-linux-x86_64\.tar\.gz$//; s/^hive-//')
+          # `hive-*` would also match hive-rootfs-<id>-linux-x86_64.tar.gz, and the version came out
+          # as "rootfs-<id>" once because of it. Only the app bundle starts with hive-<digit>.
+          app=$(ls "$dir"/hive-[0-9]*-linux-x86_64.tar.gz)
+          version=$(basename "$app" | sed -E 's/-linux-x86_64\.tar\.gz$//; s/^hive-//')
           if [ -z "$version" ]; then
             echo "the test build has no linux-x86_64 bundle" >&2
             exit 1
