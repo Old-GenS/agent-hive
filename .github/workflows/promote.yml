@@ -194,9 +194,18 @@ jobs:
             printf 'Run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
-          gh release create "v$VERSION" \
-            --repo "${{ github.repository }}" \
-            --target "$SHA" \
-            --title "v$VERSION" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            "$RUNNER_TEMP"/test/*
+          # Created through the API rather than `gh release create` so a refusal prints GitHub's
+          # own message instead of a one-line summary: the create failed with 403 once and the
+          # token claimed contents: write, which is not enough to act on.
+          body=$(gh api -X POST "repos/${{ github.repository }}/releases" \
+            -f tag_name="v$VERSION" \
+            -f target_commitish="$SHA" \
+            -f name="v$VERSION" \
+            -f body="$(cat "$RUNNER_TEMP/notes.md")" \
+            -F draft=false -F prerelease=false) || {
+            echo "release create refused; token scopes:" >&2
+            gh api "repos/${{ github.repository }}" --jq .permissions >&2 || true
+            exit 1
+          }
+          id=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          gh release upload "v$VERSION" --repo "${{ github.repository }}" "$RUNNER_TEMP"/test/*
