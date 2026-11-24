@@ -121,7 +121,16 @@ jobs:
           mapfile -t tags < <(gh release list --repo "${{ github.repository }}" --limit 200 \
             --json tagName,createdAt \
             --jq '[.[] | select(.tagName | startswith("test-"))] | sort_by(.createdAt) | reverse | .[].tagName')
+          # A build can be kept on purpose: upload an asset named KEEP to it, or save it as a
+          # draft. GitHub has no 'pin this release', so the marker is the pin.
           for old in "${tags[@]:5}"; do
+            keep=$(gh release view "$old" --repo "${{ github.repository }}" \
+              --json isDraft,assets \
+              --jq '(.isDraft) or ([.assets[].name] | index("KEEP") != null)')
+            if [ "$keep" = "true" ]; then
+              echo "keeping $old (marked KEEP or draft)"
+              continue
+            fi
             echo "pruning $old"
             gh release delete "$old" --repo "${{ github.repository }}" --yes --cleanup-tag
           done
