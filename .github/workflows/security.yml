@@ -78,5 +78,6 @@ jobs:
           1. A Fedora/Chromium/package update broke the sandbox (the smoke test above).
              Fix `image/Containerfile` or `image/hive-*`, then run this workflow again.
           2. An upstream pin moved and a rebuild from scratch stopped working.
-             `node scripts/check-updates.mjs --list` shows the pins; `bump.yml` opens the PRs.
+             The Dependency Dashboard lists what moved; a fresh build from a moved pin is what
+             failed.
           EOF

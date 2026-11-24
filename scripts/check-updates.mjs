@@ -2,10 +2,13 @@
 /**
  * Check every pinned piece of a release for a newer upstream version, and optionally bump it.
  *
- * Used by the daily `bump.yml` workflow: `--list` prints the components with an update as JSON,
- * and `--apply <name>` re-checks one component and writes the version files. Plain Node 24 (global
- * fetch, no dependencies). Network errors for one component are reported and skipped, so the other
- * components still get checked.
+ * Renovate's Dependency Dashboard (`renovate.json`) is what notices a new release. This is the tool
+ * for a pin whose value is spread over several fields and so cannot be updated by one regex: a
+ * libkrun bump also moves the tag, a libkrunfw bump also moves three asset URLs and their SHA-256.
+ *
+ * `--list` prints the components with an update as JSON; `--apply <name>` re-checks one component
+ * and rewrites every field together. Plain Node 24 (global fetch, no dependencies). Network errors
+ * for one component are reported and skipped, so the other components still get checked.
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";

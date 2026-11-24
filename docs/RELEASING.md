@@ -155,7 +155,7 @@ Set once, in the `Old-GenS` organization and its `agent-hive` repository:
 | Merge types | Settings › General › Pull requests | merge commit only (no squash or rebase, so a merged branch keeps its SHAs) |
 | Delete branch on merge | Settings › General › Pull requests | on |
 | Workflow permissions | Organization Settings › Actions › General | "Read and write permissions" — the org default is read-only, which makes publishing a release fail with `Resource not accessible by integration`; workflows ask for write explicitly |
-| Allow GitHub Actions to create pull requests | Organization Settings › Actions › General | on — `bump.yml` opens its PRs with `GITHUB_TOKEN` |
+| Allow GitHub Actions to create pull requests | Organization Settings › Actions › General | on — `dependabot-automerge.yml` needs it, and a workflow that opens a PR with `GITHUB_TOKEN` does not trigger other workflows |
 | Secret scanning + push protection | Settings › Code security | on (free on a public repo); non-provider patterns is GHAS-only |
 
 ### What signs what
@@ -189,8 +189,15 @@ the environment requires the reviewer.
 
 ### The daily bump check
 
-`scripts/check-updates.mjs` (`bump.yml`, daily at 04:23 UTC) reads `versions.json` and
-`image/Containerfile` and asks each upstream for its newest release:
+Renovate (`.github/workflows/` has nothing for it: the **Mend Renovate** app is installed on the
+repository) reads `versions.json` and the `image/Containerfile` ARG through the regex managers in
+`renovate.json`. It lists what moved on the Dependency Dashboard and opens a pull request for a pin
+it can update in one field. `enabledManagers` is `custom.regex` only, so npm and GitHub Actions
+stay with Dependabot and nothing is watched twice.
+
+`scripts/check-updates.mjs --apply <component>` is still how a pin whose value appears in several
+fields gets bumped — version, the URLs that embed it, and the SHA-256, together. `--list` prints
+what moved without touching the files. The sources it reads:
 
 | Component | Source |
 |---|---|
@@ -202,10 +209,11 @@ the environment requires the reviewer.
 | node | nodejs.org's index, newest release of the pinned major |
 | pi | `@earendil-works/pi-coding-agent` on npm |
 
-For each update it creates the branch `auto/<component>-<version>`, applies the bump with
-`--apply`, commits as `github-actions[bot]`, pushes, and opens a pull request against `main` with
-the old → new version and the source URL. `--list` prints the updates as JSON, which the workflow
-reads.
+A pin that is several fields at once (libkrun's tag and commit, libkrunfw's version, three asset
+URLs and a SHA-256, passt's version, URL and SHA-256) is marked `dependencyDashboardApproval` in
+`renovate.json`: Renovate says what moved, and a human runs the bump. That is deliberate — a regex
+manager would update one field and leave the rest pointing at the old release, which builds
+something that never existed.
 
 ### The daily security rebuild
 

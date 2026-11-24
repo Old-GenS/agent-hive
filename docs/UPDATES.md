@@ -20,10 +20,14 @@ Every pinned version lives in one place (`versions.json`, `image/Containerfile`,
 
 ## What happens automatically
 
-- **Every day, a check looks for new upstream versions** of libkrun, libkrunfw, passt, Rust, the
-  build image, Node.js and pi, and opens a pull request for each one. **Dependabot** does the same
-  for npm packages and GitHub Actions, and opens security fixes as soon as an advisory is
-  published.
+- **Renovate watches the pinned native pieces** — libkrun, libkrunfw, passt, Rust, the manylinux
+  build image, Node.js and pi — and lists what moved on the repository's **Dependency Dashboard**.
+  It opens a pull request on its own for a version it can update in one place (Node.js, pi,
+  manylinux). The pins that are several fields at once (libkrun's tag and commit, libkrunfw's URLs
+  and SHA-256, passt's URL and SHA-256) wait on the dashboard until you tick them, and are updated
+  with `node scripts/check-updates.mjs --apply <component>` so a half-updated pin is never built.
+  A major version of anything needs a click on the dashboard first. **Dependabot** covers npm
+  packages and GitHub Actions, and opens security fixes as soon as an advisory is published.
 - **Every change is tested on a real VM before it merges.** CI builds the whole release, boots it
   with KVM and checks HTTPS through the egress proxy, that the local network and cloud metadata
   addresses are refused, that headless Chromium loads a page, that DNS works, and that a run
