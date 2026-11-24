@@ -200,9 +200,10 @@ How they stay current:
   day — no podman cache, the Fedora base pulled again — and boots the result in a real VM with the
   same smoke test as a release. It publishes nothing: if a package update breaks the sandbox, the
   run is red instead of a user finding out.
-- **Releases** *(done)*: Actions → **Stable release** → *Run workflow*, approve the environment. The
-  version is the patch after the newest release, the rootfs is built fresh, the bundle is booted in
-  a real VM, and the result is signed keyless with the run's GitHub OIDC token and published.
+- **Releases** *(done)*: a push to `main` builds a test build (fresh image, booted in a real VM);
+  Actions → **Promote to stable** → *Run workflow* publishes that tested build unchanged. The
+  version is the patch after the newest release, worked out by the build; promotion copies the
+  files, signs them keyless with the run's GitHub OIDC token, and nothing is rebuilt.
 - **Rollback:** `hive update --rollback` goes back one version on the installed machine.
 - **Setup:** see "Automation" in [RELEASING.md](RELEASING.md) for the environment, the ruleset and
   the repository settings the automation needs.

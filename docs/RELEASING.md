@@ -13,7 +13,7 @@ names that workflow, in this repository, at `main`. There is no signing key on t
 
 `test.yml` runs on **every push to `main`** and **weekly**. It builds the VM image from freshly
 pulled distro packages, builds the bundle, boots both in a real VM (`scripts/vm-smoke.mjs`), and publishes a prerelease
-tagged `test-<version>-<run number>`. That is the test channel: always the newest packages, always
+tagged `test-<run number>-<version>`. That is the test channel: always the newest packages, always
 booted before it is published, and never what users get. The newest **five** builds are kept and
 older ones are deleted, so a build you tested a few days ago can still be promoted, while the
 channel cannot grow without bound.
@@ -35,7 +35,7 @@ file, named by its content.
 
 1. Wait for the **Test build** run on `main` to pass (or run it yourself).
 2. Actions → **Promote to stable** → *Run workflow*. Leave the build field empty to promote the
-   newest test build, or name an older tag (`test-0.5.9-42`) to promote the one you tested.
+   newest test build, or name an older tag (`test-42-0.5.10`) to promote the one you tested.
 3. Approve the `stable-release` environment as the reviewer account — the one that never runs
    coding agents.
 4. It reads the version from the tested bundle, refuses if that version is already released,
@@ -93,7 +93,7 @@ until a newer one passes that check.
 | `rust` | The toolchain `scripts/native-in-container.sh` installs with rustup |
 | `buildImage` | The `manylinux_2_28` image digest the native build runs in |
 | `node` | The Node.js version bundled in the app (`HIVE_NODE_VERSION` still overrides it) |
-| `skip` | Upstream versions known to be broken for hive, per component, with the reason. The daily bump check never offers them (libkrunfw 5.6.4: DNS fails in the VM) |
+| `skip` | Upstream versions known to be broken for hive, per component, with the reason. Renovate never offers them, and `check-updates.mjs` skips them (libkrunfw 5.6.4: DNS fails in the VM) |
 
 ## Build a release by hand
 
@@ -205,12 +205,10 @@ ruleset asks for no approving review and does not require a code owner, and ther
   repository setting, enabled per pull request with `gh pr merge --auto`): GitHub waits for the
   required checks and merges. There is no merge workflow of our own.
 - Dependabot can't enable auto-merge on its own pull requests (a bot may not merge its own work), so
-  `dependabot-automerge.yml` makes that one call; the waiting and merging are GitHub's.
-- Pull requests opened with `GITHUB_TOKEN` don't start workflows on their own, so the bump workflow
-  dispatches `ci.yml` on its branch before enabling auto-merge; that run's checks land on the same
-  commit.
+  `dependabot-automerge.yml` makes that one call; the waiting and merging are GitHub's. Renovate's
+  own app handles its pull requests the same way.
 
-### The daily bump check
+### Keeping the pins current
 
 Renovate (`.github/workflows/` has nothing for it: the **Mend Renovate** app is installed on the
 repository) reads `versions.json` and the `image/Containerfile` ARG through the regex managers in
