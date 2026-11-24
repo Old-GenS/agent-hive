@@ -238,16 +238,16 @@ URLs and a SHA-256, passt's version, URL and SHA-256) is marked `dependencyDashb
 manager would update one field and leave the rest pointing at the old release, which builds
 something that never existed.
 
-### The daily security rebuild
+### The weekly test build is the security rebuild
 
-`security.yml` runs daily at 06:00 UTC — 23:00 in Vancouver — and can be dispatched by hand. It
-builds nothing that gets published: it runs the release build with `--skip-sign`, which pulls the
-Fedora base again, skips the podman cache and exports a new rootfs, so Chromium, git and the other
-packages a task uses pick up their security updates. It then boots that rootfs in a real VM with
-`scripts/vm-smoke.mjs`.
+`test.yml` pulls the distro base again, skips the podman cache, exports a new rootfs — so Chromium,
+git and the other packages a task uses pick up their security updates — and boots it in a real VM
+with `scripts/vm-smoke.mjs` before publishing it as a test build. That is the same evidence a
+separate daily "security rebuild" used to produce, and this one keeps the artifact instead of
+throwing it away.
 
-A failure is a red daily run, which GitHub mails to the repository owner. There is no plan, no
-version number, no rootfs reuse rule and no key: the whole workflow is the build and the boot.
+So there is no second workflow for it: a failed package update shows up as a red **Test build**,
+which GitHub mails to the repository owner, and the newest passing build is what you promote.
 
 ### macOS builds
 

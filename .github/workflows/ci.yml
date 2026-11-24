@@ -1,9 +1,13 @@
 name: CI
 
+# Pull requests only. A merge commit re-ran every check on the identical tree a few seconds later,
+# which is the same work twice: `test` did, and `vm` did after it. `main` is covered instead by
+# `test.yml`, which builds a whole release from the merge and boots it in a real VM.
+#
+# `workflow_dispatch` stays so the suite can be run by hand against `main` when that is what you
+# want to check.
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
   workflow_dispatch:
 
