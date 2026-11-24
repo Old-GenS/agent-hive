@@ -18,10 +18,14 @@ booted before it is published, and never what users get. The newest **five** bui
 older ones are deleted, so a build you tested a few days ago can still be promoted, while the
 channel cannot grow without bound.
 
-To keep a specific test build past that window, mark it: upload an asset called `KEEP` to the
-release (`gh release upload test-0.5.9-42 KEEP`), or save it as a draft in the UI. The pruning
-step never deletes a build that carries `KEEP` or is a draft, so the marker is how a build is
-pinned.
+To keep a specific test build past that window, mark it — either way works:
+
+- **In the UI:** *Edit release* and start the title with `KEEP`.
+- **From a shell:** `gh release upload <tag> KEEP` (an asset named `KEEP`).
+
+The pruning step deletes nothing whose title starts with `KEEP`, that carries a `KEEP` asset, or
+that is still a draft. (A published release cannot be turned back into a draft, so that last one
+only applies to releases created as drafts.)
 
 `promote.yml` is the only thing that reaches users. It **builds nothing**: it downloads the files
 from the `test` release, checks them against the tested `SHA256SUMS`, signs that file keyless with

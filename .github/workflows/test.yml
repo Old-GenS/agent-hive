@@ -121,14 +121,15 @@ jobs:
           mapfile -t tags < <(gh release list --repo "${{ github.repository }}" --limit 200 \
             --json tagName,createdAt \
             --jq '[.[] | select(.tagName | startswith("test-"))] | sort_by(.createdAt) | reverse | .[].tagName')
-          # A build can be kept on purpose: upload an asset named KEEP to it, or save it as a
-          # draft. GitHub has no 'pin this release', so the marker is the pin.
+          # A build can be kept on purpose. GitHub has no 'pin this release', so the marker is the
+          # pin: a title starting with KEEP (one click in the UI), or an asset named KEEP (a
+          # command), or an unreleased draft.
           for old in "${tags[@]:5}"; do
             keep=$(gh release view "$old" --repo "${{ github.repository }}" \
-              --json isDraft,assets \
-              --jq '(.isDraft) or ([.assets[].name] | index("KEEP") != null)')
+              --json isDraft,name,assets \
+              --jq '(.isDraft) or (.name | startswith("KEEP")) or ([.assets[].name] | index("KEEP") != null)')
             if [ "$keep" = "true" ]; then
-              echo "keeping $old (marked KEEP or draft)"
+              echo "keeping $old (title starts with KEEP, KEEP asset, or draft)"
               continue
             fi
             echo "pruning $old"
