@@ -30,7 +30,6 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       installer: ${{ steps.filter.outputs.installer }}
-      macos: ${{ steps.filter.outputs.macos }}
     steps:
       - id: filter
         env:
@@ -41,7 +40,6 @@ jobs:
           set -uo pipefail
           code=true
           installer=true
-          macos=true
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             files=""
             # gh api has timed out on these runners; retry, then fall back to running everything.
@@ -63,23 +61,12 @@ jobs:
               else
                 installer=false
               fi
-              # A macOS runner is the scarcest thing in this workflow and can queue for a quarter
-              # of an hour. It runs the same `npm test` as the Linux job, so it is only worth a
-              # macOS machine when the change could behave differently on that platform: source,
-              # scripts, the VM piece, the app's dependencies. Docs, workflows and the Windows
-              # installer cannot.
-              if printf '%s\n' "$files" | grep -qE '^(src|scripts|vm|test|ui)/|^(package\.json|package-lock\.json|versions\.json|tsconfig\.json)($|/)'; then
-                macos=true
-              else
-                macos=false
-              fi
             else
               echo "could not read this pull request's file list; running every check"
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "installer=$installer" >> "$GITHUB_OUTPUT"
-          echo "macos=$macos" >> "$GITHUB_OUTPUT"
 
   test:
     needs: changes
@@ -109,36 +96,11 @@ jobs:
             bash -n "$f" || exit 1
           done
 
-  # The macOS path (Hypervisor.framework, the vsock bridge, launchd, the launchd/systemd split)
-  # cannot be exercised on Linux, and a red suite on a Mac hides every regression. GitHub's macOS
-  # runners are VMs without a usable HVF, so this builds the launcher and runs the unit tests; the
-  # real VM is checked by hand (scripts/macos-spike and docs/MACOS.md).
-  # Manual only. A macOS runner on this repository queues for a quarter of an hour, it runs the
-  # same `npm test` the Linux job already runs, and it is not a required check, so it cannot block
-  # a merge. Run it from the Actions tab when a change actually needs macOS rather than paying the
-  # queue on every pull request.
-  macos:
-    needs: changes
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-15
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24"
-      - id: node
-        run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ steps.node.outputs.version }}
-      - name: Configure the git identity
-        run: |
-          git config --global user.name ci
-          git config --global user.email ci@example.invalid
-      - run: npm ci
-      - run: npm run build:vm
-      - run: npm test
+  # There is no macOS job. GitHub's macOS runners have no usable Hypervisor.framework, so all it
+  # could do was re-run `npm test` on a platform nobody can install yet — while queuing for a
+  # quarter of an hour. The real macOS path is built and checked by macos-release.yml and
+  # scripts/macos-smoke.mjs on a Mac (docs/MACOS.md); put a job back here when there is a macOS
+  # release to install.
 
   windows-installer:
     needs: changes
