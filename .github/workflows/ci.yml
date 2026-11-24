@@ -30,6 +30,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       installer: ${{ steps.filter.outputs.installer }}
+      macos: ${{ steps.filter.outputs.macos }}
     steps:
       - id: filter
         env:
@@ -40,6 +41,7 @@ jobs:
           set -uo pipefail
           code=true
           installer=true
+          macos=true
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             files=""
             # gh api has timed out on these runners; retry, then fall back to running everything.
@@ -61,12 +63,23 @@ jobs:
               else
                 installer=false
               fi
+              # A macOS runner is the scarcest thing in this workflow and can queue for a quarter
+              # of an hour. It runs the same `npm test` as the Linux job, so it is only worth a
+              # macOS machine when the change could behave differently on that platform: source,
+              # scripts, the VM piece, the app's dependencies. Docs, workflows and the Windows
+              # installer cannot.
+              if printf '%s\n' "$files" | grep -qE '^(src|scripts|vm|test|ui)/|^(package\.json|package-lock\.json|versions\.json|tsconfig\.json)($|/)'; then
+                macos=true
+              else
+                macos=false
+              fi
             else
               echo "could not read this pull request's file list; running every check"
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "installer=$installer" >> "$GITHUB_OUTPUT"
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
 
   test:
     needs: changes
@@ -102,7 +115,7 @@ jobs:
   # real VM is checked by hand (scripts/macos-spike and docs/MACOS.md).
   macos:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
