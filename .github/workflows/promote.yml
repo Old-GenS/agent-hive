@@ -115,6 +115,26 @@ jobs:
           cd "$RUNNER_TEMP/test"
           sha256sum -c SHA256SUMS
 
+      # Temporary: does this job's token have write access at all? A release create was refused
+      # while the job reported Contents: write, so this separates "cannot write anything" from
+      # "cannot create a release". Creates a throwaway tag and deletes it.
+      - name: Probe write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          echo "repo workflow-permission setting:"
+          gh api "repos/${{ github.repository }}/actions/permissions/workflow" || echo "  (cannot read)"
+          ref="refs/tags/probe-${{ github.run_id }}"
+          if out=$(gh api -X POST "repos/${{ github.repository }}/git/refs" \
+            -f ref="$ref" -f sha="$(git rev-parse HEAD)" 2>&1); then
+            echo "PROBE: write works (tag created)"
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/probe-${{ github.run_id }}" >/dev/null \
+              && echo "PROBE: cleanup ok" || echo "PROBE: cleanup FAILED"
+          else
+            echo "PROBE: write refused -> $out"
+          fi
+
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       - name: Sign the tested SHA256SUMS with this workflow's identity
