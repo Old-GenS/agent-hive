@@ -237,7 +237,7 @@ limits). First-run onboarding (`#setup`). Checked by
 **Done, releases and updates:** signed releases with bundled libkrun, libkrunfw, the hardened
 launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, RHEL 8+, Mint, WSL);
 the Windows one-line installer (`install.ps1`: a dedicated WSL2 Ubuntu distro, `hive.cmd` on the
-Windows `PATH`, guide in `docs/WINDOWS.md`), still awaiting its first test on a real machine;
+Windows `PATH`, guide in `docs/WINDOWS.md`), in daily use on a real Windows 11 machine;
 `install-cli.sh` VM-filesystem download progress and KVM/pasta/PATH advice; `hive update` with
 rollback; a nightly channel signed by a separate CI prerelease key; `.github/workflows/release.yml`
 builds the next patch of main, boots that bundle and rootfs in a real VM, signs it keyless and

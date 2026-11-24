@@ -30,7 +30,7 @@ lives on any machine, and `docs/RELEASING.md` has the steps for the next release
 - **libkrun and pasta come from the system** in this step (Fedora: the `libkrun` and `passt`
   packages).
 
-## Step 1b — Windows through WSL2 *(done, installer awaiting its first test on a real machine)*
+## Step 1b — Windows through WSL2 *(done, in daily use on a real machine)*
 
 WSL2 passes `/dev/kvm` through with nested virtualization (on by default on Windows 11), and the
 release bundles libkrun and a static pasta, so any distro can host hive. Windows without KVM still
@@ -64,7 +64,7 @@ Projects belong in the Linux home folder, not `/mnt/c` (much slower). `hive serv
 systemd in WSL; plain `hive serve` is enough, and `wslu`'s `wslview` opens the Windows browser.
 
 **2. `install.ps1`, a one-line Windows installer** (the same pattern as Bun, Deno and uv) —
-written, awaiting its first test on a real machine:
+written, and in daily use on a real machine:
 
 ```powershell
 irm https://raw.githubusercontent.com/Old-GenS/agent-hive/main/install.ps1 | iex
