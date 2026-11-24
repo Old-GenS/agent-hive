@@ -16,11 +16,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The `main` ruleset requires these three check names: `test`, `vm`, `windows-installer`. A job
-# that is skipped never reports, and a required check that never reports blocks the pull request
-# forever — so those jobs always run and only their *work* is gated by `changes`. A documentation
-# pull request then gets three green checks in under a minute instead of waiting for a VM boot.
-# `macos` is not required, so it is skipped outright when nothing it tests changed.
+# The `main` ruleset requires `test`, `vm` and `windows-installer`. GitHub counts a *skipped*
+# required check as satisfied, so a documentation pull request can skip those jobs outright and
+# merge in seconds instead of waiting for a VM boot.
+#
+# The one way that goes wrong is a filter that cannot decide and says "skipped" for a change that
+# really needed testing. So `changes` defaults to "run everything" and only narrows it down from a
+# file list it actually read; if the API call fails, everything runs.
 jobs:
   # Decides whether the slow jobs have anything to check.
   changes:
@@ -33,61 +35,62 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "installer=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          # No `set -e`: a failed `gh api` or a non-matching `grep` must not fail this job, because
+          # a failed filter would skip the very checks it is supposed to select.
+          set -uo pipefail
+          code=true
+          installer=true
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files=""
+            # gh api has timed out on these runners; retry, then fall back to running everything.
+            for attempt in 1 2 3; do
+              if files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
+                --paginate --jq '.[].filename' 2>/dev/null) && [ -n "$files" ]; then
+                break
+              fi
+              files=""
+              sleep $((attempt * 5))
+            done
+            if [ -n "$files" ]; then
+              printf '%s\n' "$files"
+              if ! printf '%s\n' "$files" | grep -qE '^(src|scripts|image|vm|test|ui)/|^(package\.json|package-lock\.json|versions\.json|tsconfig\.json|install\.sh|install\.ps1)($|/)|^\.github/'; then
+                code=false
+              fi
+              if printf '%s\n' "$files" | grep -qE '^install\.ps1$'; then
+                installer=true
+              else
+                installer=false
+              fi
+            else
+              echo "could not read this pull request's file list; running every check"
+            fi
           fi
-          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
-            --paginate --jq '.[].filename')
-          printf '%s\n' "$files"
-          if printf '%s\n' "$files" | grep -qE '^(src|scripts|image|vm|test|ui)/|^(package\.json|package-lock\.json|versions\.json|tsconfig\.json|install\.sh|install\.ps1)($|/)|^\.github/'; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          fi
-          if printf '%s\n' "$files" | grep -qE '^install\.ps1$'; then
-            echo "installer=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "installer=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "installer=$installer" >> "$GITHUB_OUTPUT"
 
   test:
     needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - name: This change needs no code tests
-        if: needs.changes.outputs.code != 'true'
-        run: 'echo "docs-only change: skipping the code tests"'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.changes.outputs.code == 'true'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: needs.changes.outputs.code == 'true'
         with:
           node-version: "24"
       - id: node
-        if: needs.changes.outputs.code == 'true'
         run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: needs.changes.outputs.code == 'true'
         with:
           node-version: ${{ steps.node.outputs.version }}
       - name: Configure the git identity
-        if: needs.changes.outputs.code == 'true'
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
       - run: npm ci
-        if: needs.changes.outputs.code == 'true'
       - run: npm run build:vm
-        if: needs.changes.outputs.code == 'true'
       - run: npm test
-        if: needs.changes.outputs.code == 'true'
       - run: npm run build:ui
-        if: needs.changes.outputs.code == 'true'
       - name: Syntax-check every shell script
-        if: needs.changes.outputs.code == 'true'
         run: |
           for f in scripts/*.sh vm/*.sh; do
             bash -n "$f" || exit 1
@@ -122,17 +125,12 @@ jobs:
 
   windows-installer:
     needs: changes
+    if: needs.changes.outputs.installer == 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - name: install.ps1 was not touched
-        if: needs.changes.outputs.installer != 'true'
-        run: Write-Host "install.ps1 is unchanged; nothing to parse"
-        shell: pwsh
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.changes.outputs.installer == 'true'
       - name: Parse install.ps1 in PowerShell 7 and Windows PowerShell 5.1
-        if: needs.changes.outputs.installer == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -142,7 +140,6 @@ jobs:
           powershell.exe -NoProfile -Command '$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("install.ps1", [ref]$null, [ref]$e); if ($e.Count) { $e; exit 1 }'
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Analyse install.ps1
-        if: needs.changes.outputs.installer == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -156,46 +153,34 @@ jobs:
 
   vm:
     needs: [test, changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
-      - name: This change needs no VM
-        if: needs.changes.outputs.code != 'true'
-        run: 'echo "docs-only change: no VM boot needed"'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: needs.changes.outputs.code == 'true'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: needs.changes.outputs.code == 'true'
         with:
           node-version: "24"
       - id: node
-        if: needs.changes.outputs.code == 'true'
         run: echo "version=$(node -p "require('./versions.json').node")" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        if: needs.changes.outputs.code == 'true'
         with:
           node-version: ${{ steps.node.outputs.version }}
       - run: npm ci
-        if: needs.changes.outputs.code == 'true'
       - name: Enable KVM and install pasta
-        if: needs.changes.outputs.code == 'true'
         run: bash scripts/ci-enable-kvm.sh
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: needs.changes.outputs.code == 'true'
         with:
           path: build/native
           key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
       - name: Create a throwaway signing key
-        if: needs.changes.outputs.code == 'true'
         run: node scripts/keygen.mjs "$RUNNER_TEMP/release-signing-key.pem" > /dev/null
       - name: Build the release
-        if: needs.changes.outputs.code == 'true'
         env:
           HIVE_SIGNING_KEY: ${{ runner.temp }}/release-signing-key.pem
           HIVE_RELEASE_SKIP_SOURCES: "1"
         run: npm run release
       - name: Extract the app bundle and its rootfs
-        if: needs.changes.outputs.code == 'true'
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
@@ -210,5 +195,4 @@ jobs:
           echo "HIVE_BUNDLE_ROOT=$RUNNER_TEMP/bundle/hive-$version" >> "$GITHUB_ENV"
           echo "HIVE_ROOTFS=$dest" >> "$GITHUB_ENV"
       - name: Real VM smoke test
-        if: needs.changes.outputs.code == 'true'
         run: node scripts/vm-smoke.mjs
