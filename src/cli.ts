@@ -1304,7 +1304,7 @@ async function cmdUninstall(args: string[]): Promise<number> {
   const keepConfig = keepConfigFlag || !all;
 
   const finish = (plan: UninstallPlan): number => {
-    const lines = runUninstall(plan, { dryRun });
+    const { lines, failed } = runUninstall(plan, { dryRun });
     for (const line of lines) process.stdout.write(`hive: ${line}\n`);
     if (dryRun) return 0;
     if (plan.sourceInstall) {
@@ -1317,6 +1317,40 @@ async function cmdUninstall(args: string[]): Promise<number> {
       process.stdout.write(
         `hive: to remove the whole WSL distro too, run in Windows: wsl --unregister ${distro}\n`,
       );
+    }
+    if (failed.length > 0) {
+      const paths = failed.filter((failure) => failure.kind === "path");
+      const profiles = failed.filter((failure) => failure.kind === "lines");
+      process.stdout.write(
+        `hive: ${failed.length} thing${failed.length === 1 ? "" : "s"} could not be removed:\n`,
+      );
+      for (const failure of failed) {
+        process.stdout.write(`  ${tildePath(failure.path)} (${failure.reason})\n`);
+      }
+      // A root-owned path from a run started with sudo is the usual case; hive itself never runs
+      // as root, so it cannot clean these up itself.
+      const denied = paths.filter((failure) => failure.reason === "permission denied");
+      const stuck = paths.filter((failure) => failure.reason !== "permission denied");
+      if (denied.length > 0) {
+        process.stdout.write(
+          "hive: they belong to another user (a run started with sudo leaves root-owned files); hive never uses sudo.\n",
+        );
+        process.stdout.write(
+          `hive: finish with: sudo rm -rf ${denied.map((failure) => `'${failure.path}'`).join(" ")}\n`,
+        );
+      }
+      if (stuck.length > 0) {
+        process.stdout.write("hive: something is still using them; close it and remove them by hand:\n");
+        process.stdout.write(
+          `hive:   rm -rf ${stuck.map((failure) => `'${failure.path}'`).join(" ")}\n`,
+        );
+      }
+      for (const failure of profiles) {
+        process.stdout.write(
+          `hive: delete the "# added by agent-hive" lines from ${tildePath(failure.path)} yourself\n`,
+        );
+      }
+      return 1;
     }
     process.stdout.write("hive: uninstalled. Open a new terminal so your PATH no longer has ~/.local/bin/hive.\n");
     return 0;

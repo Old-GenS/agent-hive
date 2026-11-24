@@ -18,6 +18,7 @@ import {
   readdirSync,
   readlinkSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -326,40 +327,110 @@ function stripMarkedLines(file: string): number {
   return removed;
 }
 
+/** Something the plan could not do: the path, what it was, and why in the user's terms. */
+export interface UninstallFailure {
+  path: string;
+  /** `path`: a file or folder to delete; `lines`: the installer's lines in a profile file. */
+  kind: "path" | "lines";
+  reason: string;
+}
+
+/** What `runUninstall` did: one line per action, and whatever it could not do. */
+export interface UninstallRun {
+  lines: string[];
+  failed: UninstallFailure[];
+}
+
+/**
+ * Remove a path without following a symlink. `fs.rm` stats the target first and treats a dangling
+ * link as already gone, so the `~/.local/bin/hive` link — dangling by the time its data dir has
+ * been removed — has to be unlinked directly.
+ */
+function removePath(path: string): void {
+  if (lstatSync(path).isSymbolicLink()) {
+    unlinkSync(path);
+    return;
+  }
+  rmSync(path, { recursive: true, force: true });
+}
+
+/** A filesystem error as the short phrase that follows the path in the CLI's output. */
+export function describeFsError(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  switch (code) {
+    case "EACCES":
+    case "EPERM":
+      return "permission denied";
+    case "EBUSY":
+      return "in use";
+    case "EROFS":
+      return "read-only";
+    case "ENOTEMPTY":
+      return "not empty";
+    default:
+      return code ?? String(err);
+  }
+}
+
 /**
  * Perform the plan. Returns one line per action taken (or, with `dryRun`, the same lines prefixed
- * `would `); with `dryRun` nothing is touched. Refuses when a run is still going.
+ * `would `) plus whatever it could not remove; with `dryRun` nothing is touched. A path that is
+ * not the user's to delete — a run started with `sudo` leaves root-owned files behind — is
+ * reported and the rest of the plan still goes ahead, so an uninstall never stops half-done.
+ * Refuses when a run is still going, and when a path is outside the home folder.
  */
 export function runUninstall(
   plan: UninstallPlan,
   o: { dryRun?: boolean } = {},
-): string[] {
+): UninstallRun {
   assertNoLiveRuns();
   const dryRun = o.dryRun === true;
   const lines: string[] = [];
+  const failed: UninstallFailure[] = [];
   const say = (text: string): void => {
     lines.push((dryRun ? "would " : "") + text);
   };
+  const attempt = (path: string, kind: UninstallFailure["kind"], act: () => void, done: string): void => {
+    if (dryRun) {
+      say(done);
+      return;
+    }
+    try {
+      act();
+      say(done);
+    } catch (err) {
+      const reason = describeFsError(err);
+      failed.push({ path, kind, reason });
+      lines.push(`could not ${kind === "lines" ? "update" : "remove"} ${path} (${reason})`);
+    }
+  };
 
   if (plan.service) {
-    if (!dryRun) uninstallService();
-    say("stop and remove the background service");
+    attempt(
+      servicePaths().file,
+      "path",
+      () => uninstallService(),
+      "stop and remove the background service",
+    );
   }
 
   for (const entry of uninstallEntries(plan)) {
     if (!entry.exists) continue;
     assertRemovable(entry.path);
     const size = entry.bytes === undefined ? "" : ` (${sizeLabel(entry.bytes)})`;
-    if (!dryRun) rmSync(entry.path, { recursive: true, force: true });
-    say(`remove ${entry.path}${size}`);
+    attempt(entry.path, "path", () => removePath(entry.path), `remove ${entry.path}${size}`);
   }
 
   for (const { file } of plan.pathLines) {
     assertRemovable(file);
     const linesBefore = markedLines(file).length;
-    if (!dryRun) stripMarkedLines(file);
-    say(`remove ${linesBefore} "${PATH_MARKER}" line${linesBefore === 1 ? "" : "s"} from ${file}`);
+    attempt(
+      file,
+      "lines",
+      () => stripMarkedLines(file),
+      `remove ${linesBefore} "${PATH_MARKER}" line${linesBefore === 1 ? "" : "s"} from ${file}`,
+    );
   }
 
-  return lines;
+  return { lines, failed };
 }

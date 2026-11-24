@@ -3,7 +3,7 @@
 // HIVE_SERVICE_DIR and HIVE_KEYS_FILE point into temp dirs, and --dry-run runs no commands.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const cli = join(repoRoot, "dist", "cli.js");
-const { launchdPlist, servicePaths, systemdUnit } = await import("../dist/service.js");
+const { launchdPlist, servicePaths, systemdUnit, uninstallService } = await import("../dist/service.js");
 
 function tempDir(prefix) {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -66,6 +66,33 @@ test("servicePaths uses HIVE_SERVICE_DIR when set", () => {
   } finally {
     if (saved === undefined) delete process.env.HIVE_SERVICE_DIR;
     else process.env.HIVE_SERVICE_DIR = saved;
+  }
+});
+
+// The Linux branch only spawns `systemctl`, so a fake one on PATH exercises it on any platform.
+test("uninstallService removes the unit even when systemctl cannot reach a user bus", () => {
+    const dir = tempDir("hive-service-uninstall-");
+  const bin = tempDir("hive-service-bin-");
+  const file = join(dir, "agent-hive.service");
+  writeFileSync(file, "[Unit]\nDescription=agent-hive\n");
+  // The systemctl a WSL box without a systemd user session has: exit 1, "Failed to connect to
+  // bus: Permission denied" on stderr. That must not keep the unit file around.
+  writeFileSync(
+    join(bin, "systemctl"),
+    "#!/bin/sh\necho 'Failed to connect to bus: Permission denied' >&2\nexit 1\n",
+    { mode: 0o755 },
+  );
+  const saved = { dir: process.env.HIVE_SERVICE_DIR, path: process.env.PATH };
+  process.env.HIVE_SERVICE_DIR = dir;
+  process.env.PATH = bin;
+  try {
+    const result = uninstallService({ platform: "linux" });
+    assert.equal(result.file, file);
+    assert.equal(existsSync(file), false, "the unit file is removed");
+  } finally {
+    if (saved.dir === undefined) delete process.env.HIVE_SERVICE_DIR;
+    else process.env.HIVE_SERVICE_DIR = saved.dir;
+    process.env.PATH = saved.path;
   }
 });
 

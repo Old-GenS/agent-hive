@@ -210,6 +210,11 @@ saved API keys and settings (`~/.config/agent-hive`) are kept unless you answer 
 questions or pass `--all`; `--keep-runs` / `--keep-config` always keep them. A copy that runs from
 a source checkout is left where it is.
 
+If something can't be removed — a run started with `sudo` leaves root-owned files — it names each
+one and prints the `sudo rm -rf` line that finishes the job, and removes everything else first.
+`hive uninstall` never uses sudo itself. A background service it cannot stop (no systemd user
+session, as on many WSL and container setups) is skipped rather than blocking the uninstall.
+
 If hive can no longer run, or you want to remove it by hand:
 
 ```bash

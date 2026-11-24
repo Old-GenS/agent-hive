@@ -152,6 +152,8 @@ interface RunnerCommand {
   argv: string[];
   /** A command that may legitimately fail (e.g. stopping a service that isn't running). */
   ignoreFailure?: boolean;
+  /** Throw the command's output away: used when its failure is expected and its own message is noise. */
+  quiet?: boolean;
 }
 
 /** Run the commands with argument arrays; with `dryRun` only show what would run. */
@@ -162,7 +164,9 @@ function runCommands(commands: RunnerCommand[], dryRun: boolean): void {
       continue;
     }
     try {
-      execFileSync(command.argv[0], command.argv.slice(1), { stdio: "inherit" });
+      execFileSync(command.argv[0], command.argv.slice(1), {
+        stdio: command.quiet ? "ignore" : "inherit",
+      });
     } catch (err) {
       if (!command.ignoreFailure) throw err;
     }
@@ -283,13 +287,25 @@ export function uninstallService(o: { platform?: string; dryRun?: boolean } = {}
   const platform = o.platform ?? process.platform;
   assertPlatform(platform);
   const paths = servicePaths(platform);
+  // Removing the unit is the point; stopping it first is a courtesy. On WSL and in containers
+  // there is often no systemd user bus (systemctl then exits 1 with "Failed to connect to bus:
+  // Permission denied"), and a service that is already gone is not a reason to keep the files.
   if (platform === "linux") {
-    runCommands([{ argv: ["systemctl", "--user", "disable", "--now", `${SERVICE_NAME}.service`] }], o.dryRun ?? false);
+    runCommands(
+      [
+        {
+          argv: ["systemctl", "--user", "disable", "--now", `${SERVICE_NAME}.service`],
+          ignoreFailure: true,
+          quiet: true,
+        },
+      ],
+      o.dryRun ?? false,
+    );
     if (!o.dryRun) rmSync(paths.file, { force: true });
-    runCommands([{ argv: ["systemctl", "--user", "daemon-reload"] }], o.dryRun ?? false);
+    runCommands([{ argv: ["systemctl", "--user", "daemon-reload"], ignoreFailure: true, quiet: true }], o.dryRun ?? false);
   } else {
     runCommands(
-      [{ argv: ["launchctl", "bootout", `gui/${uid()}/${SERVICE_LABEL}`], ignoreFailure: true }],
+      [{ argv: ["launchctl", "bootout", `gui/${uid()}/${SERVICE_LABEL}`], ignoreFailure: true, quiet: true }],
       o.dryRun ?? false,
     );
     if (!o.dryRun) rmSync(paths.file, { force: true });
