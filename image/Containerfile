@@ -58,7 +58,7 @@ COPY hive-netd.c /tmp/hive-netd.c
 RUN gcc -O2 -static -o /usr/local/bin/hive-netd /tmp/hive-netd.c && rm /tmp/hive-netd.c
 
 # Pinned so a pi release can't change behaviour under a running deployment; bump deliberately.
-ARG PI_VERSION=1.6.0
+ARG PI_VERSION=1.6.1
 RUN npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" corepack && corepack enable \
     && npm cache clean --force
 
