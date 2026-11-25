@@ -26,8 +26,7 @@
       "description": "libkrun is built from source at a tag; the build verifies the tag's commit.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["(?<prefix>\"tag\":\\s*\")(?<currentValue>v?[0-9.]+)(?<suffix>\")"],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
+      "matchStrings": ["(?:\"tag\":\\s*\")(?<currentValue>v?[0-9.]+)(?:\")"],
       "depNameTemplate": "containers/libkrun",
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>.*)$"
@@ -36,8 +35,7 @@
       "description": "libkrunfw: the prebuilt guest kernel, one release asset per platform.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["(?<prefix>\"libkrunfw\":\\s*\\{\\s*\"version\":\\s*\")(?<currentValue>[^\"]+)(?<suffix>\")"],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
+      "matchStrings": ["(?:\"libkrunfw\":\\s*\\{\\s*\"version\":\\s*\")(?<currentValue>[^\"]+)(?:\")"],
       "depNameTemplate": "containers/libkrunfw",
       "datasourceTemplate": "github-releases"
     },
@@ -45,8 +43,7 @@
       "description": "passt lives on passt.top, not GitHub; its tags are dated snapshots.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["(?<prefix>\"passt\":\\s*\\{\\s*\"version\":\\s*\")(?<currentValue>[^\"]+)(?<suffix>\")"],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
+      "matchStrings": ["(?:\"passt\":\\s*\\{\\s*\"version\":\\s*\")(?<currentValue>[^\"]+)(?:\")"],
       "depNameTemplate": "passt",
       "packageNameTemplate": "https://passt.top/passt",
       "datasourceTemplate": "git-tags"
@@ -55,8 +52,7 @@
       "description": "The Rust toolchain the native pieces are built with.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["(?<prefix>\"rust\":\\s*\")(?<currentValue>[0-9.]+)(?<suffix>\")"],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
+      "matchStrings": ["(?:\"rust\":\\s*\")(?<currentValue>[0-9.]+)(?:\")"],
       "depNameTemplate": "rust-lang/rust",
       "datasourceTemplate": "github-tags"
     },
@@ -65,17 +61,15 @@
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
       "matchStrings": [
-        "(?<prefix>\"buildImage\":\\s*\"(?<depName>quay\\.io/pypa/manylinux_2_28_x86_64)@)(?<currentDigest>sha256:[0-9a-f]+)(?<suffix>\")"
+        "(?:\"buildImage\":\\s*\"(?<depName>quay\\.io/pypa/manylinux_2_28_x86_64)@)(?<currentDigest>sha256:[0-9a-f]+)(?:\")"
       ],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newDigest}}}{{{suffix}}}",
       "datasourceTemplate": "docker"
     },
     {
       "description": "The Node.js the release bundle ships.",
       "customType": "regex",
       "managerFilePatterns": ["/^versions\\.json$/"],
-      "matchStrings": ["(?<prefix>\"node\":\\s*\")(?<currentValue>[0-9.]+)(?<suffix>\")"],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}{{{suffix}}}",
+      "matchStrings": ["(?:\"node\":\\s*\")(?<currentValue>[0-9.]+)(?:\")"],
       "depNameTemplate": "node",
       "datasourceTemplate": "node-version"
     },
@@ -83,8 +77,7 @@
       "description": "pi, the agent inside the VM, pinned in the image.",
       "customType": "regex",
       "managerFilePatterns": ["/^image\\/Containerfile$/"],
-      "matchStrings": ["(?<prefix>ARG PI_VERSION=)(?<currentValue>[0-9.]+)"],
-      "autoReplaceStringTemplate": "{{{prefix}}}{{{newValue}}}",
+      "matchStrings": ["(?:ARG PI_VERSION=)(?<currentValue>[0-9.]+)"],
       "depNameTemplate": "@earendil-works/pi-coding-agent",
       "datasourceTemplate": "npm"
     }
