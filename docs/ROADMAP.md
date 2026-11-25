@@ -13,7 +13,7 @@ lives on any machine, and `docs/RELEASING.md` has the steps for the next release
 
 - **Release build** (`scripts/build-release.sh`): an app bundle containing `bin/hive`, a bundled
   Node, the `hive-vm` launcher and the CLI as one bundled file. The VM filesystem (rootfs) ships as
-  a separate download. A `SHA256SUMS` file covers both and is signed with an ed25519 release key.
+  a separate download. A `SHA256SUMS` file covers both and is signed keyless by the promote workflow.
 - **`install-cli.sh`:** installs the latest release into
   `~/.local/share/agent-hive/versions/<version>`, links `~/.local/bin/hive`, then runs
   `hive setup`.

@@ -14,7 +14,6 @@
  *
  *   node scripts/release-rootfs.mjs --reuse <tarball> --info <rootfs-info.json> --image-tree <hash>
  */
-import { createPublicKey, createPrivateKey, sign, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
@@ -130,33 +129,6 @@ export function sumsEntry(sums, name) {
     if (m !== null && m[2] === name) return m[1];
   }
   return undefined;
-}
-
-/** Verify an ed25519 signature (base64) over `data` with a PEM public key. */
-export function verifySums(data, signatureBase64, publicKeyPem) {
-  try {
-    const signature = Buffer.from(signatureBase64.trim(), "base64");
-    if (signature.length === 0) return false;
-    return verify(null, data, createPublicKey(publicKeyPem), signature);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Read one PEM constant out of src/release-key.ts (`RELEASE_PUBLIC_KEY` or
- * `PRERELEASE_PUBLIC_KEY`). Keeping the keys in that file means the promotion command and the CLI
- * trust the same values instead of a second copy that can drift.
- */
-export function readPublicKey(source, name) {
-  const m = new RegExp(String.raw`${name}\s*=\s*` + "`([^`]+)`").exec(source);
-  if (m === null) throw new Error(`no ${name} in src/release-key.ts`);
-  return m[1];
-}
-
-/** Sign `data` with an ed25519 PEM private key, base64 (tests and the release signer use this). */
-export function signSums(data, privateKeyPem) {
-  return sign(null, data, createPrivateKey(privateKeyPem)).toString("base64");
 }
 
 function usage() {

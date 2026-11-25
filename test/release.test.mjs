@@ -3,7 +3,7 @@
 // release API) is redirected to temp dirs and a local HTTP server before any dist module loads.
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, sign as cryptoSign } from "node:crypto";
+import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import {
@@ -36,10 +36,22 @@ delete process.env.GITHUB_TOKEN;
 delete process.env.HIVE_BUNDLE_ROOT;
 delete process.env.HIVE_NO_UPDATE_CHECK;
 
-const { privateKey: testPrivateKey, publicKey: testPublicKey } = generateKeyPairSync("ed25519");
-const publicKey = testPublicKey.export({ type: "spki", format: "pem" });
-const { privateKey: otherPrivateKey, publicKey: otherPublicKey } = generateKeyPairSync("ed25519");
-const otherPublicKeyPem = otherPublicKey.export({ type: "spki", format: "pem" });
+/**
+ * The identity the release workflow's certificate names, and a stand-in verifier: the real one
+ * checks a sigstore bundle against Fulcio and Rekor, so tests fake it with a JSON file instead.
+ */
+const TEST_IDENTITY = {
+  issuer: "https://token.actions.githubusercontent.com",
+  identity: "https://github.com/test/test/.github/workflows/promote.yml@refs/heads/main",
+};
+const OTHER_IDENTITY = {
+  issuer: TEST_IDENTITY.issuer,
+  identity: "https://example.invalid/other",
+};
+const fakeVerify = async (sums, bundleJson, identity) => {
+  const b = JSON.parse(bundleJson);
+  return b.sums === sha256(sums) && b.identity === identity.identity;
+};
 
 function sha256(buf) {
   return createHash("sha256").update(buf).digest("hex");
@@ -47,9 +59,9 @@ function sha256(buf) {
 
 /**
  * Build the files of one release: the app bundle, its rootfs, a SHA256SUMS covering both and a
- * signature over the sums. `image` ships the macOS arm64 disk image instead of the Linux folder
- * tarball (badMagic leaves the ext4 superblock out); `tamper: "app"` corrupts the app after
- * signing, `tamper: "sig"` signs the sums with a different key.
+ * fake sigstore bundle over the sums. `image` ships the macOS arm64 disk image instead of the
+ * Linux folder tarball (badMagic leaves the ext4 superblock out); `tamper: "app"` corrupts the app
+ * after signing, `tamper: "sig"` names a different identity in the bundle.
  */
 function makeRelease(version, rver, { tamper, image } = {}) {
   const dir = mkdtempSync(join(root, "rel-"));
@@ -84,13 +96,16 @@ function makeRelease(version, rver, { tamper, image } = {}) {
   const names = rootfsName ? [appName, rootfsName] : [appName];
   const sums = names.map((name) => `${sha256(readFileSync(join(dir, name)))}  ${name}`).join("\n") + "\n";
   writeFileSync(join(dir, "SHA256SUMS"), sums);
-  const sigKey = tamper === "sig" ? otherPrivateKey : testPrivateKey;
-  writeFileSync(join(dir, "SHA256SUMS.sig"), cryptoSign(null, Buffer.from(sums), sigKey).toString("base64") + "\n");
+  const identity = tamper === "sig" ? OTHER_IDENTITY.identity : TEST_IDENTITY.identity;
+  writeFileSync(
+    join(dir, "SHA256SUMS.sigstore.json"),
+    JSON.stringify({ sums: sha256(Buffer.from(sums)), identity }),
+  );
 
   if (tamper === "app") appendFileSync(join(dir, appName), "x");
 
   const files = new Map();
-  for (const name of [...names, "SHA256SUMS", "SHA256SUMS.sig"]) {
+  for (const name of [...names, "SHA256SUMS", "SHA256SUMS.sigstore.json"]) {
     files.set(name, readFileSync(join(dir, name)));
   }
   return { version, files };
@@ -191,10 +206,7 @@ test("compareVersions orders prereleases below their release", () => {
 });
 
 
-test("this build trusts the promote workflow and the old ed25519 key", () => {
-  const keys = release.trustedKeys();
-  assert.equal(keys.length, 1);
-  assert.match(keys[0], /^-----BEGIN PUBLIC KEY-----/);
+test("this build trusts only the promote workflow", () => {
   const identities = release.trustedIdentities();
   assert.equal(identities.length, 1);
   assert.equal(identities[0].issuer, "https://token.actions.githubusercontent.com");
@@ -202,19 +214,10 @@ test("this build trusts the promote workflow and the old ed25519 key", () => {
   assert.match(identities[0].identity, /\.github\/workflows\/promote\.yml@refs\/heads\/main$/);
 });
 
-test("verifySums accepts only the right key and body", () => {
-  const body = Buffer.from("hello\n");
-  const good = cryptoSign(null, body, testPrivateKey).toString("base64");
-  const wrong = cryptoSign(null, body, otherPrivateKey).toString("base64");
-  assert.equal(release.verifySums(body, good, publicKey), true);
-  assert.equal(release.verifySums(body, wrong, publicKey), false);
-  assert.equal(release.verifySums(Buffer.from("hell0\n"), good, publicKey), false);
-});
-
 test("install 1.1.0 and activate it", async () => {
   current = makeRelease("1.1.0", "aaaaaaaaaaaa");
   const rel = await release.fetchRelease();
-  const dir = await release.installRelease(rel, { publicKeys: [publicKey], platform: "linux" });
+  const dir = await release.installRelease(rel, { identities: [TEST_IDENTITY], verify: fakeVerify, platform: "linux" });
   assert.equal(dir, join(dataDir, "versions/1.1.0"));
 
   release.activate("1.1.0");
@@ -235,7 +238,7 @@ test("install 1.2.0 reuses the rootfs, then rollback swaps current and previous"
   assert.equal(requestCounts.get(rootfsPath), 1);
 
   const rel = await release.fetchRelease();
-  await release.installRelease(rel, { publicKeys: [publicKey], platform: "linux" });
+  await release.installRelease(rel, { identities: [TEST_IDENTITY], verify: fakeVerify, platform: "linux" });
   assert.equal(requestCounts.get(rootfsPath), 1);
 
   release.activate("1.2.0");
@@ -292,7 +295,7 @@ test("ensureRootfs installs the macOS image and setupRootfs links current.img", 
   writeFileSync(join(bundle, "ROOTFS_VERSION"), rver + "\n");
   process.env.HIVE_BUNDLE_ROOT = bundle;
   try {
-    const path = await release.setupRootfs({ publicKeys: [publicKey], platform: "darwin" });
+    const path = await release.setupRootfs({ identities: [TEST_IDENTITY], verify: fakeVerify, platform: "darwin" });
     assert.equal(path, image);
     assert.equal(readlinkSync(release.rootfsCurrentLink("darwin")), image);
     assert.equal(requestCounts.get("/dl/" + name), hits + 1, "an installed image is not downloaded again");
@@ -329,28 +332,39 @@ test("ensureRootfs names the missing asset for the platform", async () => {
 test("a tampered app tarball is rejected and current stays unchanged", async () => {
   current = makeRelease("1.3.0", "aaaaaaaaaaaa", { tamper: "app" });
   const before = readlinkSync(release.currentLink());
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey], platform: "linux" }), /checksum mismatch/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { identities: [TEST_IDENTITY], verify: fakeVerify, platform: "linux" }), /checksum mismatch/);
   assert.equal(readlinkSync(release.currentLink()), before);
 });
 
-test("a signature from the wrong key is rejected", async () => {
+test("a bundle naming the wrong identity is rejected", async () => {
   current = makeRelease("1.4.0", "aaaaaaaaaaaa", { tamper: "sig" });
-  await assert.rejects(release.installRelease(await release.fetchRelease(), { publicKeys: [publicKey], platform: "linux" }), /signature/);
+  await assert.rejects(release.installRelease(await release.fetchRelease(), { identities: [TEST_IDENTITY], verify: fakeVerify, platform: "linux" }), /signature/);
+});
+
+test("a release with only the old SHA256SUMS.sig is rejected as not signed keyless", async () => {
+  current = makeRelease("1.4.1", "aaaaaaaaaaaa");
+  // Serve the old ed25519 signature instead of the bundle, as a pre-keyless release did.
+  current.files.delete("SHA256SUMS.sigstore.json");
+  current.files.set("SHA256SUMS.sig", Buffer.from("b2xkIGVkMjU1MTkgc2lnbmF0dXJl\n"));
+  await assert.rejects(
+    release.installRelease(await release.fetchRelease(), { identities: [TEST_IDENTITY], verify: fakeVerify, platform: "linux" }),
+    /not signed keyless/,
+  );
 });
 
 test("no trusted signer refuses to verify anything", async () => {
   current = makeRelease("1.5.0", "aaaaaaaaaaaa");
   await assert.rejects(
-    release.installRelease(await release.fetchRelease(), { publicKeys: [], identities: [], platform: "linux" }),
+    release.installRelease(await release.fetchRelease(), { identities: [], platform: "linux" }),
     /trusts no release signer/,
   );
 });
 
-test("a release signed by a second key installs only when that key is trusted", async () => {
-  current = makeRelease("1.6.0", "aaaaaaaaaaaa", { tamper: "sig" });
+test("a release signed by another identity installs only when that identity is trusted", async () => {
+  current = makeRelease("1.6.0", "aaaaaaaaaaaa");
   const rel = await release.fetchRelease();
-  await assert.rejects(release.installRelease(rel, { publicKeys: [publicKey], platform: "linux" }), /signature/);
-  const dir = await release.installRelease(rel, { publicKeys: [publicKey, otherPublicKeyPem], platform: "linux" });
+  await assert.rejects(release.installRelease(rel, { identities: [OTHER_IDENTITY], verify: fakeVerify, platform: "linux" }), /signature/);
+  const dir = await release.installRelease(rel, { identities: [OTHER_IDENTITY, TEST_IDENTITY], verify: fakeVerify, platform: "linux" });
   assert.equal(dir, join(dataDir, "versions/1.6.0"));
   assert.ok(existsSync(join(dir, "VERSION")));
 });

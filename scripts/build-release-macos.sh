@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Build a signed macOS arm64 Agent Hive release: an app bundle with Node, the bundled CLI, the
+# Build an unsigned macOS arm64 Agent Hive release: an app bundle with Node, the bundled CLI, the
 # VM launcher and libkrun/libkrunfw, plus the arm64 VM image. Run from the repo root.
 #
 #   bash scripts/build-release-macos.sh --rootfs-image <hive-rootfs-<id>-linux-arm64.img[.gz]>
 #
 # The image is built on arm64 Linux (scripts/build-rootfs-image.sh in the macos-image workflow);
 # macOS cannot make ext4 filesystems. If release/<version>/ already holds the Linux assets, this
-# adds the macOS assets and re-signs one SHA256SUMS covering all of them, so one GitHub release can
-# carry both platforms. Needs the release signing key (docs/RELEASING.md).
+# adds the macOS assets and writes one unsigned SHA256SUMS covering all of them, so one GitHub
+# release can carry both platforms. The output is unsigned; promote.yml signs it with a keyless
+# sigstore bundle (docs/RELEASING.md).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -61,8 +62,6 @@ if [[ -n "${HIVE_RELEASE_VERSION:-}" ]]; then
     || die "HIVE_RELEASE_VERSION must look like 1.2.3 or 1.2.3-nightly.4 (got \"$version\")"
 fi
 NODE_VERSION=${HIVE_NODE_VERSION:-$(node -p "require('./versions.json').node")}
-key=${HIVE_SIGNING_KEY:-$HOME/.config/agent-hive/release-signing-key.pem}
-[[ -f "$key" ]] || die "signing key $key not found (create it with node scripts/keygen.mjs $key)"
 
 out="release/$version"
 mkdir -p "$out"
@@ -210,6 +209,6 @@ fi
     done
   fi
 )
-node scripts/sign.mjs "$key" "$out/SHA256SUMS"
 
+# The output is unsigned; promote.yml signs it with a keyless sigstore bundle.
 ls -l "$out"
