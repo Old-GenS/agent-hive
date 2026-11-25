@@ -24,6 +24,7 @@ import {
   formatCost,
   formatDuration,
   green,
+  plainText,
   red,
   select,
   shouldOpenBrowser,
@@ -62,6 +63,14 @@ hive --version
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Text that may carry the agent's own bytes, for a terminal. Filtered only when a person is
+ * watching: piped output is machine input (a patch, a script) and must stay byte-exact.
+ */
+function forTerminal(text: string, stream: { isTTY?: boolean } = process.stdout): string {
+  return stream.isTTY ? plainText(text) : text;
 }
 
 function writeEvent(json: boolean, render: (e: any) => string | undefined, e: any): void {
@@ -651,7 +660,8 @@ async function cmdDiff(args: string[]): Promise<number> {
     console.error("hive: no changes");
     return 0;
   }
-  process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+  const shown = forTerminal(text);
+  process.stdout.write(shown.endsWith("\n") ? shown : shown + "\n");
   return 0;
 }
 
@@ -1931,6 +1941,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(`hive: ${err instanceof Error ? err.message : String(err)}`);
+  // git's own messages carry the agent's commit subjects, so this is another way its bytes reach
+  // a terminal; filter it the same way, and only when a person is watching.
+  console.error(forTerminal(`hive: ${err instanceof Error ? err.message : String(err)}`, process.stderr));
   process.exitCode = 1;
 });

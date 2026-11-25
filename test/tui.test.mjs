@@ -12,6 +12,7 @@ const {
   formatCost,
   formatDuration,
   green,
+  plainText,
   renderMarkdownTerminal,
   select,
   stripAnsi,
@@ -98,6 +99,19 @@ test("table pads by visible width, so ANSI codes don't break the alignment", () 
     ),
     "a    x\nbbb  y",
   );
+});
+
+test("plainText removes escape sequences, keeps newlines and tabs", () => {
+  // OSC 52 (clipboard), OSC 8 (a link), CSI, and a DCS: all of it goes, and the payload with it.
+  assert.equal(
+    plainText("a\u001b]52;c;cGF3bmVk\u0007b\u001b]8;;https://x\u0007c\u001b]8;;\u0007d\u001b[2Je\u001bPq#0;1\u001b\\f"),
+    "abcdef",
+  );
+  assert.equal(plainText("keep\nnewlines\tand tabs"), "keep\nnewlines\tand tabs");
+  // An unterminated sequence loses its ESC, so nothing can act on it, and stays as text.
+  assert.equal(plainText("x\u001b]52;c;pa"), "x]52;c;pa");
+  // A bare C1 introducer is inert only if it is gone; a lone C0 CR repaints the line.
+  assert.equal(plainText("y\u009b31mz\rok"), "y31mzok");
 });
 
 test("renderMarkdownTerminal is a no-op when disabled", () => {
