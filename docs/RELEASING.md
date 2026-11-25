@@ -27,13 +27,23 @@ The pruning step deletes nothing whose title starts with `KEEP`, that carries a 
 that is still a draft. (A published release cannot be turned back into a draft, so that last one
 only applies to releases created as drafts.)
 
+### Trying a test build
+
+`bash scripts/try-test-build.sh [<tag>]` downloads the newest (or the named) test build, checks it
+against its `SHA256SUMS`, extracts it under `~/.cache/agent-hive/test-builds` (a VM filesystem is
+about 1.6 GB extracted, too big for a small tmpfs `/tmp`), reuses a filesystem already on disk, and
+prints the run commands. `-- <hive args>` runs it directly, and `--list` and `--clean` do what they
+say. Test builds are unsigned and `hive update` never installs them, on purpose. A source build can
+use the printed `HIVE_ROOTFS` while the branch has not changed `image/`.
+
 `promote.yml` is the only thing that reaches users. It **builds nothing**: it downloads the files
 from the `test` release, checks them against the tested `SHA256SUMS`, signs that file keyless with
 this run's OIDC token, and publishes it as `v<version>`. So what a user installs is byte-for-byte
 what the test run booted — the microVM filesystem included, because the rootfs tarball is the same
 file, named by its content.
 
-1. Wait for the **Test build** run on `main` to pass (or run it yourself).
+1. Wait for the **Test build** run on `main` to pass (or run it yourself). Optionally try it first
+   with `scripts/try-test-build.sh`.
 2. Actions → **Promote to stable** → *Run workflow*. Leave the build field empty to promote the
    newest test build, or name an older tag (`test-42-0.5.10`) to promote the one you tested.
 3. Approve the `stable-release` environment as the reviewer account — the one that never runs
