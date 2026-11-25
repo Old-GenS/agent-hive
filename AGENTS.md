@@ -140,7 +140,12 @@ the arm64 native pieces, `npm run smoke:macos` checks the real VM's isolation, a
    clone of `origin/` (or a local run's own repo), never from `work/`.
 3. **Every API route lives inside the authenticated scope** in `index.ts`. Don't add path-based
    auth exceptions.
-4. **Anything from GitHub or the agent is untrusted in the UI** — render with `esc()` only.
+4. **Anything from GitHub or the agent is untrusted in the UI and in a terminal** — render with
+   `esc()` in the UI, and run it through `plainText()` (`src/tui.ts`) before hive adds its own
+   styling, since an escape sequence in agent output is acted on by the person's terminal (OSC 52,
+   OSC 8, cursor motion). `hive diff` and the top-level error path filter only when the stream is a
+   TTY, so piped output — a patch, a script's input — stays byte-exact, and the stored
+   `io/events.jsonl` is never filtered at all.
 5. Repo URLs are restricted to github.com (`normalizeRepo`); `HIVE_ALLOW_ANY_REPO_URL=1` is for
    local testing only.
 6. **The VM cache is shared between runs of the same repo only.** Each agent VM mounts

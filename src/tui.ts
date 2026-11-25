@@ -77,6 +77,26 @@ export function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, "");
 }
 
+/**
+ * Text from the agent, made safe for a terminal.
+ *
+ * Whole escape sequences go first — OSC and DCS/SOS/PM/APC, whose payload is plain text (an OSC 52
+ * clipboard write, an OSC 8 link), and CSI — because dropping only the ESC byte would leave the
+ * payload behind as visible noise. What survives is then stripped of every C0 control character
+ * except a newline and a tab, and of all of C1. A sequence this did not recognise as well-formed is
+ * left inert: with no ESC byte in the output, a terminal cannot start one.
+ *
+ * Only for what hive shows a person. The stored event log stays byte-exact, and piped output is
+ * left alone (a patch is machine input).
+ */
+export function plainText(text: string): string {
+  return text
+    .replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b[PX^_][\s\S]*?\u001b\\/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+}
+
 /** Visible length of a possibly coloured string. */
 function visibleWidth(text: string): number {
   return stripAnsi(text).length;

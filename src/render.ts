@@ -1,16 +1,16 @@
 /**
  * Plain-text rendering of pi's JSONL events for the `hive` CLI. No ANSI colours.
  */
-import { dim, red, renderMarkdownTerminal, symbols } from "./tui.js";
+import { dim, plainText, red, renderMarkdownTerminal, symbols } from "./tui.js";
 
 export function renderEvent(e: any): string | undefined {
   if (e?.type === "message_end" && e.message?.role === "assistant") {
-    if (e.message.errorMessage) return "error: " + e.message.errorMessage;
+    if (e.message.errorMessage) return "error: " + plainText(String(e.message.errorMessage));
     const text = (Array.isArray(e.message.content) ? e.message.content : [])
       .filter((b: any) => b?.type === "text" && typeof b.text === "string")
       .map((b: any) => b.text)
       .join("");
-    return text || undefined;
+    return plainText(text) || undefined;
   }
   if (e?.type === "tool_execution_start") {
     const args = e.args ?? {};
@@ -20,7 +20,7 @@ export function renderEvent(e: any): string | undefined {
         : e.toolName === "read" || e.toolName === "edit" || e.toolName === "write"
           ? args.path
           : JSON.stringify(args);
-    summary = String(summary ?? "").replace(/\s+/g, " ").trim();
+    summary = plainText(String(summary ?? "")).replace(/\s+/g, " ").trim();
     if (summary.length > 100) summary = summary.slice(0, 99) + "…";
     return "  → " + e.toolName + " " + summary;
   }
@@ -55,7 +55,7 @@ function toolSummary(e: any): string {
       : e.toolName === "read" || e.toolName === "edit" || e.toolName === "write"
         ? args.path
         : JSON.stringify(args);
-  return String(summary ?? "").replace(/\s+/g, " ").trim();
+  return plainText(String(summary ?? "")).replace(/\s+/g, " ").trim();
 }
 
 function truncate(text: string, max: number): string {
@@ -71,15 +71,17 @@ function truncate(text: string, max: number): string {
 export function renderEventStyled(e: any, o: { enabled: boolean; width?: number }): string | undefined {
   if (!o.enabled) return renderEvent(e);
   if (e?.type === "message_end" && e.message?.role === "assistant") {
-    if (e.message.errorMessage) return red("error: " + e.message.errorMessage, true);
+    if (e.message.errorMessage) return red("error: " + plainText(String(e.message.errorMessage)), true);
     const text = (Array.isArray(e.message.content) ? e.message.content : [])
       .filter((b: any) => b?.type === "text" && typeof b.text === "string")
       .map((b: any) => b.text)
       .join("");
-    return text ? renderMarkdownTerminal(text, true) : undefined;
+    // Sanitise before the Markdown pass: hive adds its own escapes there, and those must survive.
+    const safe = plainText(text);
+    return safe ? renderMarkdownTerminal(safe, true) : undefined;
   }
   if (e?.type === "hive_note") {
-    const text = String(e.text ?? "");
+    const text = plainText(String(e.text ?? ""));
     return text ? dim(text, true) : undefined;
   }
   if (e?.type === "tool_execution_start") {

@@ -82,6 +82,52 @@ test("renderEvent renders assistant text, tool calls and tool errors in plain te
   assert.equal(renderEvent({ type: "tool_execution_end", toolName: "bash", isError: true }), "  ✗ bash failed");
 });
 
+// The agent's text is untrusted: it may carry escape sequences aimed at the person's terminal (an
+// OSC 52 clipboard write, an OSC 8 link, cursor motion that paints over hive's own lines). hive is
+// the only path from inside the sandbox to that terminal, so it drops the bytes an escape needs.
+test("renderEvent strips terminal escapes out of agent text, and keeps newlines and tabs", () => {
+  const escapes = "\u001b]52;c;cGF3bmVk\u0007\u001b[2J\u001b[1;1H\u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007";
+  const text = renderEvent({
+    type: "message_end",
+    message: { role: "assistant", content: [{ type: "text", text: `one\n\ttwo ${escapes} three` }] },
+  });
+  assert.equal(text, "one\n\ttwo click three", "the sequences and their control bytes are gone; the link text stays");
+  assert.ok(!/\u001b/.test(text ?? ""));
+
+  // The tool summary path collapses whitespace but never dropped ESC, which a tty would act on.
+  const call = renderEvent({
+    type: "tool_execution_start",
+    toolName: "bash",
+    args: { command: "echo \u001b]52;c;cGF3bmVk\u0007" },
+  });
+  assert.equal(call, "  → bash echo");
+
+  // A model error message reaches the same terminal.
+  const failed = renderEvent({
+    type: "message_end",
+    message: { role: "assistant", errorMessage: "boom\u001b[31m!\u001b[0m" },
+  });
+  assert.equal(failed, "error: boom!");
+
+  // A bare carriage return repaints the current line, which is how hive's own output gets faked.
+  assert.equal(renderEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "ok\rdone" }] } }), "okdone");
+});
+
+// The styled path adds hive's own escapes, so the agent's must go first — otherwise a stripped
+// message could still reshape what a person sees.
+test("renderEventStyled removes agent escapes and keeps its own colour", async () => {
+  const { renderEventStyled } = await import("../dist/render.js");
+  const out = renderEventStyled(
+    {
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "**hi**\u001b]52;c;cGF3bmVk\u0007" }] },
+    },
+    { enabled: true, width: 80 },
+  );
+  assert.ok(out.includes("\u001b[1m"), "hive's bold survives");
+  assert.ok(!out.includes("]52;"), "the agent's clipboard write does not");
+});
+
 test("addUsage totals assistant message usage", () => {
   const total = emptyUsage();
   const event = {
