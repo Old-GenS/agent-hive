@@ -156,11 +156,8 @@ jobs:
         with:
           path: build/native
           key: native-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'scripts/build-native.sh', 'scripts/native-in-container.sh') }}
-      - name: Create a throwaway signing key
-        run: node scripts/keygen.mjs "$RUNNER_TEMP/release-signing-key.pem" > /dev/null
       - name: Build the release
         env:
-          HIVE_SIGNING_KEY: ${{ runner.temp }}/release-signing-key.pem
           HIVE_RELEASE_SKIP_SOURCES: "1"
         run: npm run release
       - name: Extract the app bundle and its rootfs

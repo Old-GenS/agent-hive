@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build a signed Agent Hive release: an app bundle with Node, the bundled CLI, the VM launcher,
+# Build an unsigned Agent Hive release: an app bundle with Node, the bundled CLI, the VM launcher,
 # the native pieces and a static pasta fallback, plus the VM rootfs as a separate download. Run
-# from the repo root (or via `npm run release`). Needs the release signing key; see
-# docs/RELEASING.md.
+# from the repo root (or via `npm run release`). The output is unsigned; the promote workflow signs
+# it with a keyless sigstore bundle before publishing. See docs/RELEASING.md.
 #
 # --reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz> ships a rootfs another machine already
 # built and tested (a workflow that ran one) instead of rebuilding one; the
@@ -12,7 +12,6 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 reuse_rootfs=""
-skip_sign=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reuse-rootfs)
@@ -28,11 +27,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --skip-sign)
-      skip_sign=1
+      # Ignored: releases are signed by promote.yml. test.yml still passes it.
       shift
       ;;
     *)
       echo "usage: build-release.sh [--reuse-rootfs <hive-rootfs-<id>-linux-x86_64.tar.gz>] [--skip-sign]" >&2
+      echo "  --skip-sign is ignored; releases are signed by promote.yml" >&2
       exit 2
       ;;
   esac
@@ -49,11 +49,6 @@ if [[ -n "${HIVE_RELEASE_VERSION:-}" ]]; then
 fi
 # The bundled Node version is a pin too; HIVE_NODE_VERSION still overrides it.
 NODE_VERSION=${HIVE_NODE_VERSION:-$(node -p "require('./versions.json').node")}
-key=${HIVE_SIGNING_KEY:-$HOME/.config/agent-hive/release-signing-key.pem}
-if [[ -z "$skip_sign" && ! -f "$key" ]]; then
-  echo "build-release: signing key $key not found (create it with node scripts/keygen.mjs $key)" >&2
-  exit 1
-fi
 
 out="release/$version"
 rm -rf "$out"
@@ -206,10 +201,5 @@ fi
 if [[ "${HIVE_RELEASE_SKIP_SOURCES:-}" != "1" ]]; then
   (cd "$out" && sha256sum libkrunfw-*-source.tar.gz kernel-source-* passt-*-source.tar.xz >> SHA256SUMS)
 fi
-if [[ -n "$skip_sign" ]]; then
-  echo "build-release: wrote $out/SHA256SUMS unsigned (--skip-sign)"
-else
-  node scripts/sign.mjs "$key" "$out/SHA256SUMS"
-fi
-
+# The output is unsigned; promote.yml signs it with a keyless sigstore bundle.
 ls -l "$out"

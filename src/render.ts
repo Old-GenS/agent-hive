@@ -22,10 +22,10 @@ export function renderEvent(e: any): string | undefined {
           : JSON.stringify(args);
     summary = plainText(String(summary ?? "")).replace(/\s+/g, " ").trim();
     if (summary.length > 100) summary = summary.slice(0, 99) + "…";
-    return "  → " + e.toolName + " " + summary;
+    return "  → " + plainText(String(e.toolName ?? "")) + " " + summary;
   }
   if (e?.type === "tool_execution_end" && e.isError === true) {
-    return "  ✗ " + e.toolName + " failed";
+    return "  ✗ " + plainText(String(e.toolName ?? "")) + " failed";
   }
   return undefined;
 }
@@ -85,14 +85,14 @@ export function renderEventStyled(e: any, o: { enabled: boolean; width?: number 
     return text ? dim(text, true) : undefined;
   }
   if (e?.type === "tool_execution_start") {
-    const tool = String(e.toolName ?? "");
+    const tool = plainText(String(e.toolName ?? ""));
     const prefix = `  ${symbols.tool} ${tool}  `;
     const room = Math.max(10, (o.width ?? 80) - prefix.length);
     const summary = truncate(toolSummary(e), room);
     return `  ${symbols.tool} ${tool}  ${dim(summary, true)}`;
   }
   if (e?.type === "tool_execution_end" && e.isError === true) {
-    return red(`  ${symbols.failed} ${String(e.toolName ?? "")}  failed`, true);
+    return red(`  ${symbols.failed} ${plainText(String(e.toolName ?? ""))}  failed`, true);
   }
   return undefined;
 }

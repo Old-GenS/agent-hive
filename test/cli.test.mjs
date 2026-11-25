@@ -20,7 +20,7 @@ process.env.GIT_COMMITTER_NAME = process.env.GIT_COMMITTER_NAME || "t";
 process.env.GIT_COMMITTER_EMAIL = process.env.GIT_COMMITTER_EMAIL || "t@t";
 
 const { followJsonl } = await import("../dist/follow.js");
-const { renderEvent, emptyUsage, addUsage } = await import("../dist/render.js");
+const { renderEvent, renderEventStyled, emptyUsage, addUsage } = await import("../dist/render.js");
 const { resolveRun, applyRun } = await import("../dist/runs.js");
 
 function makeRun(name, meta) {
@@ -126,6 +126,25 @@ test("renderEventStyled removes agent escapes and keeps its own colour", async (
   );
   assert.ok(out.includes("\u001b[1m"), "hive's bold survives");
   assert.ok(!out.includes("]52;"), "the agent's clipboard write does not");
+});
+
+// The tool name is agent-chosen too, so renderEvent and renderEventStyled must drop its escapes
+// exactly as they do for assistant text and tool arguments.
+test("renderEvent and renderEventStyled strip terminal escapes out of the tool name", () => {
+  const events = [
+    { type: "tool_execution_start", toolName: "bash\u001b]52;c;aGk=\u0007x", args: { command: "ls" } },
+    { type: "tool_execution_end", isError: true, toolName: "bash\u001b[2J" },
+  ];
+  for (const event of events) {
+    const plain = renderEvent(event);
+    assert.ok(!/[\u001b\u0007]/.test(plain ?? ""), `renderEvent left an escape in ${JSON.stringify(plain)}`);
+    const styled = renderEventStyled(event, { enabled: true });
+    const unstyled = styled ?? "";
+    assert.ok(
+      !/[\u001b\u0007]/.test(unstyled.replace(/\u001b\[[0-9;]*m/g, "")),
+      `renderEventStyled left an agent escape in ${JSON.stringify(styled)}`,
+    );
+  }
 });
 
 test("addUsage totals assistant message usage", () => {

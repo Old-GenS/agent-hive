@@ -134,16 +134,16 @@ For an app-only change, or when the VM filesystem needs a forced rebuild:
    macOS native build. On the Mac:
 
    ```bash
-   HIVE_SIGNING_KEY=~/.config/agent-hive/release-signing-key.pem \
-     bash scripts/build-release-macos.sh \
+   bash scripts/build-release-macos.sh \
      --rootfs-image hive-rootfs-<id>-linux-arm64.img.gz
    ```
 
-   That writes `hive-<version>-darwin-arm64.tar.gz`, the image, libkrunfw's source and its kernel
-   tarball, and a signed `SHA256SUMS`. Run it in a release directory that already has the Linux
-   assets (run the Linux build first) and it re-signs one `SHA256SUMS` covering both platforms;
-   otherwise the macOS assets stand alone. The bundle's `ROOTFS_VERSION` names the image, which is
-   how `installRelease` pairs them.
+   The output is unsigned, for checking or for promotion. That writes
+   `hive-<version>-darwin-arm64.tar.gz`, the image, libkrunfw's source and its kernel
+   tarball, and an unsigned `SHA256SUMS`. Run it in a release directory that already has the Linux
+   assets (run the Linux build first) and it writes one unsigned `SHA256SUMS` covering both
+   platforms; otherwise the macOS assets stand alone. The bundle's `ROOTFS_VERSION` names the image,
+   which is how `installRelease` pairs them.
 
    The image must come with its `rootfs-info.json` (written by `build-rootfs-image.sh`); the
    build refuses an image whose `imageTree` differs from this checkout's `HEAD:image`, exactly
@@ -188,9 +188,9 @@ Set once, in the `Old-GenS` organization and its `agent-hive` repository:
 Releases are signed keyless by `.github/workflows/promote.yml`, which runs on `main`. Installers
 accept them when the certificate names
 `https://github.com/Old-GenS/agent-hive/.github/workflows/promote.yml@refs/heads/main` under the
-GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`). There is no signing key:
-the ed25519 key releases used before this is kept only so an install can still verify an older
-`SHA256SUMS.sig`.
+GitHub Actions issuer (`RELEASE_SIGNING_IDENTITY` in `src/release-key.ts`). There is no signing key.
+`hive update` accepts only a sigstore bundle; a release without `SHA256SUMS.sigstore.json` is
+refused.
 
 **Changing who may release:** edit `src/release-key.ts` and the `stable-release` environment. The
 environment is the gate that requires a reviewer. The workflows themselves are not: the `main`
@@ -254,9 +254,9 @@ which GitHub mails to the repository owner, and the newest passing build is what
 
 `.github/workflows/macos-release.yml` (manual dispatch) reuses the `macos-image` workflow on
 `ubuntu-24.04-arm`, then builds the bundle on `macos-15` and uploads it as a workflow artifact.
-It signs with a throwaway key and does not publish: GitHub's macOS runners cannot nest
-Hypervisor.framework, and the stable key must not be in CI. Use it to check that the macOS build
-still works, and build the distributable release on a Mac. `test.yml` only builds Linux assets;
+It writes an unsigned `SHA256SUMS` and does not publish: GitHub's macOS runners cannot nest
+Hypervisor.framework. Use it to check that the macOS build still works; a distributable release is
+built on a Mac and signed keyless by `promote.yml`. `test.yml` only builds Linux assets;
 a macOS release is a separate, manual build.
 
 
@@ -273,7 +273,6 @@ a macOS release is a separate, manual build.
 | `release/<version>/passt-<version>-source.tar.xz` | The passt source tarball (GPL-2.0-or-later / BSD-3-Clause corresponding source) the static `pasta` was built from. |
 | `release/<version>/SHA256SUMS` | SHA-256 of the app, the rootfs and the source tarballs. |
 | `release/<version>/SHA256SUMS.sigstore.json` | The keyless signature over `SHA256SUMS` (a sigstore bundle), verified by `hive update` against the release workflow's identity. |
-| `release/<version>/SHA256SUMS.sig` | Base64 ed25519 signature, used by the nightlies. |
 | `release/<version>/rootfs-info.json` | Which rootfs this release ships (`rootfs`), the `image/` git tree it was built from (`imageTree`) and when it was built (`built`). Not in `SHA256SUMS` (clients never read it). |
 
 `install-cli.sh` checks the download against `SHA256SUMS` over HTTPS but does not verify the

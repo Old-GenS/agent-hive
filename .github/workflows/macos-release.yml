@@ -2,9 +2,9 @@ name: macOS release bundle (arm64)
 
 # Builds the macOS app bundle and its arm64 VM image on GitHub's runners, then uploads both as a
 # workflow artifact. This is a build check and a testing bundle, not a distributable release: the
-# runner signs with a throwaway key and cannot boot Hypervisor.framework. A stable release is built
-# on a Mac with the release key (scripts/build-release-macos.sh), then attached to the GitHub
-# release. See docs/RELEASING.md and docs/MACOS.md.
+# runner cannot boot Hypervisor.framework, and it writes an unsigned SHA256SUMS. A stable release is
+# signed keyless by promote.yml, built on a Mac (scripts/build-release-macos.sh), then attached to
+# the GitHub release. See docs/RELEASING.md and docs/MACOS.md.
 on:
   workflow_dispatch:
     inputs:
@@ -49,11 +49,8 @@ jobs:
         with:
           path: build/native-macos
           key: native-macos-${{ hashFiles('versions.json', 'vm/hive-vm.c', 'vm/build.sh', 'scripts/build-native-macos.sh') }}
-      - name: Create a throwaway signing key
-        run: node scripts/keygen.mjs "$RUNNER_TEMP/release-signing-key.pem" > /dev/null
       - name: Build the macOS release
         env:
-          HIVE_SIGNING_KEY: ${{ runner.temp }}/release-signing-key.pem
           HIVE_RELEASE_SKIP_SOURCES: "1"
           HIVE_RELEASE_VERSION: ${{ inputs.version }}
         run: |
@@ -85,5 +82,4 @@ jobs:
             release/*/hive-*-darwin-arm64.tar.gz
             release/*/hive-rootfs-*-linux-arm64.img.gz
             release/*/SHA256SUMS
-            release/*/SHA256SUMS.sig
           retention-days: 14
