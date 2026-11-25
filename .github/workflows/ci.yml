@@ -4,11 +4,17 @@ name: CI
 # which is the same work twice: `test` did, and `vm` did after it. `main` is covered instead by
 # `test.yml`, which builds a whole release from the merge and boots it in a real VM.
 #
+# `merge_group` is the merge queue: GitHub builds `main` plus every pull request queued ahead of
+# this one plus this one, and runs the same required checks on that commit before it merges. A
+# pull request's own checks only ever saw the `main` it branched from; the queue checks what `main`
+# will actually become.
+#
 # `workflow_dispatch` stays so the suite can be run by hand against `main` when that is what you
 # want to check.
 on:
   pull_request:
     branches: [main]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -44,12 +50,26 @@ jobs:
           set -uo pipefail
           code=true
           installer=true
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          # A pull request's file list, or in the merge queue every file that differs between the
+          # queue's base and this queued commit (the pull requests ahead of it included).
+          case "${{ github.event_name }}" in
+            pull_request)
+              list="repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files"
+              jq='.[].filename'
+              ;;
+            merge_group)
+              list="repos/$GITHUB_REPOSITORY/compare/${{ github.event.merge_group.base_sha }}...${{ github.event.merge_group.head_sha }}"
+              jq='.files[].filename'
+              ;;
+            *)
+              list=""
+              ;;
+          esac
+          if [ -n "$list" ]; then
             files=""
             # gh api has timed out on these runners; retry, then fall back to running everything.
             for attempt in 1 2 3; do
-              if files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.pull_request.number }}/files" \
-                --paginate --jq '.[].filename' 2>/dev/null) && [ -n "$files" ]; then
+              if files=$(gh api "$list" --paginate --jq "$jq" 2>/dev/null) && [ -n "$files" ]; then
                 break
               fi
               files=""
@@ -57,7 +77,7 @@ jobs:
             done
             if [ -n "$files" ]; then
               printf '%s\n' "$files"
-              if ! printf '%s\n' "$files" | grep -qE '^(src|scripts|image|vm|test|ui)/|^(package\.json|package-lock\.json|versions\.json|tsconfig\.json|install\.sh|install\.ps1)($|/)|^\.github/'; then
+              if ! printf '%s\n' "$files" | grep -qE '^(src|scripts|image|vm|test|ui)/|^(package\.json|package-lock\.json|versions\.json|tsconfig\.json|install\.sh|install-cli\.sh|install\.ps1)($|/)|^\.github/'; then
                 code=false
               fi
               if printf '%s\n' "$files" | grep -qE '^install\.ps1$'; then
@@ -66,7 +86,7 @@ jobs:
                 installer=false
               fi
             else
-              echo "could not read this pull request's file list; running every check"
+              echo "could not read the changed files; running every check"
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
