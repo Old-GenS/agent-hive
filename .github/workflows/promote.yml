@@ -158,24 +158,49 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          dir="$RUNNER_TEMP/test"
+          fs_id=$(ls "$dir" | sed -n 's/^hive-rootfs-\([0-9a-f]\{12\}\)-linux-x86_64\.tar\.gz$/\1/p' | head -1)
+          app_mb=$(du -m "$dir"/hive-[0-9]*-linux-x86_64.tar.gz | cut -f1)
+          fs_mb=$(du -m "$dir"/hive-rootfs-*-linux-x86_64.tar.gz | cut -f1)
           # No --target: the release call makes the tag on main's head. Pointing it at the tested
           # commit works only until main moves on through .github/workflows: GitHub then wants the
           # "Workflows" permission for that commit, which a workflow's own token can never have,
-          # and answers 403 "Resource not accessible by integration" (create-a-release docs). The
-          # tested commit goes in the notes, which is where it is useful.
+          # and answers 403 "Resource not accessible by integration" (create-a-release docs).
           head=$(git rev-parse HEAD)
-          cat > "$RUNNER_TEMP/notes.md" <<EOF
-          Stable release v$VERSION.
 
-          Promoted from test build ${{ steps.build.outputs.tag }}, built from commit $SHA and booted
-          in a real VM before publishing. The files are the tested ones: nothing was rebuilt for
-          this release. The tag is on main's head.
+          # What changed since the last stable release: the useful part of "what am I shipping".
+          prev=$(gh release list --repo "${{ github.repository }}" --limit 200 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.createdAt) | reverse | .[0].tagName // ""')
+          if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" >/dev/null; then
+            commits=$(git log --oneline "$prev..$SHA" | head -40)
+            [ -n "$commits" ] || commits="(no commits)"
+            changes="Changes since $prev:\n\n$commits"
+          else
+            changes="First stable release on this repository."
+          fi
 
-          The tag v$VERSION is on $head, main's head when this ran: a workflow's token may not tag
-          an older commit once main has changed .github/workflows since it.
-
-          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-          EOF
+          {
+            printf 'Stable release v%s.\n\n' "$VERSION"
+            printf 'Promoted from the test build `%s` of commit %s, which was booted in a real VM.\n' \
+              "${{ steps.build.outputs.tag }}" "$SHA"
+            printf 'Nothing was rebuilt: every file here is the file that build tested.\n\n'
+            printf 'The tag is on %s, main'"'"'s head when this ran: a workflow'"'"'s token may not tag an\n' "$head"
+            printf 'older commit once main has changed .github/workflows since it.\n\n'
+            printf 'VM filesystem: %s (%s MB) — unchanged when this id matches what you already have,\n' "$fs_id" "$fs_mb"
+            printf 'which is when `hive update` downloads nothing.\n\n'
+            printf '%b\n\n' "$changes"
+            printf 'Verified: every asset matched the tested SHA256SUMS, signed keyless by\n'
+            printf '.github/workflows/promote.yml@refs/heads/main.\n\n'
+            printf 'Files:\n'
+            for f in "$dir"/*; do printf -- '- %s (%s MB)\n' "$(basename "$f")" "$(du -m "$f" | cut -f1)"; done
+            printf '\nApp bundle: %s MB, VM filesystem: %s MB.\n' "$app_mb" "$fs_mb"
+            printf '\nInstall or update:\n'
+            printf '  curl -fsSL https://raw.githubusercontent.com/%s/main/install-cli.sh | sh\n' "$GITHUB_REPOSITORY"
+            printf '  hive update\n\n'
+            printf 'Run: %s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
           gh release create "v$VERSION" \
             --repo "${{ github.repository }}" \
             --title "v$VERSION" \
