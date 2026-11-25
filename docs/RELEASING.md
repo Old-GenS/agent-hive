@@ -186,6 +186,7 @@ Set once, in the `Old-GenS` organization and its `agent-hive` repository:
 | Setting | Where | Value |
 |---|---|---|
 | Ruleset `main` | Settings › Rules | requires a pull request (0 approvals) and the `test`, `vm`, `windows-installer` checks; blocks force-pushes and deletion; **no bypass list** |
+| Require merge queue | Settings › Rules › `main` | on, merge method "Merge commit" — every pull request is checked again on top of `main` and the pull requests queued ahead of it before it merges (`ci.yml` runs on `merge_group`) |
 | Allow auto-merge | Settings › General › Pull requests | on — the bots use it, and there is no merge workflow of our own |
 | Merge types | Settings › General › Pull requests | merge commit only (no squash or rebase, so a merged branch keeps its SHAs) |
 | Delete branch on merge | Settings › General › Pull requests | on |
@@ -213,7 +214,11 @@ ruleset asks for no approving review and does not require a code owner, and ther
   request plus the `test`, `vm` and `windows-installer` checks, and blocks force-pushes and
   deletion. It has no bypass list, so the maintainer's own changes take the same route. Pull
   requests need no approval (the checks are the gate) and merge through GitHub's auto-merge as
-  merge commits.
+  merge commits, by way of the **merge queue**: a pull request whose checks pass joins the queue,
+  GitHub builds `main` plus every pull request ahead of it plus this one, runs the required checks
+  on that commit, and merges only if they pass. So two pull requests that each pass alone but
+  break together never both land. A failing entry is dropped and the ones behind it are re-checked
+  without it; when the queue holds one pull request, this costs one more run of its checks.
 - The update automation goes through pull requests, merged by **GitHub's auto-merge** (the
   repository setting, enabled per pull request with `gh pr merge --auto`): GitHub waits for the
   required checks and merges. There is no merge workflow of our own.
