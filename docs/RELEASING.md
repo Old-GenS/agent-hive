@@ -96,6 +96,51 @@ prints the run commands. `-- <hive args>` runs it directly, and `--list` and `--
 say. Test builds are unsigned and `hive update` never installs them, on purpose. A source build can
 use the printed `HIVE_ROOTFS` while the branch has not changed `image/`.
 
+### Testing a build in the web UI
+
+`try-test-build.sh --serve` runs a test build's web server for as long as you want it, with nothing
+installed. This is the usual way to look at a build before promoting it.
+
+**Start it** (from the checkout, in a terminal you keep open):
+
+```bash
+bash scripts/try-test-build.sh --serve --host 0.0.0.0
+```
+
+It takes the newest test build (or name one: `try-test-build.sh test-19-0.5.13 --serve ...`),
+downloads what it does not already have, and serves it on the first free port from `8081`
+(`--port` picks one). `--host 0.0.0.0` makes it reachable from other machines; without it, it is
+this machine only. It prints the address, e.g. `http://192.168.1.15:8081/ui/`.
+
+**Log in.** The server has its own setup (below), with its own login token. This prints a link
+with the token in it:
+
+```bash
+echo "http://<this box>:8081/ui/#token=$(grep -m1 '^API_TOKEN=' ~/.cache/agent-hive/test-builds/serve/config/agent-hive/env | cut -d= -f2-)"
+```
+
+Then add a provider key in Settings › API keys: the test setup starts with none. Every page shows
+an amber **TEST BUILD · <tag> · <commit> · not a release** bar, and the tab title starts with
+`[TEST]`, so it cannot be mistaken for the real thing.
+
+**Its own setup.** It never touches the real install: its keys, settings, runs and cache live in
+`~/.cache/agent-hive/test-builds/serve`, and it starts with a clean environment, so provider keys
+or a GitHub token in your shell do not reach it. It has no GitHub login either; use **Connect
+GitHub** in its web UI if it should push branches or open pull requests. The `:8080` server keeps
+running alongside it.
+
+**Stop it** with Ctrl+C in its terminal. If it was started somewhere else (in the background, or
+by an agent), stop whatever listens on its port; that is only the test server:
+
+```bash
+kill $(lsof -t -iTCP:8081 -sTCP:LISTEN)    # or: fuser -k 8081/tcp
+```
+
+**Start it again** with the same command. It reuses the downloaded build (a newer test build
+downloads only what changed) and the same setup, so the token and any key you added are still
+there. `--fresh` starts from an empty setup instead; `try-test-build.sh --clean` deletes all of
+it, downloaded builds included (about 1.7 GB).
+
 ### A standing staging server
 
 There are three tiers: `:8080` is a source checkout (`hive serve`), `:8081` is staging (the newest
@@ -130,8 +175,7 @@ The web UI shows a strip at the top saying that this is a test build, not a rele
 the login screen too. That comes from `HIVE_BUILD_CHANNEL=test` and `HIVE_BUILD_LABEL`, which the
 script sets (a release sets neither).
 
-For a one-off, `bash scripts/try-test-build.sh --serve` starts the same server in the foreground,
-on the first free port from 8081 (or `--port`/`--host`, with `--fresh` for an empty home).
+For a one-off instead of a service, see [Testing a build in the web UI](#testing-a-build-in-the-web-ui).
 
 Two things to know. The staging home has no GitHub login either (`gh` keeps its login in the config
 folder that is now separate), so use **Connect GitHub** in its web UI before it can push branches or
