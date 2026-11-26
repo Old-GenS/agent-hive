@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,12 +13,26 @@ process.env.HIVE_RUNS_DIR = root;
 process.env.HIVE_DOTENV_PATH = join(root, "missing.env");
 process.env.HIVE_KEYS_FILE = join(root, "missing-keys");
 process.env.HIVE_VM_CACHE = join(root, "vm-cache");
+process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.DEEPSEEK_API_KEY = "sk-test";
 delete process.env.DEFAULT_PROVIDER;
 delete process.env.DEFAULT_MODEL;
+delete process.env.HIVE_SYSTEM_PROMPT;
 
-const { REVIEW_PROMPT, isLgtm, runSteps, slimEvents, shouldReview, startRun, stepMounts, timeNote, usageWriteDue } =
-  await import("../dist/runs.js");
+const {
+  REVIEW_PROMPT,
+  continueRun,
+  isLgtm,
+  prepareStepFiles,
+  runSteps,
+  slimEvents,
+  shouldReview,
+  startRun,
+  stepMounts,
+  timeNote,
+  usageWriteDue,
+} = await import("../dist/runs.js");
+const { BUILTIN_SYSTEM_PROMPT } = await import("../dist/system-prompt.js");
 const { cacheKey } = await import("../dist/vmcache.js");
 
 const signal = () => new AbortController().signal;
@@ -227,4 +241,86 @@ test("an abort during the retry wait ends the step as aborted", async () => {
   assert.equal(meta.status, "aborted");
   assert.equal(calls.length, 1);
   assert.ok(events.some((e) => e.type === "hive_note"));
+});
+
+
+// ── startRun's base prompt file (host-only, before any VM step) ──
+
+/** A local git repo startRun can clone; the tests never let a VM step run. */
+function sourceRepo() {
+  const dir = mkdtempSync(join(root, "source-"));
+  const git = (...args) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(dir, "README.md"), "base\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+  return dir;
+}
+
+/** Start a run and stop it in onStatus("running"), before agentStep boots a VM. */
+async function startUntilRunning(options = {}) {
+  let dir = "";
+  const p = startRun({
+    repo: sourceRepo(),
+    prompt: "do the task",
+    provider: "deepseek",
+    model: "test-model",
+    thinking: "low",
+    onEvent: noop,
+    signal: signal(),
+    onStart: (runDir) => {
+      dir = runDir;
+    },
+    onStatus: (status) => {
+      if (status === "running") throw new Error("stop before the VM");
+    },
+    ...options,
+  });
+  await assert.rejects(p, /stop before the VM/);
+  return dir;
+}
+
+test("startRun writes system-base.md from the default, instructions, replace and the override", async () => {
+  const plain = await startUntilRunning();
+  assert.equal(readFileSync(join(plain, "system-base.md"), "utf8"), BUILTIN_SYSTEM_PROMPT);
+  assert.equal(JSON.parse(readFileSync(join(plain, "meta.json"), "utf8")).instructions, undefined);
+
+  const added = await startUntilRunning({ instructions: "  Prefer small commits.  " });
+  assert.equal(
+    readFileSync(join(added, "system-base.md"), "utf8"),
+    `${BUILTIN_SYSTEM_PROMPT}\n\nInstructions for this run:\nPrefer small commits.`,
+  );
+  assert.equal(JSON.parse(readFileSync(join(added, "meta.json"), "utf8")).instructions, "added");
+
+  const replaced = await startUntilRunning({ instructions: "Only this.", instructionsMode: "replace" });
+  assert.equal(readFileSync(join(replaced, "system-base.md"), "utf8"), "Only this.");
+  assert.equal(JSON.parse(readFileSync(join(replaced, "meta.json"), "utf8")).instructions, "replaced");
+
+  const overridden = await startUntilRunning({ systemPrompt: "Override only." });
+  assert.equal(readFileSync(join(overridden, "system-base.md"), "utf8"), "Override only.");
+  assert.equal(JSON.parse(readFileSync(join(overridden, "meta.json"), "utf8")).instructions, undefined);
+});
+
+test("a follow-up keeps the run's own system-base.md", async () => {
+  const dir = await startUntilRunning({ instructions: "Keep these.", instructionsMode: "replace" });
+  const before = readFileSync(join(dir, "system-base.md"), "utf8");
+  assert.equal(before, "Keep these.");
+
+  const run = continueRun(dir, {
+    prompt: "carry on",
+    signal: signal(),
+    onEvent: noop,
+    onStatus: (status) => {
+      if (status === "running") throw new Error("stop before the VM");
+    },
+  });
+  await assert.rejects(run, /stop before the VM/);
+  assert.equal(readFileSync(join(dir, "system-base.md"), "utf8"), before);
+
+  // The next step's io/system.md is built from that same host-only file, not the current default.
+  prepareStepFiles(dir, JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")), "next step");
+  const system = readFileSync(join(dir, "io", "system.md"), "utf8");
+  assert.match(system, /^Keep these\.\n\n/);
+  assert.doesNotMatch(system, /You are a senior software developer/);
 });

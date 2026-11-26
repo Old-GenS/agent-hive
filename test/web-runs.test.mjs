@@ -123,6 +123,22 @@ test("POST /prompt rejects repo and newRepo together and a missing repository", 
   assert.match(neither.json().error, /pick a repository/i);
 });
 
+test("POST /prompt validates per-run instructions before anything starts", async () => {
+  const badMode = await app.inject({
+    method: "POST",
+    url: "/prompt",
+    payload: { prompt: "x", repo: "me/demo", instructions: "be nice", instructionsMode: "keep" },
+  });
+  assert.equal(badMode.statusCode, 400);
+
+  const tooLong = await app.inject({
+    method: "POST",
+    url: "/prompt",
+    payload: { prompt: "x", repo: "me/demo", instructions: "x".repeat(20_001) },
+  });
+  assert.equal(tooLong.statusCode, 400);
+});
+
 test("POST /prompt follow-up for an unknown run is 404", async () => {
   const res = await app.inject({ method: "POST", url: "/prompt", payload: { prompt: "x", sessionId: "nope" } });
   assert.equal(res.statusCode, 404);

@@ -15,7 +15,7 @@ folder hive is started from (handy when running the server from a source checkou
 | `DEFAULT_PROVIDER` | the first provider with a key | Used when `-p` is omitted |
 | `DEFAULT_MODEL` | the provider's default | Used when `-m` is omitted |
 | `DEFAULT_THINKING` | `low` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `HIVE_SYSTEM_PROMPT` | built in | Appended to pi's system prompt |
+| `HIVE_SYSTEM_PROMPT` | built in | The default instructions for every run. Overrides the editable default file; set it only when you want it fixed by the environment |
 | `HIVE_OPENROUTER_ROUTING` | `{"quantizations":["fp16","bf16","fp8"]}` | OpenRouter provider routing, as JSON (below) |
 
 ### Provider and model
@@ -77,6 +77,21 @@ changed in the web UI under
 **Settings › Runs**, which writes the same keys file (`HIVE_KEYS_FILE`) and applies to new runs
 without a restart; the CLI reads the file when it starts. A value set in the server's environment
 wins over the file and is shown read-only there.
+
+### Agent instructions
+
+Every run appends hive's default instructions to pi's system prompt. Choose the default in the
+web UI under **Settings › Runs › Agent instructions**, or edit
+`~/.config/agent-hive/system-prompt.md` directly (mode 600, read on every run so an edit applies
+without a restart). Its **Reset** button deletes the file and returns to hive's built-in text.
+`HIVE_SYSTEM_PROMPT` wins over the file; while it is set, Settings shows the text read-only and
+asks you to edit the environment instead.
+
+A run can also carry its own instructions. They are added after the default under an
+"Instructions for this run" heading; one switch replaces the default instead. Use the
+**Instructions for this run** disclosure in the new-run form, or `hive run --instructions <file>`
+(and `--replace-instructions`) from the CLI. A follow-up keeps the instructions the run started
+with.
 
 A VM only uses the memory it actually touches, but several heavy runs at once can still run a
 small machine out of memory: keep `MAX_CONCURRENT_SESSIONS` × `HIVE_SANDBOX_MEMORY` well under
