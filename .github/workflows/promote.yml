@@ -169,16 +169,18 @@ jobs:
           head=$(git rev-parse HEAD)
 
           # What changed since the last stable release: the useful part of "what am I shipping".
+          # Counted from that release's tested commit (named in its notes), not its tag: the tag is
+          # on main's head at promotion, so counting from it would drop anything merged between
+          # that release's test build and its promotion (scripts/release-changes.mjs).
           prev=$(gh release list --repo "${{ github.repository }}" --limit 200 \
             --json tagName,createdAt \
             --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.createdAt) | reverse | .[0].tagName // ""')
-          if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" >/dev/null; then
-            commits=$(git log --oneline "$prev..$SHA" | head -40)
-            [ -n "$commits" ] || commits="(no commits)"
-            changes="Changes since $prev:\n\n$commits"
-          else
-            changes="First stable release on this repository."
+          since=()
+          if [ -n "$prev" ]; then
+            gh release view "$prev" --repo "${{ github.repository }}" --json body --jq .body > "$RUNNER_TEMP/prev-notes.md"
+            since=(--since-tag "$prev" --since-notes "$RUNNER_TEMP/prev-notes.md")
           fi
+          changes=$(node scripts/release-changes.mjs --head "$SHA" "${since[@]}")
 
           {
             printf 'Stable release v%s.\n\n' "$VERSION"
@@ -189,7 +191,7 @@ jobs:
             printf 'older commit once main has changed .github/workflows since it.\n\n'
             printf 'VM filesystem: %s (%s MB) — unchanged when this id matches what you already have,\n' "$fs_id" "$fs_mb"
             printf 'which is when `hive update` downloads nothing.\n\n'
-            printf '%b\n\n' "$changes"
+            printf '%s\n\n' "$changes"
             printf 'Verified: every asset matched the tested SHA256SUMS, signed keyless by\n'
             printf '.github/workflows/promote.yml@refs/heads/main.\n\n'
             printf 'Files:\n'
