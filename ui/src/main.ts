@@ -1460,6 +1460,37 @@ function buildForm(): HTMLElement {
     placeholder: "Extra instructions for this run",
   });
   const replaceInstructions = el("input", { id: "replaceInstructions", type: "checkbox" });
+  // What the agent gets by default, read-only, so the run's own instructions are written knowing
+  // what they add to or replace. Text only (textContent), never markup.
+  const defaultInstructionsText = el("pre", { class: "default-instructions-text" }, "Loading…");
+  const defaultInstructionsSource = el("span", { class: "default-instructions-source" });
+  const editDefaultLink = el("a", { href: "#settings/runs" }, "Edit in Settings");
+  const defaultInstructions = el(
+    "details",
+    { class: "default-instructions", id: "defaultInstructions" },
+    el("summary", {}, "Default instructions ", defaultInstructionsSource),
+    defaultInstructionsText,
+    el("p", { class: "field-hint" }, editDefaultLink),
+  );
+  let defaultInstructionsLoaded = false;
+  const loadDefaultInstructions = async () => {
+    if (defaultInstructionsLoaded) return;
+    try {
+      const res = await api("/api/settings/system-prompt");
+      if (!res.ok) throw new Error(String(res.status));
+      const data = (await res.json()) as { text?: unknown; source?: unknown };
+      defaultInstructionsText.textContent = typeof data.text === "string" ? data.text : "";
+      defaultInstructionsSource.textContent =
+        data.source === "file"
+          ? "(your text)"
+          : data.source === "env"
+            ? "(set by HIVE_SYSTEM_PROMPT)"
+            : "(hive's default)";
+      defaultInstructionsLoaded = true;
+    } catch {
+      defaultInstructionsText.textContent = "Couldn't load the default instructions.";
+    }
+  };
   const instructionsField = el(
     "details",
     { class: "run-instructions", id: "runInstructionsDetails" },
@@ -1480,8 +1511,17 @@ function buildForm(): HTMLElement {
         replaceInstructions,
         el("span", {}, "Replace the default instructions instead of adding to them"),
       ),
+      defaultInstructions,
     ),
   );
+  // Load the default only when someone opens the section, and only once.
+  instructionsField.addEventListener("toggle", () => {
+    if ((instructionsField as HTMLDetailsElement).open) void loadDefaultInstructions();
+  });
+  // With "replace" ticked the default is not sent, so show it as set aside.
+  replaceInstructions.addEventListener("change", () => {
+    defaultInstructions.classList.toggle("is-replaced", (replaceInstructions as HTMLInputElement).checked);
+  });
 
   const optionsGrid = el("div", { class: "grid-2" }, providerField, modelField, thinkingField, reviewField);
 
