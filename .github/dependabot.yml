@@ -6,7 +6,7 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 5
-    # The bundled Node is 24 (versions.json's node major); bump this together with it, not
+    # The bundled Node is 26 (versions.json's node major); bump this together with it, not
     # before it, or the types would allow APIs the runtime lacks.
     ignore:
       - dependency-name: "@types/node"
