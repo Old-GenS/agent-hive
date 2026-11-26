@@ -464,7 +464,7 @@ test("CLI doctor reports a source checkout", () => {
     encoding: "utf8",
     env: { ...process.env },
   });
-  assert.match(result.stdout, /^hive \d+\.\d+\.\d+ \(from source\)/);
+  assert.match(result.stdout, /^hive from source: [0-9a-f]{7}/);
 });
 
 test("CLI help lists the release commands", () => {

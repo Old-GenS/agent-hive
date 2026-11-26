@@ -35,9 +35,18 @@ function cleanLabel(raw: string): string {
   return kept.join("");
 }
 
-/** The build label from the environment, or `undefined` for a release/source build. Pure. */
-export function buildInfo(env: NodeJS.ProcessEnv = process.env): BuildInfo | undefined {
+/**
+ * The build label from the environment, or `undefined` for a release/source build. When a channel
+ * is set but no label, `fallbackLabel` supplies one: a dev server started with only
+ * `HIVE_BUILD_CHANNEL=dev` shows what git says its checkout is. Pure apart from that callback.
+ */
+export function buildInfo(
+  env: NodeJS.ProcessEnv = process.env,
+  fallbackLabel?: () => string | undefined,
+): BuildInfo | undefined {
   const channel = (env.HIVE_BUILD_CHANNEL ?? "").trim();
   if (!CHANNEL_RE.test(channel)) return undefined;
-  return { channel, label: cleanLabel((env.HIVE_BUILD_LABEL ?? "").trim()) };
+  let label = (env.HIVE_BUILD_LABEL ?? "").trim();
+  if (label === "" && fallbackLabel) label = (fallbackLabel() ?? "").trim();
+  return { channel, label: cleanLabel(label) };
 }

@@ -5,6 +5,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { buildInfo } from "../build-info.js";
+import { sourceDescription } from "../source-version.js";
 import { config } from "../config.js";
 import { githubLogin } from "../git.js";
 import { githubScopes } from "../github-login.js";
@@ -42,12 +43,15 @@ export async function githubStatus(): Promise<{
 }
 
 /**
- * The version to show: a release's own VERSION, or the checkout's package.json marked as source.
- * "dev" told the reader nothing about which code they were looking at.
+ * The version to show: a release's own VERSION, or what git says a checkout is ("from source:
+ * <sha> on <branch>, N commits after vX"). package.json's version is the last resort: releases
+ * are numbered at build time, so it is never bumped and names an old release.
  */
 function versionLabel(): string {
   const released = currentVersion();
   if (released) return released;
+  const source = sourceDescription();
+  if (source) return source;
   try {
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
       version?: string;
@@ -92,7 +96,7 @@ export default async function systemRoutes(app: FastifyInstance) {
     version: versionLabel(),
     components: components(),
     // Absent (undefined is dropped from the JSON) unless this is a test build.
-    build: buildInfo(),
+    build: buildInfo(process.env, sourceDescription),
   }));
 
   // The "Right now" tiles on the same page; polled every few seconds while it is open.

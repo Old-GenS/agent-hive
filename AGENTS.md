@@ -94,6 +94,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/runs.ts` | The run engine: run folders and `meta.json`; sources (your checkout, a URL, a new empty repo); agent steps in the VM (time note, stall watchdog, `finalStatus`); review cycles; follow-ups (`continueRun`); export of committed work whatever the outcome; downloadable results (`exportRun`: a zip of the files or a git bundle of the commits); push (a new branch, or updating the run's own branch after a follow-up; a new project creates its GitHub repo); `gh pr create`; starred runs (`setKept`, skipped by retention and Clear); startup cleanup (`recoverRuns`) and retention (`pruneRuns`) |
 | `src/follow.ts` | Polls a JSONL file by byte offset (the VM's `io/events.jsonl`); opens it with `O_NOFOLLOW` |
 | `src/render.ts` | Plain-text rendering of pi events plus token/cost totals |
+| `src/source-version.ts` | What a source checkout is running, from git: "from source: <sha> on <branch>, N commits after vX" (with uncommitted changes noted). Used by `hive --version`, Settings › This computer and, as the banner label, by a dev server started with `HIVE_BUILD_CHANNEL=dev`. Asks git about hive's own checkout only |
 | `src/build-info.ts` | `buildInfo()`: the build channel and label from `HIVE_BUILD_CHANNEL` / `HIVE_BUILD_LABEL`, reported by `/health` and `/api/system`; the web UI shows a "TEST BUILD · … · not a release" banner when it is set. A release or a source checkout sets neither |
 | `src/routes/github.ts` | `gh`-backed repo list and branches for the UI, and the **Connect GitHub** device-login routes (`POST`/`GET`/`DELETE /api/github/login`) |
 | `src/routes/providers.ts` | `/api/providers` and `/api/models` for the UI |
@@ -271,13 +272,24 @@ launcher and a static pasta fallback (old glibc, so Ubuntu 20.04+, Debian 11+, R
 the Windows one-line installer (`install.ps1`: a dedicated WSL2 Ubuntu distro, `hive.cmd` on the
 Windows `PATH`, guide in `docs/WINDOWS.md`), in daily use on a real Windows 11 machine;
 `install-cli.sh` VM-filesystem download progress and KVM/pasta/PATH advice; `hive update` with
-rollback; `.github/workflows/test.yml` and `promote.yml`
-builds the next patch of main, boots that bundle and rootfs in a real VM, signs it keyless and
-publishes it — the dispatch form has no fields, nothing is bumped and nothing is copied between
-workflows; CI that boots a real VM for every change
-and parses/analyses `install.ps1`; a daily check that
-opens tested pin-bump PRs; Dependabot. The weekly test build is the security rebuild: it pulls
-fresh distro packages, boots the result in a real VM and keeps what it proved.
+rollback, accepting only releases signed keyless by `promote.yml` on `main`. Two steps to a
+release (docs/RELEASING.md): every merge to `main` that can change the artifact, and a weekly run
+that is also the security rebuild, makes a **test build** (`test.yml`: builds the next patch from
+freshly pulled packages, boots bundle and rootfs in a real VM, publishes an unsigned
+`test-<run>-<version>` prerelease, keeps the newest five); **promotion** (`promote.yml`, manual,
+behind the `stable-release` reviewer) builds nothing, copies a test build's files byte-for-byte,
+signs `SHA256SUMS` keyless and publishes `v<version>`. Both write release notes listing the pull
+requests since the last stable release (`scripts/release-changes.mjs`). Merging to `main` never
+reaches users; only a promotion does. Pull requests pass CI (a real VM boot for every code change,
+`install.ps1` parsed and analysed) and then the **merge queue**, which re-runs the checks on `main`
+plus the pull requests queued ahead before each merges. Test builds are tried before promoting
+with `scripts/try-test-build.sh` (`--serve` for the web UI, behind a TEST BUILD banner) or the
+standing staging server (`scripts/test-server.sh`). Pins: Renovate's Dependency Dashboard (issue
+#4) opens pull requests for single-field pins (pi, Rust, Node patches, the build image digest) and
+lists multi-field ones (libkrun, libkrunfw, passt) and majors for `scripts/check-updates.mjs
+--apply`; Dependabot covers npm and GitHub Actions. A source checkout names itself from git
+(`src/source-version.ts`: "from source: <sha> on <branch>, N commits after vX"), since
+`package.json`'s version is never bumped.
 
 **Not built yet:**
 - server: refusing to restart, or finishing runs first, while runs are in progress

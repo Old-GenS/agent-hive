@@ -13,6 +13,7 @@ import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync
 import { homedir, networkInterfaces } from "node:os";
 import { basename, join } from "node:path";
 import { renderEvent, renderEventStyled, addUsage, emptyUsage } from "./render.js";
+import { sourceDescription } from "./source-version.js";
 import type { UninstallPlan } from "./uninstall.js";
 import {
   StatusLine,
@@ -1809,11 +1810,14 @@ function gitConfigValue(key: string): string | undefined {
 }
 
 /**
- * The version to show: the release's VERSION file, or package.json's version marked "from
- * source" when running from a checkout (dist/cli.js sits next to package.json's folder).
+ * The version to show: the release's VERSION file, or, from a checkout, what git says the checkout
+ * is ("from source: <sha> on <branch>, N commits after vX"). package.json's version is the last
+ * resort: releases are numbered at build time, so it is never bumped and names an old release.
  */
 function versionLabel(released: string | undefined): string {
   if (released) return released;
+  const source = sourceDescription();
+  if (source) return source;
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     if (typeof pkg.version === "string") return `${pkg.version} (from source)`;
