@@ -1556,6 +1556,43 @@ td.provider-name {
   gap: 10px;
 }
 
+/* The read-only default inside the per-run section. */
+.run-instructions .default-instructions summary {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 0;
+}
+
+.run-instructions .default-instructions[open] summary {
+  margin-bottom: 8px;
+}
+
+.default-instructions-source {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.default-instructions-text {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.default-instructions.is-replaced .default-instructions-text {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
 @media (max-width: 640px) {
   .setting-row {
     grid-template-columns: 1fr;
