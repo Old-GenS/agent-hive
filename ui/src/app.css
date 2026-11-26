@@ -1498,6 +1498,64 @@ td.provider-name {
   line-height: 1.5;
 }
 
+/* Settings › Runs: the default agent instructions */
+.agent-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.agent-instructions h2 {
+  font-size: 16px;
+}
+
+.agent-instructions-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.instructions-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.instructions-actions {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.instructions-actions .setting-hint {
+  margin-left: auto;
+}
+
+/* New-run form: per-run instructions, collapsed by default */
+.run-instructions {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.run-instructions summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.run-instructions[open] summary {
+  margin-bottom: 12px;
+}
+
+.run-instructions .field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 @media (max-width: 640px) {
   .setting-row {
     grid-template-columns: 1fr;

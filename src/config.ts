@@ -134,9 +134,6 @@ export const config = {
   maxConcurrent: savedInt("MAX_CONCURRENT_SESSIONS", 2),
   defaultModel: process.env.DEFAULT_MODEL || "",
   defaultThinking: process.env.DEFAULT_THINKING || "low",
-  systemPrompt:
-    process.env.HIVE_SYSTEM_PROMPT ||
-    "You are a senior software developer. Be direct and concise, show code, skip filler. Don't gold-plate, but don't leave it half-done. Check multiple locations and follow the project's conventions. Flag risks. If unsure, say so. Commit each finished piece of work as soon as it is done, before running long checks, installing tools or starting the next piece: the run has a time limit, and only committed work is kept. If a check needs a tool you can't get working within a few minutes, skip it, say so, and finish. Check web pages through the DOM, console output or tests where you can; take screenshots only when the look itself matters, and don't re-open old ones: every image stays in the conversation and slows each later request.",
   runsDir: resolve(process.env.HIVE_RUNS_DIR || join(cacheHome, "agent-hive/runs")),
   /** Finished runs older than this many days are deleted; 0 keeps them forever. */
   runRetentionDays: savedInt("HIVE_RUN_RETENTION_DAYS", 14, 0),

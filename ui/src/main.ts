@@ -1447,6 +1447,36 @@ function buildForm(): HTMLElement {
   };
   review.addEventListener("change", syncReviewModel);
 
+  // Per-run instructions: collapsed unless the user opens them, and never sent when empty.
+  const runInstructions = el("textarea", {
+    id: "runInstructions",
+    rows: "5",
+    placeholder: "Extra instructions for this run",
+  });
+  const replaceInstructions = el("input", { id: "replaceInstructions", type: "checkbox" });
+  const instructionsField = el(
+    "details",
+    { class: "run-instructions", id: "runInstructionsDetails" },
+    el("summary", {}, "Instructions for this run"),
+    el(
+      "div",
+      { class: "field" },
+      el("label", { for: "runInstructions" }, "Instructions"),
+      runInstructions,
+      el(
+        "p",
+        { class: "field-hint" },
+        "Added after the default instructions. Use the checkbox to replace them instead.",
+      ),
+      el(
+        "label",
+        { class: "check-field", for: "replaceInstructions" },
+        replaceInstructions,
+        el("span", {}, "Replace the default instructions instead of adding to them"),
+      ),
+    ),
+  );
+
   const optionsGrid = el("div", { class: "grid-2" }, providerField, modelField, thinkingField, reviewField);
 
   const warnSlot = el("div");
@@ -1465,7 +1495,17 @@ function buildForm(): HTMLElement {
     "form",
     { class: "card", novalidate: "" },
     heading,
-    el("div", { class: "form-rows" }, taskField, modeField, repoRow, newRepoGroup, optionsGrid, reviewModelField),
+    el(
+      "div",
+      { class: "form-rows" },
+      taskField,
+      modeField,
+      repoRow,
+      newRepoGroup,
+      optionsGrid,
+      reviewModelField,
+      instructionsField,
+    ),
     el("div", { class: "form-actions" }, warnSlot, alertSlot, startBtn),
   );
 
@@ -1525,6 +1565,11 @@ function buildForm(): HTMLElement {
     const modelValue = model.value.trim();
     if (modelValue) body.model = modelValue;
     if (thinking.value) body.thinkingLevel = thinking.value;
+    const instructionsValue = runInstructions.value.trim();
+    if (instructionsValue) {
+      body.instructions = instructionsValue;
+      body.instructionsMode = replaceInstructions.checked ? "replace" : "add";
+    }
 
     startBtn.disabled = true;
     try {
@@ -2729,6 +2774,7 @@ function buildRunsSettingsPage(): HTMLElement {
       "How much each run's VM gets, and when a run is stopped. Saved values apply to new runs right away.",
     ),
     slot,
+    buildAgentInstructionsSettings(),
   );
   const render = (data: RunsSettingsResponse, saved = false): void => {
     slot.replaceChildren(runsSettingsForm(data, render, saved));
@@ -2743,6 +2789,134 @@ function buildRunsSettingsPage(): HTMLElement {
     }
   })();
   return content;
+}
+
+// ── Settings › Runs: the default instructions every new run gets ──
+
+interface SystemPromptResponse {
+  text: string;
+  source: "env" | "file" | "builtin";
+  builtin: string;
+  max: number;
+}
+
+function buildAgentInstructionsSettings(): HTMLElement {
+  const card = el("section", {
+    class: "card agent-instructions",
+    "aria-labelledby": "agentInstructionsTitle",
+  });
+  const loading = el("p", { class: "cell-muted" }, "Loading agent instructions…");
+  card.append(el("h2", { id: "agentInstructionsTitle" }, "Agent instructions"), loading);
+
+  const render = (data: SystemPromptResponse, saved = false): void => {
+    const fromEnv = data.source === "env";
+    const text = el("textarea", {
+      id: "systemPromptText",
+      rows: "10",
+      "aria-describedby": "systemPromptHelp systemPromptSource",
+      readonly: fromEnv ? "" : null,
+    });
+    text.value = data.text;
+    const count = el("p", { class: "setting-hint" });
+    const updateCount = (): void => {
+      count.textContent = `${text.value.length} / ${data.max} characters`;
+    };
+    text.addEventListener("input", updateCount);
+    updateCount();
+
+    const source =
+      data.source === "env"
+        ? "set by HIVE_SYSTEM_PROMPT; edit it there"
+        : data.source === "file"
+          ? "your text"
+          : "hive's default";
+    const sourceLine = el("p", { id: "systemPromptSource", class: "setting-hint" }, `Source: ${source}`);
+    const errorSlot = el("div", { role: "alert" });
+    const status = el("p", { class: "setting-hint", role: "status" }, saved ? "Saved. New runs use this default." : "");
+    const saveBtn = el(
+      "button",
+      { id: "saveSystemPrompt", class: "btn btn-primary", type: "submit", disabled: fromEnv ? "" : null },
+      "Save",
+    );
+    const resetBtn = el(
+      "button",
+      { id: "resetSystemPrompt", class: "btn", type: "button", disabled: fromEnv ? "" : null },
+      "Reset to hive's default",
+    );
+
+    const form = el(
+      "form",
+      { class: "agent-instructions-form", novalidate: "" },
+      el(
+        "p",
+        { id: "systemPromptHelp", class: "setting-hint" },
+        "The instructions every new run gets by default. Runs can add their own instructions on top.",
+      ),
+      text,
+      el("div", { class: "instructions-meta" }, sourceLine, count),
+      errorSlot,
+      el("div", { class: "form-actions instructions-actions" }, saveBtn, resetBtn, status),
+    );
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      errorSlot.replaceChildren();
+      status.textContent = "";
+      saveBtn.disabled = true;
+      void (async () => {
+        try {
+          const res = await api("/api/settings/system-prompt", {
+            method: "PUT",
+            body: JSON.stringify({ text: text.value }),
+          });
+          const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+          render(body as unknown as SystemPromptResponse, true);
+        } catch (err) {
+          errorSlot.replaceChildren(
+            el("p", { class: "alert alert-danger" }, err instanceof Error ? err.message : String(err)),
+          );
+          saveBtn.disabled = false;
+        }
+      })();
+    });
+
+    resetBtn.onclick = () => {
+      if (!confirm("Reset the agent instructions to hive's default? Your saved text is deleted.")) return;
+      errorSlot.replaceChildren();
+      status.textContent = "";
+      resetBtn.disabled = true;
+      void (async () => {
+        try {
+          const res = await api("/api/settings/system-prompt", { method: "DELETE" });
+          const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `Request failed (${res.status})`);
+          render(body as unknown as SystemPromptResponse);
+        } catch (err) {
+          errorSlot.replaceChildren(
+            el("p", { class: "alert alert-danger" }, err instanceof Error ? err.message : String(err)),
+          );
+          resetBtn.disabled = false;
+        }
+      })();
+    };
+
+    card.replaceChildren(el("h2", { id: "agentInstructionsTitle" }, "Agent instructions"), form);
+  };
+
+  void (async () => {
+    try {
+      const res = await api("/api/settings/system-prompt");
+      if (!res.ok) throw new Error(String(res.status));
+      render((await res.json()) as SystemPromptResponse);
+    } catch {
+      card.replaceChildren(
+        el("h2", { id: "agentInstructionsTitle" }, "Agent instructions"),
+        el("p", { class: "alert alert-danger" }, "Couldn't load the agent instructions."),
+      );
+    }
+  })();
+  return card;
 }
 
 function runsSettingsForm(

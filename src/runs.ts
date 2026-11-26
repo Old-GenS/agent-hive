@@ -40,6 +40,7 @@ import { addUsage, emptyUsage, type Usage } from "./render.js";
 import { startStallWatch } from "./stall.js";
 import { cacheBucket, cacheKey, pruneVmCache, useCacheBucket } from "./vmcache.js";
 import { startDiskWatch } from "./diskwatch.js";
+import { composeSystemPrompt, defaultSystemPrompt, MAX_SYSTEM_PROMPT } from "./system-prompt.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -129,6 +130,8 @@ export interface RunMeta {
   routing?: unknown;
   /** the web UI's commit and file list for the run, saved when it finishes */
   changes?: ChangeSummary;
+  /** per-run instructions were added to or replaced the default */
+  instructions?: "added" | "replaced";
   /** agent steps run so far; earlier event logs are kept as io/events-<n>.jsonl */
   steps?: number;
   /** text of the agent's latest assistant message, written when the run ends */
@@ -816,8 +819,11 @@ export interface StartRunOptions {
   provider?: string;
   model?: string;
   thinking?: string;
-  /** replaces config.systemPrompt for this run */
+  /** replaces the default instructions for this run */
   systemPrompt?: string;
+  /** extra instructions for this run, added to the default unless instructionsMode is "replace" */
+  instructions?: string;
+  instructionsMode?: "add" | "replace";
   reviewCycles?: number;
   reviewModel?: string;
   onEvent: (e: any) => void;
@@ -855,6 +861,22 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   const cycles = o.reviewCycles ?? 0;
   if (!Number.isInteger(cycles) || cycles < 0 || cycles > 5) throw new Error("reviewCycles must be 0-5");
 
+  // Compose before anything is created on disk: bad or oversized instructions must not leave a
+  // half-started run behind.
+  const instructions = o.instructions?.trim() ?? "";
+  if (instructions.length > MAX_SYSTEM_PROMPT) {
+    throw new Error(`The instructions for this run are too long (${instructions.length} characters; the maximum is ${MAX_SYSTEM_PROMPT})`);
+  }
+  const instructionsMode = o.instructionsMode ?? "add";
+  if (instructionsMode !== "add" && instructionsMode !== "replace") {
+    throw new Error('instructionsMode must be "add" or "replace"');
+  }
+  const systemBase = composeSystemPrompt(
+    o.systemPrompt || defaultSystemPrompt().text,
+    instructions,
+    instructionsMode,
+  );
+
   // OpenRouter routing needs its model list and provider ranking first: an error here rejects the
   // run before anything is created on disk.
   let openrouter: { modelsJson: any; routing: any; note?: string } | undefined;
@@ -879,6 +901,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     createdAt: Date.now(),
   };
   if (newRepo) meta.newRepo = newRepo;
+  if (instructions) meta.instructions = instructionsMode === "replace" ? "replaced" : "added";
   if (cycles > 0) meta.reviewCycles = cycles;
   if (o.reviewModel !== undefined) meta.reviewModel = o.reviewModel;
   if (openrouter) {
@@ -919,7 +942,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
 
   // Host-only: the run folder is not mounted into any VM, so an agent can't replace it with a
   // symlink the next step would read.
-  writeFileSync(join(dir, "system-base.md"), o.systemPrompt || config.systemPrompt);
+  writeFileSync(join(dir, "system-base.md"), systemBase);
 
   const prefix = newRepo
     ? `/work is an empty git repository for a new project. Create the project there and commit your work with clear messages. You cannot push; when you finish, hive creates the GitHub repository ${newRepo.name} and pushes your commits to it.\n\n`
@@ -1038,7 +1061,7 @@ export function prepareStepFiles(dir: string, _meta: RunMeta, prompt: string): v
   } catch {
     // An older run has no host-only base prompt: use the configured default. Never look in io/:
     // the VM controls that folder and could have pointed it at a host file.
-    systemBase = config.systemPrompt;
+    systemBase = defaultSystemPrompt().text;
   }
   writeVmFile(join(dir, "io", "system.md"), systemBase + "\n\n" + timeNote(config.sandbox.timeoutMin, new Date()));
   writeVmFile(join(dir, "io", "prompt.md"), prompt);

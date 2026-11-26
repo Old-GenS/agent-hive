@@ -135,7 +135,7 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 
 | Method | Endpoint | What it does |
 |--------|----------|--------------|
-| POST | `/prompt` | Start a run (`prompt`, `repo`, `branch`, `newRepo` `{name, private}`, `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`, `systemPromptOverride`), or follow up with `sessionId` |
+| POST | `/prompt` | Start a run (`prompt`, `repo`, `branch`, `newRepo` `{name, private}`, `provider`, `model`, `thinkingLevel`, `reviewCycles`, `reviewModel`, `systemPromptOverride`, `instructions`, `instructionsMode` `add`/`replace`), or follow up with `sessionId` (follow-ups ignore the instruction fields) |
 | GET | `/runs` | Every run, newest first, plus the queue's capacity |
 | GET | `/status/:id` | A run's status, branch, commits and files changed, PR and issue links, usage, timing and error |
 | POST | `/abort/:id` | Stop a run |
@@ -163,6 +163,9 @@ Every endpoint except `/health` needs `Authorization: Bearer <token>`.
 | GET | `/api/settings` | The run settings (value, default, limits, where each comes from) and this computer's CPUs and memory |
 | PUT | `/api/settings` | Save any of `cpus`, `memoryMiB`, `maxConcurrent`, `timeoutMin`, `stallMin`, `diskMaxGb`; 400 with field errors, 409 for a value set in the server's environment |
 | DELETE | `/api/settings/:key` | Reset one setting to its `.env` value or default |
+| GET | `/api/settings/system-prompt` | The default instructions (`text`, `source` `env`/`file`/`builtin`), hive's `builtin` text and `max` |
+| PUT | `/api/settings/system-prompt` | Save the default instructions (`text`); 400 empty or over `max`, 409 when `HIVE_SYSTEM_PROMPT` sets them |
+| DELETE | `/api/settings/system-prompt` | Reset the default instructions to hive's built-in text; 409 when `HIVE_SYSTEM_PROMPT` sets them |
 | GET | `/api/github/repos` | Your repos (via `gh`) |
 | GET | `/api/github/branches?repo=owner/name` | A repo's branches, default first |
 | POST | `/api/github/login` | Start the server's GitHub device login (200 with the state; `waiting` carries the one-time `code` and `url`). An optional body `{"refresh": true}` runs `gh auth refresh` instead, to add the `workflow` scope |

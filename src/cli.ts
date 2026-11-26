@@ -34,10 +34,10 @@ import {
   yellow,
 } from "./tui.js";
 
-const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
-hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
-hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] "<prompt>"
-hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] -f <prompt-file>
+const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
+hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
+hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] "<prompt>"
+hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] -f <prompt-file>
 hive continue [run] ["<prompt>"]
 hive log [run] [--json]
 hive diff [run] [--stat]
@@ -252,6 +252,30 @@ class RunProgress {
   }
 }
 
+/**
+ * `--instructions <file>` for a run's own instructions, and `--replace-instructions` to use them
+ * instead of the default. The file is read before anything starts so a bad path fails clearly.
+ */
+function instructionsOptions(values: {
+  instructions?: string;
+  "replace-instructions"?: boolean;
+}): { instructions?: string; instructionsMode?: "add" | "replace" } {
+  if (values["replace-instructions"] && values.instructions === undefined) {
+    throw new Error("--replace-instructions needs --instructions <file>");
+  }
+  if (values.instructions === undefined) return {};
+  let text: string;
+  try {
+    text = readFileSync(values.instructions, "utf8");
+  } catch (err) {
+    throw new Error(`cannot read instructions file "${values.instructions}": ${(err as Error).message}`);
+  }
+  return {
+    instructions: text,
+    instructionsMode: values["replace-instructions"] ? "replace" : "add",
+  };
+}
+
 async function cmdRun(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
@@ -266,8 +290,11 @@ async function cmdRun(args: string[]): Promise<number> {
       ref: { type: "string" },
       review: { type: "string" },
       "review-model": { type: "string" },
+      instructions: { type: "string" },
+      "replace-instructions": { type: "boolean" },
     },
   });
+  const extra = instructionsOptions(values);
   const { normalizeCliRepo, repoTop, isDirty } = await import("./git.js");
   const { startRun, listRuns, recoverRuns, pruneRuns } = await import("./runs.js");
   const { libkrunAvailable, checkSandbox } = await import("./sandbox.js");
@@ -345,6 +372,8 @@ async function cmdRun(args: string[]): Promise<number> {
       thinking: values.thinking,
       reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
       reviewModel: values["review-model"],
+      instructions: extra.instructions,
+      instructionsMode: extra.instructionsMode,
       signal: abort.signal,
       onStart: () => progress.runStarted({ label: repoLabel }),
       onStatus: (status, extra) => progress.setStep(status, extra),
@@ -415,8 +444,11 @@ async function cmdNew(args: string[]): Promise<number> {
       file: { type: "string", short: "f" },
       review: { type: "string" },
       "review-model": { type: "string" },
+      instructions: { type: "string" },
+      "replace-instructions": { type: "boolean" },
     },
   });
+  const extra = instructionsOptions(values);
   const projectName = positionals[0];
   if (!projectName) throw new Error("hive new needs a project name");
   let prompt = values.file ? readFileSync(values.file, "utf8") : (positionals[1] ?? "");
@@ -470,6 +502,8 @@ async function cmdNew(args: string[]): Promise<number> {
       thinking: values.thinking,
       reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
       reviewModel: values["review-model"],
+      instructions: extra.instructions,
+      instructionsMode: extra.instructionsMode,
       signal: abort.signal,
       onStart: () => progress.runStarted({ label: projectName }),
       onStatus: (status, extra) => progress.setStep(status, extra),

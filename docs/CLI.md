@@ -35,6 +35,8 @@ Options for `run` and `new`:
 | `-t <level>` | Thinking: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `--review <n>` | Up to 5 review cycles after the agent finishes (skipped when it made no commits) |
 | `--review-model <model>` | A different model for the reviews |
+| `--instructions <file>` | Instructions for this run, read from a file and added after the default |
+| `--replace-instructions` | With `--instructions`, replace the default instead of adding to it (alone it is a usage error) |
 | `-f <file>` | Read the prompt from a file |
 | `--json` | Print raw events instead of the readable view |
 | `--repo <owner/name\|url>` | `run` only: clone a remote instead of the current repo |
@@ -42,7 +44,10 @@ Options for `run` and `new`:
 | `--public` | `new` only: create a public repository |
 
 Without `--repo`, `hive run` works on the current repo's `HEAD`; uncommitted changes aren't
-included. `--repo` accepts `owner/name` (github.com), an `https://` or `ssh://` URL, or
+included. The default instructions come from `HIVE_SYSTEM_PROMPT`, then
+`~/.config/agent-hive/system-prompt.md` (Settings › Runs), then hive's built-in text; a follow-up
+keeps the instructions its run started with. See
+[CONFIGURATION.md](CONFIGURATION.md#agent-instructions). `--repo` accepts `owner/name` (github.com), an `https://` or `ssh://` URL, or
 `git@host:owner/name.git`.
 
 ## Looking at results

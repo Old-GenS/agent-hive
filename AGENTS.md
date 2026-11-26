@@ -70,6 +70,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 |------|------|
 | `src/index.ts` | Fastify setup: public routes (the `/` and `/docs` redirects to `/ui/`, `/ui/`, `/health`) and the authenticated API scope |
 | `src/config.ts` | All env-var config (the run limits also come from the settings file, Settings › Runs), provider table (`PROVIDERS`) |
+| `src/system-prompt.ts` | The agent instructions: hive's built-in text, the editable default (`HIVE_SYSTEM_PROMPT`, then `~/.config/agent-hive/system-prompt.md`, then the built-in), atomic save/reset, and per-run add-vs-replace composition |
 | `src/keys.ts` | Provider keys in one private file (mode 600, atomic rename), masked display, lookup precedence (shell env > keys file > `.env`) and the key check per provider |
 | `src/auth.ts` | Bearer tokens (`API_TOKEN` / `API_TOKENS`), one-time WebSocket tickets |
 | `src/settings.ts` | The editable run settings (VM CPUs and memory, runs at once, time limit, stall time, disk limit, finished-run retention): the table with defaults and limits, `readSettings`, `validateSettings` against this computer, `applySettings`/`resetSetting` writing the keys file and updating `config` in place |

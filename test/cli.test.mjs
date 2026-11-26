@@ -395,6 +395,21 @@ test("hive --help mentions keep", () => {
   assert.match(help, /^hive keep \[--off\] <run>$/m);
 });
 
+test("run and new reject --replace-instructions without --instructions, and a missing file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hive-cli-instructions-"));
+  for (const command of [["run", "--replace-instructions", "do work"], ["new", "demo", "--replace-instructions", "build it"]]) {
+    const result = cli(command, dir);
+    assert.equal(result.status, 1, `${command[0]} should exit 1`);
+    assert.match(`${result.stdout}${result.stderr}`, /--replace-instructions needs --instructions <file>/);
+  }
+
+  for (const command of [["run", "--instructions", join(dir, "missing.md"), "do work"], ["new", "demo", "--instructions", join(dir, "missing.md"), "build it"]]) {
+    const result = cli(command, dir);
+    assert.equal(result.status, 1, `${command[0]} should exit 1`);
+    assert.match(`${result.stdout}${result.stderr}`, /cannot read instructions file/);
+  }
+});
+
 test("hive login without github prints the usage, and --help mentions it", () => {
   const help = execFileSync(process.execPath, ["dist/cli.js", "--help"], { cwd: repoRoot, encoding: "utf8" });
   assert.match(help, /^hive login github$/m);

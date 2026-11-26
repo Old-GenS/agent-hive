@@ -8,12 +8,18 @@ The web UI (`ui/`) uses the mockup's look: light and dark themes, the hexagon lo
 Settings in the header.
 
 - **Runs** (not in the mockup): the new-run form, the bee run indicator, the timeline and the result
-  with commits, files changed and Open pull request. See [SERVER.md](SERVER.md#the-web-ui).
+  with commits, files changed and Open pull request. The new-run form has a collapsed
+  **Instructions for this run** disclosure (with a switch to replace the default instead of adding
+  to it). See [SERVER.md](SERVER.md#the-web-ui).
 - **Settings › API keys:** the table from screen 2, built: each provider's key masked, where it
   comes from, its status and default model, and which provider is the default. **Add key** tests
   the key before saving it; **Test**, **Make default** and **Remove** (with an inline
   confirmation) work on each saved key. The storage is the private file; there is no keychain
   choice yet.
+- **Settings › Runs:** the VM and run limits, and **Agent instructions**: an editable default for
+  every run (saved to `~/.config/agent-hive/system-prompt.md`, with **Save**, **Reset to hive's
+  default** and a character count). When `HIVE_SYSTEM_PROMPT` sets the default, the text is
+  read-only and the buttons are disabled.
 - **Settings › This computer:** the checks from step 2 of screen 1 (KVM, libkrun, pasta, launcher,
   VM filesystem) plus the GitHub connection and limits.
 - **First run (`#setup`):** screen 1, built as a five-step flow: Welcome → Check this computer →

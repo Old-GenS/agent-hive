@@ -43,6 +43,8 @@ const promptSchema = {
       model: { type: "string", maxLength: 200 },
       thinkingLevel: { type: "string" },
       systemPromptOverride: { type: "string", maxLength: 20_000 },
+      instructions: { type: "string", maxLength: 20_000 },
+      instructionsMode: { type: "string", enum: ["add", "replace"] },
       reviewCycles: { type: "integer", minimum: 0, maximum: 5 },
       reviewModel: { type: "string", maxLength: 200 },
       newRepo: {
@@ -451,6 +453,8 @@ export default async function webRunRoutes(app: FastifyInstance) {
       model: body.model,
       thinking: body.thinkingLevel,
       systemPrompt: body.systemPromptOverride,
+      instructions: body.instructions,
+      instructionsMode: body.instructionsMode,
       reviewCycles: body.reviewCycles,
       reviewModel: body.reviewModel,
       signal: abort.signal,
