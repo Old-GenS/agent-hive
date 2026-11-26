@@ -227,6 +227,12 @@ trap 'rm -rf -- "$TMP"' EXIT
 release_lines() {
   node -e '
 const fs = require("fs");
+// The newest-tag lookup reads one line and stops; the rest of the list then hits a closed pipe.
+// That is expected, not an error worth a stack trace.
+process.stdout.on("error", (err) => {
+  if (err.code === "EPIPE") process.exit(0);
+  throw err;
+});
 const rels = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const list = rels
   .filter((rel) => rel && typeof rel.tag_name === "string" && rel.tag_name.startsWith("test-"))
