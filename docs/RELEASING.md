@@ -145,7 +145,10 @@ it, downloaded builds included (about 1.7 GB).
 
 There are three tiers: `:8080` is a source checkout (`hive serve`), `:8081` is staging (the newest
 test build), and users get the releases that are promoted. `scripts/test-server.sh` keeps the middle
-one running:
+one running.
+Give the `:8080` service `Environment=HIVE_BUILD_CHANNEL=dev` and it shows a **DEV BUILD** banner
+labelled with what git says its checkout is ("from source: <sha> on main, N commits after vX"), so
+the three can never be mixed up in a browser:
 
 ```bash
 bash scripts/test-server.sh install --host 0.0.0.0   # default port 8081, plus a 15-minute update timer

@@ -279,12 +279,13 @@ test("hive list colours a terminal listing, and stays plain with NO_COLOR", () =
   assert.match(plain.stdout, /commit\(s\)/, "NO_COLOR keeps today's line format");
 });
 
-test("hive --version prints the version, from source marked as such", () => {
-  const { version } = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+test("hive --version prints the version, from source naming the checkout's commit", () => {
+  // A checkout names itself from git (src/source-version.ts), not package.json's never-bumped
+  // version. CI checks out a detached merge commit with no tags, so both forms are accepted.
   for (const flag of ["--version", "-V", "version"]) {
     const r = spawnSync(process.execPath, ["dist/cli.js", flag], { cwd: repoRoot, encoding: "utf8" });
     assert.equal(r.status, 0);
-    assert.equal(r.stdout, `hive ${version} (from source)\n`);
+    assert.match(r.stdout, /^hive from source: [0-9a-f]{7}( on \S+| \(detached\))/);
   }
 });
 
