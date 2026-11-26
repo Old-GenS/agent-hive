@@ -4,6 +4,7 @@
  * numbers only; no secrets.
  */
 import type { FastifyInstance } from "fastify";
+import { buildInfo } from "../build-info.js";
 import { config } from "../config.js";
 import { githubLogin } from "../git.js";
 import { githubScopes } from "../github-login.js";
@@ -90,6 +91,8 @@ export default async function systemRoutes(app: FastifyInstance) {
     npmCache: Boolean(config.sandbox.vmCache),
     version: versionLabel(),
     components: components(),
+    // Absent (undefined is dropped from the JSON) unless this is a test build.
+    build: buildInfo(),
   }));
 
   // The "Right now" tiles on the same page; polled every few seconds while it is open.

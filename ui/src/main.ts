@@ -3393,9 +3393,38 @@ function themeButton(): HTMLButtonElement {
 
 applyTheme(savedTheme());
 
+// ── test-build banner ──
+
+/**
+ * A test build's server reports `build` from /health: show a strip above everything (the login
+ * screen included) that this is not a release. Plain fetch, no token. A release, a source build
+ * or an unreachable server just shows nothing.
+ */
+async function showBuildBanner(): Promise<void> {
+  try {
+    const res = await fetch(`${serverUrl}/health`);
+    if (!res.ok) return;
+    const data = (await res.json()) as { build?: { channel?: unknown; label?: unknown } };
+    const channel = data.build?.channel;
+    if (typeof channel !== "string" || channel === "") return;
+    const prefix = channel === "test" ? "TEST" : channel.toUpperCase();
+    const heading = channel === "test" ? "TEST BUILD" : `${prefix} BUILD`;
+    const label = typeof data.build?.label === "string" ? data.build.label : "";
+    const banner = el("div", { class: "build-banner", role: "status" });
+    // The label comes from the environment: text only, never markup.
+    banner.textContent = label ? `${heading} · ${label} · not a release` : `${heading} · not a release`;
+    document.body.prepend(banner);
+    document.title = `[${prefix}] ${document.title}`;
+  } catch {
+    // No banner; the page works as it would for a release.
+  }
+}
+
 // ── boot ──
 
 (async () => {
+  // Starts the fetch before the auth check, so the banner is there on the login screen too.
+  void showBuildBanner();
   takeTokenFromHash();
   if (!getToken()) {
     renderLogin();

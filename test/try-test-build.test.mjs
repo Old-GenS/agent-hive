@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createServer as createNetServer } from "node:net";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -53,6 +54,13 @@ function requestCount(path) {
 }
 
 // The VM filesystem, shared by every test build (a real one is named by its content).
+function defaultHiveScript() {
+  return (
+    '#!/bin/sh\n' +
+    'echo "ran $HIVE_ROOTFS $*${PORT:+ port=$PORT}${HOST:+ host=$HOST}${HIVE_BUILD_CHANNEL:+ channel=$HIVE_BUILD_CHANNEL}${XDG_CONFIG_HOME:+ config=$XDG_CONFIG_HOME}"\n'
+  );
+}
+
 const rootfsSource = join(root, "rootfs-source");
 mkdirSync(join(rootfsSource, "etc"), { recursive: true });
 writeFileSync(join(rootfsSource, "etc", "os-release"), "ID=test\n");
@@ -60,19 +68,20 @@ const rootfsFile = join(root, ROOTFS_NAME);
 execFileSync("tar", ["-czf", rootfsFile, "-C", rootfsSource, "."]);
 const rootfsBytes = readFileSync(rootfsFile);
 
-function makeApp(version) {
+function makeApp(version, hiveScript = defaultHiveScript()) {
   const dir = mkdtempSync(join(root, "app-"));
   const appDir = join(dir, `hive-${version}`);
   mkdirSync(join(appDir, "bin"), { recursive: true });
-  writeFileSync(join(appDir, "bin", "hive"), '#!/bin/sh\necho "ran $HIVE_ROOTFS $*"\n', { mode: 0o755 });
+  writeFileSync(join(appDir, "bin", "hive"), hiveScript, { mode: 0o755 });
   writeFileSync(join(appDir, "VERSION"), `${version}\n`);
+  writeFileSync(join(appDir, "ROOTFS_VERSION"), `${ROOTFS_ID}\n`);
   const name = `hive-${version}-linux-x86_64.tar.gz`;
   execFileSync("tar", ["-czf", join(dir, name), "-C", dir, `hive-${version}`]);
   return { name, bytes: readFileSync(join(dir, name)) };
 }
 
-function addBuild(tag, version, createdAt, { wrongAppHash = false } = {}) {
-  const app = makeApp(version);
+function addBuild(tag, version, createdAt, { wrongAppHash = false, hiveScript } = {}) {
+  const app = makeApp(version, hiveScript);
   const appPath = `/assets/${tag}/${app.name}`;
   const rootfsPath = `/assets/${tag}/${ROOTFS_NAME}`;
   const sumsPath = `/assets/${tag}/SHA256SUMS`;
@@ -152,6 +161,9 @@ baseUrl = `http://127.0.0.1:${server.address().port}`;
 releases.push({ tag_name: "v1.2.2", created_at: "2025-12-01T00:00:00Z", target_commitish: "stable", assets: [] });
 addBuild("test-3-1.2.3", "1.2.3", "2026-01-01T00:00:00Z");
 addBuild("test-4-1.2.4", "1.2.4", "2026-01-02T00:00:00Z");
+// A build whose hive just prints its environment: the --serve test uses it to prove no key from
+// the calling shell reaches the server. An old created_at keeps it out of the newest-build tests.
+addBuild("test-6-1.2.6", "1.2.6", "2025-11-01T00:00:00Z", { hiveScript: "#!/bin/sh\nenv\n" });
 
 after(() => {
   server.close();
@@ -184,6 +196,53 @@ async function runScript(args, env) {
   } catch (err) {
     return { status: err.code ?? 1, stdout: err.stdout ?? "", stderr: err.stderr ?? String(err) };
   }
+}
+
+/** A port that is free right now: let bind(0) pick one, then release it. */
+async function freePortNumber() {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const probe = createNetServer();
+    await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const port = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+    if (port > 0) return port;
+  }
+  throw new Error("could not find a free port");
+}
+
+/** Hold a port with a listening socket, and check that `port + 1` can be bound too. */
+async function holdPortWithNextFree() {
+  for (let attempt = 0; attempt < 25; attempt++) {
+    const port = await freePortNumber();
+    if (port >= 65535) continue;
+    const holder = createNetServer();
+    try {
+      await new Promise((resolve, reject) => {
+        holder.once("error", reject);
+        holder.listen(port, "127.0.0.1", resolve);
+      });
+    } catch {
+      holder.close();
+      continue;
+    }
+    const next = createNetServer();
+    try {
+      await new Promise((resolve, reject) => {
+        next.once("error", reject);
+        next.listen(port + 1, "127.0.0.1", resolve);
+      });
+      await new Promise((resolve) => next.close(resolve));
+      return { port, holder };
+    } catch {
+      next.close();
+      await new Promise((resolve) => holder.close(resolve));
+    }
+  }
+  throw new Error("could not find two free ports next to each other");
+}
+
+async function closeServer(server) {
+  await new Promise((resolve) => server.close(resolve));
 }
 
 /** Any download directory or half-extracted VM filesystem left behind under `dir`. */
@@ -288,4 +347,128 @@ test("try-test-build.sh --clean removes the cache", { skip: SKIP }, async () => 
   const result = await runScript(["--clean"], scriptEnv({ cache }));
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!existsSync(cache));
+});
+
+test("try-test-build.sh --serve runs the server in its own home", { skip: SKIP }, async () => {
+  const cache = join(root, "cache-serve");
+  const serveHome = join(root, "serve-home");
+  const port = await freePortNumber();
+  const result = await runScript(
+    ["test-4-1.2.4", "--serve", "--port", String(port)],
+    scriptEnv({ cache, data: join(root, "data-serve"), extra: { HIVE_TEST_SERVE_HOME: serveHome } }),
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const rootfs = join(cache, "rootfs", ROOTFS_ID);
+  assert.equal(
+    result.stdout,
+    `ran ${rootfs} serve port=${port} host=127.0.0.1 channel=test config=${join(serveHome, "config")}\n`,
+  );
+  assert.match(result.stderr, new RegExp(`serving test-4-1\\.2\\.4 on http://127\\.0\\.0\\.1:${port}/ui/`));
+  assert.ok(result.stderr.includes(`isolated home: ${serveHome}`), result.stderr);
+  assert.ok(
+    result.stderr.includes(`log in with API_TOKEN from ${join(serveHome, "config", "agent-hive", "env")}`),
+    result.stderr,
+  );
+  assert.equal(readFileSync(join(serveHome, "current"), "utf8"), "test-4-1.2.4\n");
+  for (const dir of ["config", "data", "cache"]) {
+    assert.ok(existsSync(join(serveHome, dir)), dir);
+  }
+});
+
+test("try-test-build.sh --serve --port refuses a port that is in use", { skip: SKIP }, async () => {
+  const { port, holder } = await holdPortWithNextFree();
+  try {
+    const result = await runScript(
+      ["--serve", "--port", String(port)],
+      scriptEnv({
+        cache: join(root, "cache-serve"),
+        data: join(root, "data-serve"),
+        extra: { HIVE_TEST_SERVE_HOME: join(root, "serve-busy") },
+      }),
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`port ${port} is in use`));
+  } finally {
+    await closeServer(holder);
+  }
+});
+
+test("try-test-build.sh --serve takes the next free port from HIVE_TEST_SERVE_PORT", { skip: SKIP }, async () => {
+  const { port, holder } = await holdPortWithNextFree();
+  try {
+    const result = await runScript(
+      ["test-4-1.2.4", "--serve"],
+      scriptEnv({
+        cache: join(root, "cache-serve"),
+        data: join(root, "data-serve"),
+        extra: { HIVE_TEST_SERVE_HOME: join(root, "serve-port"), HIVE_TEST_SERVE_PORT: String(port) },
+      }),
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`port=${port + 1}\\b`));
+  } finally {
+    await closeServer(holder);
+  }
+});
+
+test("try-test-build.sh --serve --fresh removes the serve home first", { skip: SKIP }, async () => {
+  const serveHome = join(root, "serve-fresh");
+  mkdirSync(serveHome, { recursive: true });
+  writeFileSync(join(serveHome, "marker"), "old\n");
+  const port = await freePortNumber();
+  const result = await runScript(
+    ["test-4-1.2.4", "--serve", "--port", String(port), "--fresh"],
+    scriptEnv({ cache: join(root, "cache-serve"), data: join(root, "data-serve"), extra: { HIVE_TEST_SERVE_HOME: serveHome } }),
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(join(serveHome, "marker")));
+  assert.ok(existsSync(join(serveHome, "current")));
+});
+
+test("try-test-build.sh --serve is incompatible with --", { skip: SKIP }, async () => {
+  const result = await runScript(["--serve", "--", "run"], scriptEnv({ cache: join(root, "cache-serve") }));
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /usage:/);
+});
+
+test("try-test-build.sh --serve falls back to the cached build when GitHub is unreachable", { skip: SKIP }, async () => {
+  const cache = join(root, "cache-offline");
+  const warm = await runScript(["test-4-1.2.4"], scriptEnv({ cache, data: join(root, "data-offline") }));
+  assert.equal(warm.status, 0, warm.stderr);
+  const serveHome = join(root, "serve-offline");
+  mkdirSync(serveHome, { recursive: true });
+  writeFileSync(join(serveHome, "current"), "test-4-1.2.4\n");
+  const closed = await freePortNumber();
+  const port = await freePortNumber();
+  const result = await runScript(
+    ["--serve", "--port", String(port)],
+    scriptEnv({
+      cache,
+      data: join(root, "data-offline"),
+      extra: { HIVE_TEST_SERVE_HOME: serveHome, HIVE_RELEASE_API: `http://127.0.0.1:${closed}` },
+    }),
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /GitHub unreachable; serving cached test-4-1\.2\.4/);
+  assert.equal(
+    result.stdout,
+    `ran ${join(cache, "rootfs", ROOTFS_ID)} serve port=${port} host=127.0.0.1 channel=test config=${join(serveHome, "config")}\n`,
+  );
+});
+
+test("try-test-build.sh --serve passes none of the calling shell's environment", { skip: SKIP }, async () => {
+  const port = await freePortNumber();
+  const result = await runScript(
+    ["test-6-1.2.6", "--serve", "--port", String(port)],
+    scriptEnv({
+      cache: join(root, "cache-env"),
+      data: join(root, "data-env"),
+      extra: { HIVE_TEST_SERVE_HOME: join(root, "serve-env"), DEEPSEEK_API_KEY: "leak", GITHUB_TOKEN: "leak" },
+    }),
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!result.stdout.includes("leak"), result.stdout);
+  assert.match(result.stdout, /^HIVE_BUILD_CHANNEL=test$/m);
+  assert.match(result.stdout, /^PORT=\d+$/m);
+  assert.match(result.stdout, /^XDG_CONFIG_HOME=.*\/serve-env\/config$/m);
 });
