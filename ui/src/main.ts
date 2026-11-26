@@ -432,6 +432,8 @@ interface RunState {
   newRepo: string | null;
   providerLabel: string;
   model: string;
+  /** the run reaches only its provider's API hosts */
+  offline: boolean;
   title: string;
   status: Status;
   busy: boolean;
@@ -464,6 +466,8 @@ interface RunSummary {
   newRepo: string | null;
   model: string;
   provider: string;
+  /** the run reaches only its provider's API hosts */
+  offline: boolean;
   createdAt: number;
   lastActivity: number;
   stepStartedAt?: number;
@@ -486,6 +490,7 @@ function parseRunSummary(raw: unknown): RunSummary | null {
     newRepo: typeof r.newRepo === "string" && r.newRepo ? r.newRepo : null,
     model: typeof r.model === "string" ? r.model : "",
     provider: typeof r.provider === "string" ? r.provider : "",
+    offline: r.offline === true,
     createdAt: typeof r.createdAt === "number" ? r.createdAt : Date.now(),
     // The server sends no lastActivity; a finished run's age counts from when it finished.
     lastActivity:
@@ -861,6 +866,7 @@ function runStateFromStatus(status: Record<string, unknown>): RunState {
     newRepo: typeof status.newRepo === "string" && status.newRepo ? status.newRepo : null,
     providerLabel: providers?.providers.find((p) => p.id === providerId)?.label ?? providerId,
     model: typeof status.model === "string" ? status.model : "",
+    offline: status.offline === true,
     title: typeof status.title === "string" && status.title ? status.title : "Untitled run",
     status: runStatus,
     busy: BUSY_STATUS.has(runStatus),
@@ -1052,7 +1058,7 @@ function runItemElement(summary: RunSummary, index: number): HTMLElement {
     "span",
     { class: "run-item-meta" },
     // The time first: it's what people scan for, and the end of the line is what gets cut off.
-    `${runTimeLabel(summary)} \u00b7 ${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"}`,
+    `${runTimeLabel(summary)} \u00b7 ${repoLabel(summary.repo, summary.newRepo)} \u00b7 ${summary.model || "default model"}${summary.offline ? " \u00b7 offline" : ""}`,
   );
   meta.title = summary.finishedAt !== undefined
     ? `Started ${dateTime(summary.createdAt)}, finished ${dateTime(summary.finishedAt)}`
@@ -1479,6 +1485,24 @@ function buildForm(): HTMLElement {
 
   const optionsGrid = el("div", { class: "grid-2" }, providerField, modelField, thinkingField, reviewField);
 
+  // Offline is per run and deliberately not remembered: each new form starts checked off.
+  const offline = el("input", { id: "offline", type: "checkbox" });
+  const offlineField = el(
+    "div",
+    { class: "field" },
+    el(
+      "label",
+      { class: "check-field", for: "offline" },
+      offline,
+      el("span", {}, "Offline (model API only)"),
+    ),
+    el(
+      "p",
+      { class: "field-hint" },
+      "No package installs, git clones or web access: the agent works with what is in the repo.",
+    ),
+  );
+
   const warnSlot = el("div");
   const alertSlot = el("div", { role: "alert" });
   const startBtn = el("button", { id: "startBtn", class: "btn btn-primary", type: "submit" }, "Start run");
@@ -1504,6 +1528,7 @@ function buildForm(): HTMLElement {
       newRepoGroup,
       optionsGrid,
       reviewModelField,
+      offlineField,
       instructionsField,
     ),
     el("div", { class: "form-actions" }, warnSlot, alertSlot, startBtn),
@@ -1570,6 +1595,7 @@ function buildForm(): HTMLElement {
       body.instructions = instructionsValue;
       body.instructionsMode = replaceInstructions.checked ? "replace" : "add";
     }
+    if (offline.checked) body.offline = true;
 
     startBtn.disabled = true;
     try {
@@ -1687,6 +1713,7 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     newRepo: typeof data.newRepo === "string" && data.newRepo ? data.newRepo : null,
     providerLabel: label,
     model: typeof data.model === "string" ? data.model : "",
+    offline: data.offline === true,
     title: firstLine(prompt),
     status: "queued",
     busy: true,
@@ -1803,7 +1830,7 @@ function buildRunView(): HTMLElement {
 
   // github.com URLs read better as owner/name.
   const repoText = repoLabel(state.repo, state.newRepo);
-  const modelText = state.model || "default model";
+  const modelText = `${state.model || "default model"}${state.offline ? " · offline" : ""}`;
   const metaEl = el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`);
   const bee = createBeeIndicator();
   const head = el(
@@ -1894,6 +1921,7 @@ function syncHeaderBee(): void {
 function updateRunMeta(): void {
   if (!run || !runUi) return;
   const parts = [repoLabel(run.repo, run.newRepo), run.providerLabel || "provider", run.model || "default model"];
+  if (run.offline) parts.push("offline");
   if (run.cost > 0) parts.push(`$${run.cost.toFixed(4)}`);
   const started = run.stepStartedAt;
   if (started !== undefined) {

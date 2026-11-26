@@ -147,6 +147,12 @@ export interface EgressProxyOptions {
   /** A line for every refused destination. Defaults to dropping the line. */
   log?: (line: string) => void;
   /**
+   * An offline run's allowlist of hostnames (lower-cased, compared exactly, never a suffix or
+   * wildcard match). When set, a target not on it is refused before any DNS lookup, and IP
+   * literal targets are always refused. Undefined keeps the proxy's normal behaviour.
+   */
+  allowHosts?: string[];
+  /**
    * The port to listen on. Defaults to 0, letting the kernel pick an ephemeral port; an explicit
    * port is for tests in sandboxes where a connect() to a bind(0)-chosen port is refused.
    */
@@ -211,6 +217,21 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
   })));
   const allow = o.allow ?? isPublicAddress;
   const log = o.log ?? (() => undefined);
+  const allowHosts = o.allowHosts?.map((host) => host.toLowerCase());
+
+  /**
+   * Whether an offline run's allowlist refuses `host`. Runs before any DNS lookup, and refuses
+   * every IP literal even when it is spelled in the list: only names are allowlisted.
+   */
+  const notAllowed = (host: string, port: number): boolean => {
+    if (allowHosts === undefined) return false;
+    const lower = host.toLowerCase();
+    if (isIP(host) !== 0 || !allowHosts.includes(lower)) {
+      log(`refused ${host}:${port} (not on this run's allowlist)`);
+      return true;
+    }
+    return false;
+  };
 
   const sockets = new Set<Duplex>();
 
@@ -264,6 +285,10 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
     }
     const host = target.hostname.replace(/^\[(.*)\]$/, "$1");
     const port = target.port ? Number(target.port) : 80;
+    if (notAllowed(host, port)) {
+      status(res, 403);
+      return;
+    }
     void vet(host).then((addresses) => {
       if (addresses === undefined || addresses.length === 0) {
         status(res, 502);
@@ -315,6 +340,10 @@ export async function startEgressProxy(o: EgressProxyOptions = {}): Promise<Egre
     const target = parseAuthority(req.url ?? "");
     if (!target) {
       writeSocketStatus(clientSocket, "400 Bad Request");
+      return;
+    }
+    if (notAllowed(target.host, target.port)) {
+      writeSocketStatus(clientSocket, "403 Forbidden");
       return;
     }
     void vet(target.host).then((addresses) => {
@@ -418,4 +447,16 @@ export function sharedEgressProxy(): Promise<EgressProxy> {
     shared = startEgressProxy({ log: debug ? (line: string) => console.error(line) : undefined });
   }
   return shared;
+}
+
+/**
+ * An offline run's own proxy: the shared proxy's defaults plus a hostname allowlist. It is
+ * separate from the shared proxy so that one run's allowlist never applies to another run.
+ */
+export function startRunProxy(allowHosts: string[], log?: (line: string) => void): Promise<EgressProxy> {
+  const debug = process.env.HIVE_EGRESS_DEBUG === "1";
+  return startEgressProxy({
+    allowHosts,
+    log: log ?? (debug ? (line: string) => console.error(line) : undefined),
+  });
 }

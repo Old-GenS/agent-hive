@@ -126,6 +126,8 @@ export interface RunMeta {
   createdRepo?: string;
   reviewCycles?: number;
   reviewModel?: string;
+  /** this run can reach only its provider's API hosts (no installs, clones or web) */
+  offline?: true;
   /** OpenRouter routing used for this run (from openrouterSetup), if any */
   routing?: unknown;
   /** the web UI's commit and file list for the run, saved when it finishes */
@@ -826,6 +828,8 @@ export interface StartRunOptions {
   instructionsMode?: "add" | "replace";
   reviewCycles?: number;
   reviewModel?: string;
+  /** the VM can reach only the provider's API hosts: no installs, git clones or web pages */
+  offline?: boolean;
   onEvent: (e: any) => void;
   signal: AbortSignal;
   /** Called once the run dir and meta.json exist and the run's status is "queued". */
@@ -851,6 +855,9 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   const provider = resolveProvider(o.provider);
   if (!provider || !PROVIDERS[provider]) {
     throw new Error(`Unknown or missing provider. Supported: ${Object.keys(PROVIDERS).join(", ")}`);
+  }
+  if (o.offline === true && !PROVIDERS[provider].apiHosts) {
+    throw new Error(`offline mode does not know ${provider}'s API hosts`);
   }
   const key = providerKey(provider);
   if (!key) throw new Error(`No API key configured for provider "${provider}"`);
@@ -901,6 +908,7 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
     createdAt: Date.now(),
   };
   if (newRepo) meta.newRepo = newRepo;
+  if (o.offline === true) meta.offline = true;
   if (instructions) meta.instructions = instructionsMode === "replace" ? "replaced" : "added";
   if (cycles > 0) meta.reviewCycles = cycles;
   if (o.reviewModel !== undefined) meta.reviewModel = o.reviewModel;
@@ -1050,11 +1058,36 @@ export function slimStepLog(dir: string): void {
 }
 
 /**
+ * The sentence an offline run's system prompt gains, after the run's own base prompt: the agent
+ * should not waste its time trying the network.
+ */
+export const OFFLINE_SYSTEM_NOTE =
+  "This run is offline: the network is limited to the model API, so installing packages, cloning " +
+  "repositories and fetching web pages will fail. Use only what is already in the repository and " +
+  "the VM.";
+
+/** An offline run's allowlist: its provider's API hosts, or a clear error when they are unknown. */
+export function offlineHosts(meta: RunMeta): string[] | undefined {
+  if (meta.offline !== true) return undefined;
+  const hosts = PROVIDERS[meta.provider]?.apiHosts;
+  if (!hosts) throw new Error(`offline mode does not know ${meta.provider}'s API hosts`);
+  return hosts;
+}
+
+/** The event that tells the person (and the log) what an offline step can reach. */
+export function offlineNote(hosts: string[]): string {
+  return (
+    `Offline: this run can reach only ${hosts.join(", ")}. Package installs, git clones and web ` +
+    "pages will fail; work with what is in the repo."
+  );
+}
+
+/**
  * Write a step's io/system.md (the base prompt plus this step's deadline) and io/prompt.md. Both
  * names are VM-shared, so writeVmFile replaces any symlink the previous step planted. The base
  * prompt itself is host-only (<run>/system-base.md): it is never read from io/.
  */
-export function prepareStepFiles(dir: string, _meta: RunMeta, prompt: string): void {
+export function prepareStepFiles(dir: string, meta: RunMeta, prompt: string): void {
   let systemBase: string;
   try {
     systemBase = readFileSync(join(dir, "system-base.md"), "utf8");
@@ -1063,7 +1096,13 @@ export function prepareStepFiles(dir: string, _meta: RunMeta, prompt: string): v
     // the VM controls that folder and could have pointed it at a host file.
     systemBase = defaultSystemPrompt().text;
   }
-  writeVmFile(join(dir, "io", "system.md"), systemBase + "\n\n" + timeNote(config.sandbox.timeoutMin, new Date()));
+  // The offline sentence is per step, not saved into the host-only base prompt: a follow-up of an
+  // offline run stays offline, and a normal run never sees it.
+  const offline = meta.offline === true ? `\n\n${OFFLINE_SYSTEM_NOTE}` : "";
+  writeVmFile(
+    join(dir, "io", "system.md"),
+    systemBase + offline + "\n\n" + timeNote(config.sandbox.timeoutMin, new Date()),
+  );
   writeVmFile(join(dir, "io", "prompt.md"), prompt);
 }
 
@@ -1081,6 +1120,8 @@ interface AgentStepOptions {
   session: "new" | "continue" | "none";
   signal: AbortSignal;
   onEvent: (e: any) => void;
+  /** an offline run's hostname allowlist, passed through to runSandbox */
+  allowHosts?: string[];
 }
 
 /** Run pi once in a fresh microVM, on the run's work/ copy. */
@@ -1149,6 +1190,7 @@ async function agentStep(dir: string, meta: RunMeta, o: AgentStepOptions): Promi
     env,
     command,
     ioDir: join(dir, "io"),
+    allowHosts: o.allowHosts,
   });
 
   let lastText = "";
@@ -1330,7 +1372,15 @@ async function runStepsInner(
   o: RunStepsOptions,
 ): Promise<{ dir: string; meta: RunMeta }> {
   o.onStatus?.("running");
-  const step = o.agentStep ?? agentStep;
+  const runStep = o.agentStep ?? agentStep;
+  const offline = meta.offline === true;
+  const allowHosts = offlineHosts(meta);
+  // Every offline step, including retries and reviews, announces what it can reach and gets the
+  // same allowlist. A follow-up reads meta.offline, so it stays offline.
+  const step = (stepDir: string, stepMeta: RunMeta, stepOpts: AgentStepOptions) => {
+    if (offline) o.onEvent({ type: "hive_note", text: offlineNote(allowHosts as string[]) });
+    return runStep(stepDir, stepMeta, { ...stepOpts, allowHosts });
+  };
   let main = await step(dir, meta, {
     prompt,
     model: meta.model,

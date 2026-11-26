@@ -34,10 +34,10 @@ import {
   yellow,
 } from "./tui.js";
 
-const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
-hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
-hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] "<prompt>"
-hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--instructions <file> [--replace-instructions]] -f <prompt-file>
+const USAGE = `hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--offline] [--instructions <file> [--replace-instructions]] [--json] [--repo <owner/name|url> [--ref <branch>]] "<prompt>"
+hive run [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--offline] [--instructions <file> [--replace-instructions]] [--json] [--repo <owner/name|url> [--ref <branch>]] -f <prompt-file>
+hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--offline] [--instructions <file> [--replace-instructions]] "<prompt>"
+hive new <name> [--public] [-m model] [-p provider] [-t thinking] [--review <n>] [--review-model <model>] [--offline] [--instructions <file> [--replace-instructions]] -f <prompt-file>
 hive continue [run] ["<prompt>"]
 hive log [run] [--json]
 hive diff [run] [--stat]
@@ -290,6 +290,7 @@ async function cmdRun(args: string[]): Promise<number> {
       ref: { type: "string" },
       review: { type: "string" },
       "review-model": { type: "string" },
+      offline: { type: "boolean" },
       instructions: { type: "string" },
       "replace-instructions": { type: "boolean" },
     },
@@ -372,6 +373,7 @@ async function cmdRun(args: string[]): Promise<number> {
       thinking: values.thinking,
       reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
       reviewModel: values["review-model"],
+      offline: values.offline === true,
       instructions: extra.instructions,
       instructionsMode: extra.instructionsMode,
       signal: abort.signal,
@@ -444,6 +446,7 @@ async function cmdNew(args: string[]): Promise<number> {
       file: { type: "string", short: "f" },
       review: { type: "string" },
       "review-model": { type: "string" },
+      offline: { type: "boolean" },
       instructions: { type: "string" },
       "replace-instructions": { type: "boolean" },
     },
@@ -502,6 +505,7 @@ async function cmdNew(args: string[]): Promise<number> {
       thinking: values.thinking,
       reviewCycles: values.review !== undefined ? Number(values.review) : undefined,
       reviewModel: values["review-model"],
+      offline: values.offline === true,
       instructions: extra.instructions,
       instructionsMode: extra.instructionsMode,
       signal: abort.signal,
@@ -787,9 +791,10 @@ async function cmdList(args: string[]): Promise<number> {
     const rows: string[][] = [["RUN", "STATUS", "COMMITS", "COST", "AGE", "REPO"]];
     for (const run of runs) {
       const star = run.meta.kept ? " \u2605" : "";
+      const offline = run.meta.offline === true ? " offline" : "";
       rows.push([
         run.name,
-        runStatusCell(run.meta.status, tty) + star,
+        runStatusCell(run.meta.status, tty) + star + offline,
         String(run.meta.commits),
         formatCost(run.meta.usage.cost),
         runAge(run.meta, now),
@@ -801,8 +806,9 @@ async function cmdList(args: string[]): Promise<number> {
   }
   for (const run of runs) {
     const star = run.meta.kept ? " \u2605" : "";
+    const offline = run.meta.offline === true ? " offline" : "";
     process.stdout.write(
-      `${run.name}  ${run.meta.status}${star}  ${run.meta.commits} commit(s)  $${run.meta.usage.cost.toFixed(4)}  ${run.meta.repo}\n`,
+      `${run.name}  ${run.meta.status}${star}${offline}  ${run.meta.commits} commit(s)  $${run.meta.usage.cost.toFixed(4)}  ${run.meta.repo}\n`,
     );
   }
   return 0;

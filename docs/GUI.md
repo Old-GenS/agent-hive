@@ -10,7 +10,10 @@ Settings in the header.
 - **Runs** (not in the mockup): the new-run form, the bee run indicator, the timeline and the result
   with commits, files changed and Open pull request. The new-run form has a collapsed
   **Instructions for this run** disclosure (with a switch to replace the default instead of adding
-  to it). See [SERVER.md](SERVER.md#the-web-ui).
+  to it) and an **Offline (model API only)** checkbox, off by default: an offline run can reach
+  only its provider's model API, so package installs, git clones and web access fail and the agent
+  works with what is in the repo. It needs the proxy network mode. See
+  [SERVER.md](SERVER.md#the-web-ui).
 - **Settings › API keys:** the table from screen 2, built: each provider's key masked, where it
   comes from, its status and default model, and which provider is the default. **Add key** tests
   the key before saving it; **Test**, **Make default** and **Remove** (with an inline

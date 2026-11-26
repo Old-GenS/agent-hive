@@ -79,9 +79,9 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/diskwatch.ts` | Disk watchdog: `du`-based size measurement and free-space checks that stop an agent step past `HIVE_RUN_DISK_MAX_GB` / below `HIVE_MIN_FREE_DISK_GB` |
 | `src/vmcache.ts` | Per-repo VM cache buckets: the repo identity key, the bucket a run mounts at `/root/.cache`, the `.used` markers and pruning of old buckets |
 | `src/openrouter.ts` | OpenRouter runs: pi's `models.json` from OpenRouter's model data, and a fixed provider order (maker first, then uptime, then price; low-precision endpoints skipped) |
-| `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); on macOS the same wrapper starts the VM directly with one vsock port to `src/vsock.ts`; the VM writes its events to a mounted `io/` folder that the host follows; `systemInfo()` for the UI |
+| `src/sandbox.ts` | `pasta` + `hive-vm` wrapper for the libkrun microVM (the only backend); on macOS the same wrapper starts the VM directly with one vsock port to `src/vsock.ts`; the VM writes its events to a mounted `io/` folder that the host follows; an offline run starts its own allowlisted egress proxy; `systemInfo()` for the UI |
 | `src/vsock.ts` | The macOS host side of vsock-only egress: a short `/tmp/hv-*.sock` (0600) that the launcher maps one guest vsock port to, piping every connection to the egress proxy; started and closed by `runSandbox` |
-| `src/egress.ts` | The egress proxy, the VM's only network path: pasta forwards its port to the host's loopback (or the vsock bridge does on macOS), and it resolves destinations itself and refuses non-public addresses (this computer, the local network) |
+| `src/egress.ts` | The egress proxy, the VM's only network path: pasta forwards its port to the host's loopback (or the vsock bridge does on macOS), and it resolves destinations itself and refuses non-public addresses (this computer, the local network); an offline run's proxy also refuses hostnames outside its allowlist before resolving them |
 | `src/libkrun.ts` | Which libkrun the launcher loads: `HIVE_LIBKRUN`, then the system one when `hive-vm --check` passes, then the bundled one; the label every isolation report uses |
 | `src/pasta.ts` | Which pasta each VM runs under: the system one when `pasta --version` works, else the static copy bundled in a release; the label every network-isolation report uses |
 | `versions.json` | Pins the release's native pieces: libkrun (tag, commit), libkrunfw (version, x86_64 URL/SHA-256 and the macOS prebuilt and Linux arm64 assets), passt (version, URL, SHA-256), Rust, the manylinux build image digest and the bundled Node version |
@@ -194,6 +194,9 @@ the arm64 native pieces, `npm run smoke:macos` checks the real VM's isolation, a
     the only forwarder. The proxy resolves each destination, allows public addresses only (checked
     after resolving and connected by address, so DNS rebinding cannot get around it) and carries
     HTTP/HTTPS only. `HIVE_NETWORK=direct` is the explicit opt-out, and only exists on Linux.
+    An offline run gets its own proxy that also refuses every hostname not on the run's allowlist
+    (its provider's `apiHosts`), before any DNS lookup; IP-literal targets are always refused.
+    A follow-up of an offline run stays offline.
 
 ## GitHub access (server)
 
@@ -297,4 +300,4 @@ lists multi-field ones (libkrun, libkrunfw, passt) and majors for `scripts/check
 - `hive mcp` (stdio MCP for handing work to hive from other agents)
 - a VM size per run
 - macOS: Phases 0–2 are done and verified on an M4 (the arm64 image builds in CI, boots, and `hive setup` installs it as a `.img.gz`); Phase 3 has `npm test` green on macOS (run by the `macos` CI job) and a portable `du`; Phase 4's native build, darwin bundle, installer branch and isolation smoke test are done. Remaining: `/proc`-free recovery, the case-sensitive run image, and publishing/notarizing a signed macOS release
-- a per-run network allowlist
+- a user-editable allowlist (offline runs currently allow exactly their provider's API hosts)

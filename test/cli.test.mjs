@@ -410,6 +410,19 @@ test("run and new reject --replace-instructions without --instructions, and a mi
   }
 });
 
+test("run and new parse --offline", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hive-cli-offline-"));
+  for (const command of [
+    ["run", "--offline", "--instructions", join(dir, "missing.md"), "do work"],
+    ["new", "demo", "--offline", "--instructions", join(dir, "missing.md"), "build it"],
+  ]) {
+    const result = cli(command, dir);
+    assert.equal(result.status, 1, `${command[0]} should exit 1`);
+    // The missing file is reached only after --offline parsed without an unknown-option error.
+    assert.match(`${result.stdout}${result.stderr}`, /cannot read instructions file/);
+  }
+});
+
 test("hive login without github prints the usage, and --help mentions it", () => {
   const help = execFileSync(process.execPath, ["dist/cli.js", "--help"], { cwd: repoRoot, encoding: "utf8" });
   assert.match(help, /^hive login github$/m);

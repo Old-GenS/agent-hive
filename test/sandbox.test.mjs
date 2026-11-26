@@ -1,6 +1,7 @@
 /** Server-side sandbox command building for the libkrun backend (built by `npm run build`). */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,6 +105,28 @@ test("runSandbox refuses more shared folders than libkrun supports", async () =>
     /too many shared folders for one VM: 6 \(libkrun supports 5\)/,
   );
   assert.equal(existsSync(ioDir), false, "the throw must happen before the io folder or a VM is created");
+});
+
+test("runSandbox refuses an allowlist under network: direct", () => {
+  // config.ts reads HIVE_NETWORK at import time, so the direct case needs its own process.
+  const url = new URL("../dist/sandbox.js", import.meta.url).href;
+  const ioDir = join(mkdtempSync(join(tmpdir(), "hive-direct-")), "io");
+  const probe = `const { runSandbox } = await import(${JSON.stringify(url)});
+try {
+  await runSandbox({ name: "hive-test", mounts: [], env: {}, command: ["true"], ioDir: ${JSON.stringify(ioDir)}, allowHosts: [] });
+  process.stdout.write("started");
+} catch (err) {
+  process.stdout.write(JSON.stringify(err.message));
+}`;
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", probe], {
+    encoding: "utf8",
+    env: { ...process.env, HIVE_NETWORK: "direct", HIVE_DOTENV_PATH: "/nonexistent.env", HIVE_KEYS_FILE: "/nonexistent-keys" },
+  });
+  assert.equal(
+    JSON.parse(out),
+    "offline runs need HIVE_NETWORK=proxy (direct gives the VM the network without hive's proxy)",
+  );
+  assert.equal(existsSync(ioDir), false, "the guard runs before the io folder or a VM is created");
 });
 
 test("buildLibkrunCommand runs the pasta binary it is given", () => {

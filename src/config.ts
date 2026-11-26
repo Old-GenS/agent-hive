@@ -65,23 +65,41 @@ function openrouterRouting(): object {
 /** LLM providers: which env var holds the key on the host, which name pi expects in the sandbox. */
 export const PROVIDERS: Record<
   string,
-  { hostEnv: string[]; sandboxEnv: string; defaultModel?: string; label: string }
+  { hostEnv: string[]; sandboxEnv: string; defaultModel?: string; label: string; apiHosts?: string[] }
 > = {
   deepseek: {
     hostEnv: ["DEEPSEEK_API_KEY"],
     sandboxEnv: "DEEPSEEK_API_KEY",
     defaultModel: "deepseek-flash",
     label: "DeepSeek",
+    apiHosts: ["api.deepseek.com"],
   },
-  zai: { hostEnv: ["ZAI_API_KEY", "ZAI_CODE"], sandboxEnv: "ZAI_API_KEY", defaultModel: "glm-5.3", label: "Z.AI" },
+  zai: {
+    hostEnv: ["ZAI_API_KEY", "ZAI_CODE"],
+    sandboxEnv: "ZAI_API_KEY",
+    defaultModel: "glm-5.3",
+    label: "Z.AI",
+    apiHosts: ["api.z.ai", "open.bigmodel.cn"],
+  },
   openrouter: {
     hostEnv: ["OPENROUTER_API_KEY"],
     sandboxEnv: "OPENROUTER_API_KEY",
     defaultModel: "xiaomi/mimo-v2.6-flash",
     label: "OpenRouter",
+    apiHosts: ["openrouter.ai"],
   },
-  anthropic: { hostEnv: ["ANTHROPIC_API_KEY"], sandboxEnv: "ANTHROPIC_API_KEY", label: "Anthropic" },
-  openai: { hostEnv: ["OPENAI_API_KEY"], sandboxEnv: "OPENAI_API_KEY", label: "OpenAI" },
+  anthropic: {
+    hostEnv: ["ANTHROPIC_API_KEY"],
+    sandboxEnv: "ANTHROPIC_API_KEY",
+    label: "Anthropic",
+    apiHosts: ["api.anthropic.com"],
+  },
+  openai: {
+    hostEnv: ["OPENAI_API_KEY"],
+    sandboxEnv: "OPENAI_API_KEY",
+    label: "OpenAI",
+    apiHosts: ["api.openai.com"],
+  },
 };
 
 /** A setting by name, in the same order as keys: shell environment, keys file, then .env. */

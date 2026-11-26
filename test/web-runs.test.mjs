@@ -76,6 +76,11 @@ test("GET /status returns the run's fields", async () => {
   assert.equal(body.repoSlug, "me/demo");
 });
 
+test("runToJSON includes offline for an offline run and false otherwise", () => {
+  assert.equal(runToJSON(ID, { ...meta, offline: true }, false).offline, true);
+  assert.equal(runToJSON(ID, meta, false).offline, false);
+});
+
 test("GET /status is 404 for a missing or malformed id", async () => {
   for (const url of ["/status/nope", "/status/..%2Fx"]) {
     const res = await app.inject({ method: "GET", url });

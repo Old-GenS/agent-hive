@@ -34,6 +34,7 @@ const {
 } = await import("../dist/runs.js");
 const { BUILTIN_SYSTEM_PROMPT } = await import("../dist/system-prompt.js");
 const { cacheKey } = await import("../dist/vmcache.js");
+const { PROVIDERS } = await import("../dist/config.js");
 
 const signal = () => new AbortController().signal;
 const noop = () => {};
@@ -159,7 +160,7 @@ test("startRun rejects review cycles outside 0-5", async () => {
 });
 
 /** A throwaway run folder and its meta; the agent step is faked, so no VM is booted. */
-function fakeRun() {
+function fakeRun(overrides = {}) {
   const dir = mkdtempSync(join(root, "run-"));
   mkdirSync(join(dir, "io"), { recursive: true });
   return {
@@ -177,13 +178,14 @@ function fakeRun() {
       commits: 0,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
       createdAt: Date.now(),
+      ...overrides,
     },
   };
 }
 
 /** Run runSteps with a scripted list of agent-step results, collecting the calls and events. */
 async function runFake(results, o = {}) {
-  const { dir, meta } = fakeRun();
+  const { dir, meta } = fakeRun(o.meta);
   const calls = [];
   const events = [];
   const abort = new AbortController();
@@ -241,6 +243,84 @@ test("an abort during the retry wait ends the step as aborted", async () => {
   assert.equal(meta.status, "aborted");
   assert.equal(calls.length, 1);
   assert.ok(events.some((e) => e.type === "hive_note"));
+});
+
+
+test("an offline run passes its provider's API hosts to its step and announces it", async () => {
+  const { calls, events } = await runFake([{ status: "done", lastText: "ok" }], {
+    meta: { offline: true },
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].allowHosts, PROVIDERS.deepseek.apiHosts);
+  assert.ok(
+    events.some(
+      (e) =>
+        e.type === "hive_note" &&
+        e.text ===
+          "Offline: this run can reach only api.deepseek.com. Package installs, git clones and web pages will fail; work with what is in the repo.",
+    ),
+    "the Offline hive_note is emitted",
+  );
+});
+
+test("a follow-up of an offline run stays offline", async () => {
+  const { calls } = await runFake([{ status: "done", lastText: "ok" }], {
+    continueSession: true,
+    meta: { offline: true },
+  });
+  assert.deepEqual(calls[0].allowHosts, PROVIDERS.deepseek.apiHosts);
+});
+
+test("a non-offline run passes no allowlist and gets no Offline note", async () => {
+  const { calls, events } = await runFake([{ status: "done", lastText: "ok" }]);
+  assert.equal(calls[0].allowHosts, undefined);
+  assert.ok(!events.some((e) => e.type === "hive_note" && /^Offline:/.test(e.text)));
+});
+
+test("startRun records offline in meta.json", async () => {
+  const dir = await startUntilRunning({ offline: true });
+  assert.equal(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).offline, true);
+
+  const normal = await startUntilRunning();
+  assert.equal(JSON.parse(readFileSync(join(normal, "meta.json"), "utf8")).offline, undefined);
+});
+
+test("an offline run refuses a provider whose API hosts are unknown", async () => {
+  const saved = PROVIDERS.deepseek.apiHosts;
+  delete PROVIDERS.deepseek.apiHosts;
+  try {
+    await assert.rejects(
+      startRun({
+        repo: root,
+        prompt: "x",
+        provider: "deepseek",
+        model: "test-model",
+        offline: true,
+        onEvent: noop,
+        signal: signal(),
+      }),
+      /offline mode does not know deepseek's API hosts/,
+    );
+  } finally {
+    PROVIDERS.deepseek.apiHosts = saved;
+  }
+});
+
+test("an offline step adds the offline sentence to io/system.md, not system-base.md", () => {
+  const offline = fakeRun({ offline: true });
+  writeFileSync(join(offline.dir, "system-base.md"), "base instructions");
+  prepareStepFiles(offline.dir, offline.meta, "next step");
+  const offlineSystem = readFileSync(join(offline.dir, "io", "system.md"), "utf8");
+  assert.match(
+    offlineSystem,
+    /^base instructions\n\nThis run is offline: the network is limited to the model API/,
+  );
+  assert.equal(readFileSync(join(offline.dir, "system-base.md"), "utf8"), "base instructions");
+
+  const normal = fakeRun();
+  writeFileSync(join(normal.dir, "system-base.md"), "base instructions");
+  prepareStepFiles(normal.dir, normal.meta, "next step");
+  assert.doesNotMatch(readFileSync(join(normal.dir, "io", "system.md"), "utf8"), /This run is offline/);
 });
 
 

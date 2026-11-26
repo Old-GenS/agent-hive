@@ -11,7 +11,7 @@ import { accessSync, closeSync, constants, existsSync, fstatSync, mkdirSync, ope
 import { isIPv4 } from "node:net";
 import { basename, dirname, join } from "node:path";
 import { config } from "./config.js";
-import { proxyEnv, sharedEgressProxy } from "./egress.js";
+import { proxyEnv, sharedEgressProxy, startRunProxy, type EgressProxy } from "./egress.js";
 import { GUEST_PROXY_PORT, startVsockBridge, VSOCK_PORT, type VsockBridge } from "./vsock.js";
 import { followJsonl } from "./follow.js";
 import { fixFor, hostInfo } from "./fixes.js";
@@ -152,6 +152,12 @@ export interface SandboxOptions {
    * JSONL stream reliably (the CLI does the same).
    */
   ioDir: string;
+  /**
+   * An offline run's hostname allowlist. When set, the VM gets a dedicated egress proxy that
+   * refuses every other destination; an empty list means nothing is reachable. Undefined uses the
+   * shared proxy, exactly as before.
+   */
+  allowHosts?: string[];
 }
 
 export interface SandboxHandle {
@@ -322,6 +328,9 @@ export function resetIoDir(ioDir: string): void {
 export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   const { sandbox } = config;
   const ioDir = opts.ioDir;
+  if (opts.allowHosts !== undefined && sandbox.network === "direct") {
+    throw new Error("offline runs need HIVE_NETWORK=proxy (direct gives the VM the network without hive's proxy)");
+  }
   if (opts.mounts.length + 1 > MAX_SHARES) {
     throw new Error(`too many shared folders for one VM: ${opts.mounts.length + 1} (libkrun supports ${MAX_SHARES})`);
   }
@@ -330,8 +339,10 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   const vsock = networkBackend() === "vsock";
   let proxyPort: number | undefined;
   let env = opts.env;
+  let dedicatedProxy: EgressProxy | undefined;
   if (sandbox.network === "proxy") {
-    const proxy = await sharedEgressProxy();
+    dedicatedProxy = opts.allowHosts !== undefined ? await startRunProxy(opts.allowHosts) : undefined;
+    const proxy = dedicatedProxy ?? (await sharedEgressProxy());
     proxyPort = proxy.port;
     // Names are passed to the launcher as --env NAME; values ride in the child's environment. On
     // macOS the guest's proxy is on its own loopback, relayed over vsock by hive-netd.
@@ -340,7 +351,14 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   if (vsock && proxyPort === undefined) {
     throw new Error("a macOS VM's only network path is hive's egress proxy (HIVE_NETWORK=direct is not supported)");
   }
-  resetIoDir(ioDir);
+  // From here on an offline run's dedicated proxy is listening: every failure before the VM
+  // starts has to close it, or it outlives the run.
+  try {
+    resetIoDir(ioDir);
+  } catch (err) {
+    await dedicatedProxy?.close();
+    throw err;
+  }
   const launch: SandboxOptions = {
     ...opts,
     env,
@@ -360,12 +378,20 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
   }
   // The bridge listens before the launcher starts, so the guest's first connection is never
   // refused. It lives only as long as the VM.
-  const bridge = vsock ? await startVsockBridge(proxyPort as number) : undefined;
+  let bridge: VsockBridge | undefined;
+  try {
+    bridge = vsock ? await startVsockBridge(proxyPort as number) : undefined;
+  } catch (err) {
+    follower?.stop();
+    await dedicatedProxy?.close();
+    throw err;
+  }
   let child: ReturnType<typeof spawnLibkrun>;
   try {
     child = vsock ? spawnDirect(launch, bridge as VsockBridge) : spawnLibkrun(launch, proxyPort);
   } catch (err) {
     await bridge?.close();
+    await dedicatedProxy?.close();
     throw err;
   }
 
@@ -411,6 +437,12 @@ export async function runSandbox(opts: SandboxOptions): Promise<SandboxHandle> {
       resolve({ code: code ?? 1, stdout: stdoutTail, stderr: stderrTail, timedOut });
     });
   });
+
+  // An offline run's dedicated proxy lives only as long as its VM. done settles for success,
+  // failure, timeout and stop alike.
+  if (dedicatedProxy !== undefined) {
+    void done.then(() => dedicatedProxy?.close());
+  }
 
   const stop = async () => {
     if (child.exitCode === null) {
