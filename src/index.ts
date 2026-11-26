@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadTokens, requireAuth } from "./auth.js";
+import { buildInfo } from "./build-info.js";
 import { checkSandbox, runtimeInfo } from "./sandbox.js";
 import { capacity, default as webRunRoutes } from "./web-runs.js";
 import { pruneRuns, recoverRuns } from "./runs.js";
@@ -50,6 +51,8 @@ app.get("/health", async () => ({
   status: "ok",
   uptime: Math.floor(process.uptime()),
   isolation: runtimeInfo.isolation,
+  // Absent (undefined is dropped from the JSON) unless this is a test build.
+  build: buildInfo(),
 }));
 
 // ── API: everything registered in this scope requires auth ──

@@ -27,15 +27,6 @@ The pruning step deletes nothing whose title starts with `KEEP`, that carries a 
 that is still a draft. (A published release cannot be turned back into a draft, so that last one
 only applies to releases created as drafts.)
 
-### Trying a test build
-
-`bash scripts/try-test-build.sh [<tag>]` downloads the newest (or the named) test build, checks it
-against its `SHA256SUMS`, extracts it under `~/.cache/agent-hive/test-builds` (a VM filesystem is
-about 1.6 GB extracted, too big for a small tmpfs `/tmp`), reuses a filesystem already on disk, and
-prints the run commands. `-- <hive args>` runs it directly, and `--list` and `--clean` do what they
-say. Test builds are unsigned and `hive update` never installs them, on purpose. A source build can
-use the printed `HIVE_ROOTFS` while the branch has not changed `image/`.
-
 `promote.yml` is the only thing that reaches users. It **builds nothing**: it downloads the files
 from the `test` release, checks them against the tested `SHA256SUMS`, signs that file keyless with
 this run's OIDC token, and publishes it as `v<version>`. So what a user installs is byte-for-byte
@@ -95,6 +86,58 @@ Hypervisor.framework (including GitHub's macOS runners) it skips the launcher's 
 it: build checks and unit tests can't see a guest-kernel regression. libkrunfw 5.6.4 (November
 2026) booted fine but broke DNS in the VM, so the pin stays on 5.6.2, the version Fedora ships,
 until a newer one passes that check.
+
+### Trying a test build
+
+`bash scripts/try-test-build.sh [<tag>]` downloads the newest (or the named) test build, checks it
+against its `SHA256SUMS`, extracts it under `~/.cache/agent-hive/test-builds` (a VM filesystem is
+about 1.6 GB extracted, too big for a small tmpfs `/tmp`), reuses a filesystem already on disk, and
+prints the run commands. `-- <hive args>` runs it directly, and `--list` and `--clean` do what they
+say. Test builds are unsigned and `hive update` never installs them, on purpose. A source build can
+use the printed `HIVE_ROOTFS` while the branch has not changed `image/`.
+
+### A standing staging server
+
+There are three tiers: `:8080` is a source checkout (`hive serve`), `:8081` is staging (the newest
+test build), and users get the releases that are promoted. `scripts/test-server.sh` keeps the middle
+one running:
+
+```bash
+bash scripts/test-server.sh install --host 0.0.0.0   # default port 8081, plus a 15-minute update timer
+bash scripts/test-server.sh status                   # is it running, which build, which URL
+bash scripts/test-server.sh update                   # switch to the newest test build now
+bash scripts/test-server.sh uninstall                # stop and remove the units
+```
+
+`install` writes `agent-hive-test.service` and, unless `--no-auto-update` is passed, the
+`agent-hive-test-update.service` and `.timer` systemd **user** units, then enables and starts them.
+The service runs the newest `test-<run>-<version>` prerelease through
+`bash scripts/try-test-build.sh --serve`. Defaults are port `8081` and host `127.0.0.1`; give
+`--host 0.0.0.0` to reach it from other machines on the network.
+
+The server has its own home (`$HIVE_TEST_SERVE_HOME`, default
+`~/.cache/agent-hive/test-builds/serve`): its own config (so its own keys and settings), its own
+runs and its own cache. It never sees the real install's keys, runs or settings. Add a provider key
+in its web UI like on any other hive, and log in with the `API_TOKEN` the `status` output points to
+(its `config/agent-hive/env`).
+
+The timer looks for a newer test build every 15 minutes; `update` does the same immediately. It
+switches only when no run is active on the staging server (a running or queued run keeps the current
+build until it finishes), and restarts the service to do it. When GitHub is unreachable, `update`
+leaves the current build serving.
+
+The web UI shows a strip at the top saying that this is a test build, not a release: it appears on
+the login screen too. That comes from `HIVE_BUILD_CHANNEL=test` and `HIVE_BUILD_LABEL`, which the
+script sets (a release sets neither).
+
+For a one-off, `bash scripts/try-test-build.sh --serve` starts the same server in the foreground,
+on the first free port from 8081 (or `--port`/`--host`, with `--fresh` for an empty home).
+
+Two things to know. The staging home has no GitHub login either (`gh` keeps its login in the config
+folder that is now separate), so use **Connect GitHub** in its web UI before it can push branches or
+open pull requests. And the service runs `scripts/try-test-build.sh` and `scripts/test-server.sh`
+from the checkout it was installed from: check out a branch that changes them, and staging runs
+that branch's copy at its next restart. Install it from a checkout that stays on `main`.
 
 ## Pinned versions
 

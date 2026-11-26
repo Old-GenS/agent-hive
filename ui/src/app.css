@@ -97,6 +97,28 @@ body {
   min-height: 100vh;
 }
 
+/*
+ * A test build's "not a release" strip. It is in the page flow (sticky, not fixed), so the layout
+ * below starts after it; the amber and dark text are the same in both themes, since a warning
+ * should look the same everywhere.
+ */
+.build-banner {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  width: 100%;
+  padding: 4px 12px;
+  background: #f2b53a;
+  color: #1a1200;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 h1,
 h2,
 h3,
