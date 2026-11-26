@@ -137,7 +137,7 @@ HIVE_BUNDLE_ROOT=$root exec "$root/libexec/node" "$root/lib/hive.mjs" "$@"
 EOF
 chmod 755 "$app/bin/hive"
 
-npx esbuild dist/cli.js --bundle --platform=node --format=esm --target=node24 --outfile="$app/lib/hive.mjs" --banner:js="import { createRequire as __hiveRequire } from 'node:module'; const require = __hiveRequire(import.meta.url);"
+npx esbuild dist/cli.js --bundle --platform=node --format=esm --target=node26 --outfile="$app/lib/hive.mjs" --banner:js="import { createRequire as __hiveRequire } from 'node:module'; const require = __hiveRequire(import.meta.url);"
 
 # The bundle ships its own Node, checked against the SHASUMS256.txt from nodejs.org.
 curl -fsSL -o "$stage/node-v$NODE_VERSION-linux-x64.tar.gz" \
