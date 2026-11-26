@@ -35,6 +35,7 @@ Options for `run` and `new`:
 | `-t <level>` | Thinking: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `--review <n>` | Up to 5 review cycles after the agent finishes (skipped when it made no commits) |
 | `--review-model <model>` | A different model for the reviews |
+| `--offline` | The VM reaches only the model API: no package installs, git clones or web access. Needs the proxy network mode (the default). |
 | `--instructions <file>` | Instructions for this run, read from a file and added after the default |
 | `--replace-instructions` | With `--instructions`, replace the default instead of adding to it (alone it is a usage error) |
 | `-f <file>` | Read the prompt from a file |
@@ -54,7 +55,7 @@ keeps the instructions its run started with. See
 
 | Command | What it does |
 |---------|--------------|
-| `hive list` | List runs, newest first, with status, commits and cost (live while a run goes). Starred runs carry a ★ after the status. |
+| `hive list` | List runs, newest first, with status, commits and cost (live while a run goes). Starred runs carry a ★ after the status, and offline runs are marked `offline`. |
 | `hive log [run]` | Replay a run's events; follows live while it runs. `--json` for raw events. |
 | `hive diff [run]` | Show the run's changes. `--stat` for a summary. |
 

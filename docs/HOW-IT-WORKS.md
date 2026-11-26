@@ -84,6 +84,15 @@ after the check cannot get around it. Tools in the VM use the proxy through the 
 have no way out. `HIVE_NETWORK=direct` is the explicit opt-out that restores pasta's own network
 (internet and local network, still not this computer).
 
+A run can also start **offline** (`hive run --offline`, or the new-run form's **Offline (model API
+only)** checkbox). An offline run gets its own egress proxy, separate from the shared one, that
+also refuses every hostname not on the run's allowlist. The allowlist is the chosen provider's
+API hosts, so the model keeps working, but package installs, git clones and web access fail: the
+agent works with what is already in the repository and the VM. The allowlist is exact (no
+wildcards or suffix matches), an IP-literal target is always refused, and a refused host is never
+resolved. A follow-up of an offline run stays offline. Offline needs the proxy network mode;
+`HIVE_NETWORK=direct` refuses to start one.
+
 ## How results get back safely
 
 Text crosses the VM boundary only as files: the prompt goes in as a file, events come out as a log

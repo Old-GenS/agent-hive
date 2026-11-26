@@ -240,3 +240,66 @@ test("proxy: falls back to the next vetted address when the first doesn't answer
   assert.equal(await nextChunk(tunnel.socket), "fell back");
   tunnel.socket.destroy();
 });
+
+test("proxy: allowHosts tunnels exact allowed hostnames and refuses everything else before DNS", async (t) => {
+  const echo = await startEcho();
+  const target = await startTarget("not for an offline run");
+  const logs = [];
+  const lookedUp = [];
+  const proxy = await startProxy({
+    allowHosts: ["Allowed.Test"],
+    allow: () => true,
+    lookup: async (host) => {
+      lookedUp.push(host);
+      return ["127.0.0.1"];
+    },
+    log: (line) => logs.push(line),
+  });
+  t.after(async () => {
+    await proxy.close();
+    echo.close();
+    target.close();
+  });
+
+  // Compared lower-cased: the request and the allowlist disagree only in case.
+  const tunnel = await connectThrough(proxy, `ALLOWED.TEST:${portOf(echo)}`);
+  assert.equal(tunnel.status, 200);
+  tunnel.socket.write("allowed");
+  assert.equal(await nextChunk(tunnel.socket), "allowed");
+  tunnel.socket.destroy();
+
+  // Exact, not a suffix or wildcard: these are different hostnames.
+  for (const host of ["other.test", "evil-allowed.test", "allowed.test.evil", "sub.allowed.test"]) {
+    const refused = await connectThrough(proxy, `${host}:443`);
+    assert.equal(refused.status, 403, `${host} must be refused`);
+    refused.socket.destroy();
+  }
+
+  // A plain-HTTP request to a host outside the allowlist gets 403 too.
+  const httpRefused = await new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: "127.0.0.1", port: proxy.port, path: `http://plain-refused.test:${portOf(target)}/x` },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(httpRefused, 403);
+
+  // An IP literal is refused even though the address itself would otherwise be allowed.
+  const ipRefused = await connectThrough(proxy, `127.0.0.1:${portOf(echo)}`);
+  assert.equal(ipRefused.status, 403);
+  ipRefused.socket.destroy();
+
+  assert.ok(logs.includes("refused other.test:443 (not on this run's allowlist)"));
+  assert.ok(logs.includes("refused evil-allowed.test:443 (not on this run's allowlist)"));
+  assert.ok(logs.includes("refused allowed.test.evil:443 (not on this run's allowlist)"));
+  assert.ok(logs.includes(`refused plain-refused.test:${portOf(target)} (not on this run's allowlist)`));
+  assert.ok(logs.includes(`refused 127.0.0.1:${portOf(echo)} (not on this run's allowlist)`));
+
+  // The refused names were never looked up: the allowlist is checked first.
+  assert.deepEqual(lookedUp, ["ALLOWED.TEST"]);
+});
