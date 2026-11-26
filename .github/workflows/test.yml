@@ -102,7 +102,7 @@ jobs:
           base=$(podman run --rm "$img" sh -c 'grep -m1 PRETTY_NAME /etc/os-release' | cut -d= -f2 | tr -d '"')
           {
             echo "base=$base"
-            echo "node=$(podman run --rm "$img" node --version)"
+            echo "node inside the VM (runs pi)=$(podman run --rm "$img" node --version)"
             echo "chromium=$(podman run --rm "$img" chromium --version)"
             echo "pi=$(podman run --rm "$img" pi --version)"
           } > "$RUNNER_TEMP/image-info.txt"
@@ -162,11 +162,26 @@ jobs:
             fs_line="Filesystem: $prev_id -> $fs_id (new) — updating downloads about ${fs_mb} MB"
           fi
 
+          # What promoting this build would ship that the newest stable release does not: the same
+          # paragraph promote.yml prints, counted from that release's tested commit.
+          stable=$(gh release list --repo "${{ github.repository }}" --limit 200 \
+            --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.createdAt) | reverse | .[0].tagName // ""')
+          since=()
+          if [ -n "$stable" ]; then
+            gh release view "$stable" --repo "${{ github.repository }}" --json body --jq .body > "$RUNNER_TEMP/stable-notes.md"
+            since=(--since-tag "$stable" --since-notes "$RUNNER_TEMP/stable-notes.md")
+          fi
+          changes=$(node scripts/release-changes.mjs --head "$sha" "${since[@]}")
+          bundled_node=$(node -p "require('./versions.json').node")
+
           {
             printf 'Test build of v%s, from %s.\n\n' "$VERSION" "$sha"
             printf 'Not signed. Promote it to publish it as v%s; promotion copies these files and\n' "$VERSION"
             printf 'builds nothing.\n\n'
+            printf '%s\n\n' "$changes"
             printf '%s\n\n' "$fs_line"
+            printf 'Bundled Node (runs hive): %s\n\n' "$bundled_node"
             printf 'Inside the image:\n'
             while IFS= read -r line; do printf -- '- %s\n' "$line"; done < "$RUNNER_TEMP/image-info.txt"
             printf '\nBooted in a real VM: egress proxy, LAN and metadata refusal, Chromium render and the\n'
