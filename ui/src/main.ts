@@ -434,6 +434,11 @@ interface RunState {
   model: string;
   /** the run reaches only its provider's API hosts */
   offline: boolean;
+  /** the run's own instructions: added to or replacing the default, or none */
+  instructions: "added" | "replaced" | null;
+  instructionsText: string;
+  /** an offline run's reachable hosts (its provider's API) */
+  offlineHosts: string[];
   title: string;
   status: Status;
   busy: boolean;
@@ -856,6 +861,15 @@ function runsPage(): HTMLElement {
   return runsEl;
 }
 
+/** The run-settings fields of a status or start response, read defensively. */
+function runSettingsFrom(r: Record<string, unknown>): Pick<RunState, "instructions" | "instructionsText" | "offlineHosts"> {
+  return {
+    instructions: r.instructions === "added" || r.instructions === "replaced" ? r.instructions : null,
+    instructionsText: typeof r.instructionsText === "string" ? r.instructionsText : "",
+    offlineHosts: Array.isArray(r.offlineHosts) ? r.offlineHosts.filter((h): h is string => typeof h === "string") : [],
+  };
+}
+
 function runStateFromStatus(status: Record<string, unknown>): RunState {
   const providerId = typeof status.provider === "string" ? status.provider : "";
   const runStatus =
@@ -867,6 +881,7 @@ function runStateFromStatus(status: Record<string, unknown>): RunState {
     providerLabel: providers?.providers.find((p) => p.id === providerId)?.label ?? providerId,
     model: typeof status.model === "string" ? status.model : "",
     offline: status.offline === true,
+    ...runSettingsFrom(status),
     title: typeof status.title === "string" && status.title ? status.title : "Untitled run",
     status: runStatus,
     busy: BUSY_STATUS.has(runStatus),
@@ -1754,6 +1769,7 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     providerLabel: label,
     model: typeof data.model === "string" ? data.model : "",
     offline: data.offline === true,
+    ...runSettingsFrom(data),
     title: firstLine(prompt),
     status: "queued",
     busy: true,
@@ -1872,6 +1888,7 @@ function buildRunView(): HTMLElement {
   const repoText = repoLabel(state.repo, state.newRepo);
   const modelText = `${state.model || "default model"}${state.offline ? " · offline" : ""}`;
   const metaEl = el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`);
+  const flagsEl = runFlags(state);
   const bee = createBeeIndicator();
   const head = el(
     "section",
@@ -1881,6 +1898,7 @@ function buildRunView(): HTMLElement {
       { class: "run-head" },
       el("h1", { class: "run-title", title: state.title }, state.title),
       metaEl,
+      flagsEl,
       bee.root,
       toolbar,
     ),
@@ -1955,6 +1973,37 @@ function syncHeaderBee(): void {
     headerBeeEl.remove();
     headerBeeEl = null;
   }
+}
+
+/**
+ * What this run was started with, shown under its title: offline (and the only hosts its VM may
+ * reach) and its own instructions, expandable. Nothing for a run with neither. Text only.
+ */
+function runFlags(state: RunState): HTMLElement {
+  const flags = el("div", { class: "run-flags" });
+  if (state.offline) {
+    const hosts = state.offlineHosts.length ? state.offlineHosts.join(", ") : "the model API";
+    flags.append(
+      el(
+        "span",
+        { class: "run-flag run-flag-offline", title: "The VM could reach nothing but these hosts" },
+        `Offline · only ${hosts}`,
+      ),
+    );
+  }
+  if (state.instructions) {
+    const label = state.instructions === "replaced" ? "Custom instructions (replaced the default)" : "Custom instructions (added to the default)";
+    flags.append(
+      el(
+        "details",
+        { class: "run-flag run-flag-instructions" },
+        el("summary", {}, label),
+        el("pre", { class: "run-flag-text" }, state.instructionsText || "(not recorded: this run started before hive kept the text)"),
+      ),
+    );
+  }
+  flags.hidden = !state.offline && !state.instructions;
+  return flags;
 }
 
 /** The run page's meta line, with the live cost once the run has reported any. */

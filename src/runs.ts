@@ -134,6 +134,8 @@ export interface RunMeta {
   changes?: ChangeSummary;
   /** per-run instructions were added to or replaced the default */
   instructions?: "added" | "replaced";
+  /** the per-run instructions themselves, so the run page can show them */
+  instructionsText?: string;
   /** agent steps run so far; earlier event logs are kept as io/events-<n>.jsonl */
   steps?: number;
   /** text of the agent's latest assistant message, written when the run ends */
@@ -909,7 +911,10 @@ export async function startRun(o: StartRunOptions): Promise<{ dir: string; meta:
   };
   if (newRepo) meta.newRepo = newRepo;
   if (o.offline === true) meta.offline = true;
-  if (instructions) meta.instructions = instructionsMode === "replace" ? "replaced" : "added";
+  if (instructions) {
+    meta.instructions = instructionsMode === "replace" ? "replaced" : "added";
+    meta.instructionsText = instructions;
+  }
   if (cycles > 0) meta.reviewCycles = cycles;
   if (o.reviewModel !== undefined) meta.reviewModel = o.reviewModel;
   if (openrouter) {

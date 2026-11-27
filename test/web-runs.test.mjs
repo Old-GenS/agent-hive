@@ -18,7 +18,7 @@ process.env.HIVE_KEYS_FILE = join(root, "missing-keys");
 process.env.MAX_CONCURRENT_SESSIONS = "2";
 
 const { emptyUsage } = await import("../dist/render.js");
-const { createSlots, default: webRunRoutes, liveCount, runToJSON, uiStatus } = await import("../dist/web-runs.js");
+const { createSlots, default: webRunRoutes, liveCount, runSettingsJSON, runToJSON, uiStatus } = await import("../dist/web-runs.js");
 
 const meta = {
   repo: "https://github.com/me/demo.git",
@@ -545,4 +545,19 @@ test("POST /push/:id returns 400 with the workflow message when the push is refu
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("runSettingsJSON reports a run's own instructions and an offline run's hosts", () => {
+  assert.deepEqual(runSettingsJSON({ provider: "openrouter" }), { instructions: null, instructionsText: "", offlineHosts: [] });
+  assert.deepEqual(runSettingsJSON({ provider: "openrouter", offline: true }), {
+    instructions: null,
+    instructionsText: "",
+    offlineHosts: ["openrouter.ai"],
+  });
+  assert.deepEqual(
+    runSettingsJSON({ provider: "zai", offline: true, instructions: "replaced", instructionsText: "Only this." }),
+    { instructions: "replaced", instructionsText: "Only this.", offlineHosts: ["api.z.ai", "open.bigmodel.cn"] },
+  );
+  // A provider with no known hosts lists none rather than throwing.
+  assert.deepEqual(runSettingsJSON({ provider: "nope", offline: true }).offlineHosts, []);
 });
