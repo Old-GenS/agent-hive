@@ -372,10 +372,13 @@ test("startRun writes system-base.md from the default, instructions, replace and
     `${BUILTIN_SYSTEM_PROMPT}\n\nInstructions for this run:\nPrefer small commits.`,
   );
   assert.equal(JSON.parse(readFileSync(join(added, "meta.json"), "utf8")).instructions, "added");
+  // The run page shows the run's own instructions, so their text is kept on the run (trimmed).
+  assert.equal(JSON.parse(readFileSync(join(added, "meta.json"), "utf8")).instructionsText, "Prefer small commits.");
 
   const replaced = await startUntilRunning({ instructions: "Only this.", instructionsMode: "replace" });
   assert.equal(readFileSync(join(replaced, "system-base.md"), "utf8"), "Only this.");
   assert.equal(JSON.parse(readFileSync(join(replaced, "meta.json"), "utf8")).instructions, "replaced");
+  assert.equal(JSON.parse(readFileSync(join(replaced, "meta.json"), "utf8")).instructionsText, "Only this.");
 
   const overridden = await startUntilRunning({ systemPrompt: "Override only." });
   assert.equal(readFileSync(join(overridden, "system-base.md"), "utf8"), "Override only.");

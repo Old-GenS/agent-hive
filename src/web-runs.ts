@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { issueTicket } from "./auth.js";
-import { config } from "./config.js";
+import { config, PROVIDERS } from "./config.js";
 import { changeSummary, githubSlug, issueBody, normalizeRepo, openIssue, type ChangeSummary } from "./git.js";
 import { runtimeInfo } from "./sandbox.js";
 import { readVmFileOrEmpty } from "./vmfiles.js";
@@ -241,6 +241,22 @@ function runTitle(meta: RunMeta): string {
 }
 
 /** One run in the shapes the web UI reads (the old `Task.toJSON()`, backed by meta.json). */
+/**
+ * What a run was started with that the run page shows: its own instructions (added to or
+ * replacing the default) and, for an offline run, the hosts its VM may reach.
+ */
+export function runSettingsJSON(meta: RunMeta): {
+  instructions: "added" | "replaced" | null;
+  instructionsText: string;
+  offlineHosts: string[];
+} {
+  return {
+    instructions: meta.instructions ?? null,
+    instructionsText: meta.instructionsText ?? "",
+    offlineHosts: meta.offline === true ? [...(PROVIDERS[meta.provider]?.apiHosts ?? [])] : [],
+  };
+}
+
 export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: ChangeSummary) {
   return {
     sessionId: id,
@@ -273,6 +289,7 @@ export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: Ch
     provider: meta.provider,
     model: meta.model,
     offline: meta.offline === true,
+    ...runSettingsJSON(meta),
     thinkingLevel: meta.thinking,
     error: meta.error,
     isolation: runtimeInfo.isolation,
@@ -507,6 +524,7 @@ export default async function webRunRoutes(app: FastifyInstance) {
       model: startedMeta!.model,
       provider: startedMeta!.provider,
       offline: startedMeta!.offline === true,
+      ...runSettingsJSON(startedMeta!),
       newRepo: body.newRepo?.name,
       stepStartedAt: startedMeta!.createdAt,
       finishedAt: undefined,
