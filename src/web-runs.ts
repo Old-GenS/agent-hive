@@ -280,6 +280,8 @@ export function runToJSON(id: string, meta: RunMeta, live: boolean, changes?: Ch
     unpushedCommits: meta.commits > 0 && meta.pushed === undefined ? meta.commits : 0,
     /** starred: skipped by retention and Clear */
     kept: Boolean(meta.kept),
+    /** the pre-push scan's findings for the current patches (details are masked) */
+    outputScan: meta.outputScan,
     changes: changes ?? changesById.get(id) ?? meta.changes,
     commits: meta.commits,
     prUrl: meta.prUrl,
@@ -348,11 +350,23 @@ async function finishRun(id: string): Promise<void> {
         writeMeta(dir, pushed);
       }
     } catch (err) {
+      const code = (err as Error & { code?: string }).code;
       const fresh = metaOf(dir) ?? meta;
-      fresh.error = (err as Error).message;
-      fresh.pushError = true;
-      writeMeta(dir, fresh);
-      pushFailed = true;
+      if (code === "OUTPUT_SCAN_WARNINGS" || code === "OUTPUT_SCAN_BLOCKED") {
+        // The scan held the push on purpose. The run itself is fine: keep it unpushed and tell the
+        // person, rather than marking a successful run as failed.
+        const warnings = fresh.outputScan?.findings.filter((f) => f.level === "warn").length ?? 0;
+        const note =
+          code === "OUTPUT_SCAN_BLOCKED"
+            ? "Not pushed: the changes contain one of your API keys"
+            : `Not pushed: ${warnings} warning(s) need your confirmation`;
+        publish(id, { type: "hive_note", text: note });
+      } else {
+        fresh.error = (err as Error).message;
+        fresh.pushError = true;
+        writeMeta(dir, fresh);
+        pushFailed = true;
+      }
     }
   }
 
@@ -612,8 +626,9 @@ export default async function webRunRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: "Session is still going; wait for it to finish or abort it" });
     }
     if (!(meta.commits > 0)) return reply.code(409).send({ error: "This run has no commits to push" });
+    const confirmWarnings = (req.body as { confirmWarnings?: unknown } | undefined)?.confirmWarnings === true;
     try {
-      const pushed = await pushRun(dir, { update: meta.pushed !== undefined });
+      const pushed = await pushRun(dir, { update: meta.pushed !== undefined, confirmWarnings });
       const fresh = metaOf(dir) ?? meta;
       // The work itself was fine: the failed push is no longer the run's error.
       if (fresh.pushError) {
@@ -624,6 +639,21 @@ export default async function webRunRoutes(app: FastifyInstance) {
       publish(id, { type: "hive_done", ...runToJSON(id, fresh, false) });
       return { sessionId: id, pushed };
     } catch (err) {
+      const code = (err as Error & { code?: string }).code;
+      if (code === "OUTPUT_SCAN_WARNINGS") {
+        return reply.code(409).send({
+          error: (err as Error).message,
+          code,
+          findings: metaOf(dir)?.outputScan?.findings ?? [],
+        });
+      }
+      if (code === "OUTPUT_SCAN_BLOCKED") {
+        return reply.code(409).send({
+          error: (err as Error).message,
+          code,
+          findings: metaOf(dir)?.outputScan?.findings ?? [],
+        });
+      }
       return reply.code(400).send({ error: (err as Error).message });
     }
   });

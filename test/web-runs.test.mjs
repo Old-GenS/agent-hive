@@ -5,7 +5,7 @@ import Fastify from "fastify";
 import fWebSocket from "@fastify/websocket";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // Fixed before any dist/ import: config.ts reads it at import time.
 const root = mkdtempSync(join(tmpdir(), "hive-web-runs-"));
@@ -16,6 +16,8 @@ process.env.HIVE_RUNS_DIR = root;
 process.env.HIVE_DOTENV_PATH = join(root, "missing.env");
 process.env.HIVE_KEYS_FILE = join(root, "missing-keys");
 process.env.MAX_CONCURRENT_SESSIONS = "2";
+// A fake host key the pre-push scan must catch (never a real one).
+process.env.DEEPSEEK_API_KEY = "sk-test-host-key-1234567890abcdef";
 
 const { emptyUsage } = await import("../dist/render.js");
 const { createSlots, default: webRunRoutes, liveCount, runSettingsJSON, runToJSON, uiStatus } = await import("../dist/web-runs.js");
@@ -412,7 +414,7 @@ function gitBare(dir, ...args) {
 }
 
 /** A finished run folder with an origin clone and one patch, pushing to a local bare repo. */
-async function makePushableRun(name, { rejectWith } = {}) {
+async function makePushableRun(name, { rejectWith, files = {} } = {}) {
   const base = mkdtempSync(join(tmpdir(), "hive-web-push-"));
   const remoteGit = join(base, "remote.git");
   const seed = join(base, "seed");
@@ -444,6 +446,10 @@ async function makePushableRun(name, { rejectWith } = {}) {
   const agent = join(base, "agent");
   git(base, "clone", "-q", remoteGit, agent);
   writeFileSync(join(agent, "f.txt"), "two\n");
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(agent, file)), { recursive: true });
+    writeFileSync(join(agent, file), text);
+  }
   git(agent, "add", ".");
   git(agent, "commit", "-q", "-m", "agent change");
   git(agent, "format-patch", "-q", "-o", join(dir, "out"), `${baseSha}..HEAD`);
@@ -560,4 +566,56 @@ test("runSettingsJSON reports a run's own instructions and an offline run's host
   );
   // A provider with no known hosts lists none rather than throwing.
   assert.deepEqual(runSettingsJSON({ provider: "nope", offline: true }).offlineHosts, []);
+});
+
+test("POST /push/:id returns 409 OUTPUT_SCAN_WARNINGS, then pushes with confirmWarnings", async () => {
+  const { dir, remoteGit, name } = await makePushableRun("push-scan-warn", {
+    files: { ".github/workflows/ci.yml": "name: CI\n" },
+  });
+  try {
+    const first = await app.inject({ method: "POST", url: `/push/${name}` });
+    assert.equal(first.statusCode, 409, first.body);
+    const body = first.json();
+    assert.equal(body.code, "OUTPUT_SCAN_WARNINGS");
+    assert.match(body.error, /push needs confirmation/);
+    assert.ok(Array.isArray(body.findings));
+    assert.equal(body.findings[0].kind, "ci-workflow");
+    assert.equal(body.findings[0].file, ".github/workflows/ci.yml");
+    assert.equal(gitBare(remoteGit, "branch", "--list", `hive/${name}`).trim(), "");
+
+    const retry = await app.inject({
+      method: "POST",
+      url: `/push/${name}`,
+      payload: { confirmWarnings: true },
+    });
+    assert.equal(retry.statusCode, 200, retry.body);
+    assert.equal(retry.json().pushed.commits, 1);
+    assert.equal(gitBare(remoteGit, "log", "-1", "--format=%s", `hive/${name}`).trim(), "agent change");
+    assert.equal(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).outputScan.warned, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /push/:id returns 409 OUTPUT_SCAN_BLOCKED for a host API key and never pushes", async () => {
+  const key = process.env.DEEPSEEK_API_KEY;
+  const { dir, remoteGit, name } = await makePushableRun("push-scan-blocked", {
+    files: { "config.txt": `token = ${key}\n` },
+  });
+  try {
+    const res = await app.inject({ method: "POST", url: `/push/${name}`, payload: { confirmWarnings: true } });
+    assert.equal(res.statusCode, 409, res.body);
+    const body = res.json();
+    assert.equal(body.code, "OUTPUT_SCAN_BLOCKED");
+    assert.match(body.error, /push refused: the changes contain one of your API keys/);
+    assert.equal(body.findings[0].kind, "known-key");
+    assert.ok(!JSON.stringify(body.findings).includes(key));
+    assert.equal(gitBare(remoteGit, "branch", "--list", `hive/${name}`).trim(), "");
+
+    const fresh = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+    assert.equal(fresh.outputScan.blocked, true);
+    assert.equal(fresh.pushed, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

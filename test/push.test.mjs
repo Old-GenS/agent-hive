@@ -17,6 +17,8 @@ process.env.GIT_AUTHOR_NAME = "t";
 process.env.GIT_AUTHOR_EMAIL = "t@t";
 process.env.GIT_COMMITTER_NAME = "t";
 process.env.GIT_COMMITTER_EMAIL = "t@t";
+// A fake host key the pre-push scan must catch (never a real one).
+process.env.DEEPSEEK_API_KEY = "sk-test-host-key-1234567890abcdef";
 
 const { normalizeCliRepo, normalizeRepo, githubSlug, gitConfigIdentity, prepareRepo } = await import("../dist/git.js");
 const { applyRun, openPr, patchSubject, prArgs, pushRun } = await import("../dist/runs.js");
@@ -216,4 +218,82 @@ test("openPr needs a pushed run with a github.com remote", async () => {
     pushed: { branch: "hive/r6", url: "https://gitlab.com/a/b.git", at: 1 },
   });
   await assert.rejects(() => openPr(gitlab), /github\.com remote/);
+});
+
+test("pushRun blocks a patch that contains one of the host's API keys, and records the scan", async () => {
+  const key = process.env.DEEPSEEK_API_KEY;
+  const base = realpathSync(tempDir("hive-push-key-"));
+  const remoteGit = join(base, "remote.git");
+  const local = join(base, "local");
+  git(base, "init", "-q", "--bare", "remote.git");
+  git(base, "clone", "-q", "remote.git", "local");
+  const baseSha = commitFile(local, "f.txt", "one\n", "init");
+  git(local, "push", "-q", "origin", "HEAD:refs/heads/main");
+
+  const dir = join(runsDir, "r-key");
+  mkdirSync(join(dir, "out"), { recursive: true });
+  writeFileSync(
+    join(dir, "out", "0001-secret.patch"),
+    [
+      "diff --git a/config.txt b/config.txt",
+      "--- a/config.txt",
+      "+++ b/config.txt",
+      "@@ -0,0 +1 @@",
+      `+token = ${key}`,
+      "",
+    ].join("\n"),
+  );
+  writeMeta(dir, { source: "local", repo: local, base: baseSha });
+
+  let err;
+  try {
+    await pushRun(dir);
+  } catch (e) {
+    err = e;
+  }
+  assert.match(String(err?.message), /push refused: the changes contain one of your API keys/);
+  assert.equal(err.code, "OUTPUT_SCAN_BLOCKED");
+  const fresh = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"));
+  assert.equal(fresh.outputScan.blocked, true);
+  assert.equal(fresh.outputScan.findings[0].kind, "known-key");
+  assert.ok(!fresh.outputScan.findings[0].detail.includes(key));
+  assert.equal(gitDir(remoteGit, "branch", "--list", "hive/r-key").trim(), "");
+  assert.equal(fresh.pushed, undefined);
+});
+
+test("pushRun needs confirmation for sensitive files, and --yes-equivalent proceeds", async () => {
+  const base = realpathSync(tempDir("hive-push-warn-"));
+  const remoteGit = join(base, "remote.git");
+  const local = join(base, "local");
+  git(base, "init", "-q", "--bare", "remote.git");
+  git(base, "clone", "-q", "remote.git", "local");
+  const baseSha = commitFile(local, "f.txt", "one\n", "init");
+  git(local, "push", "-q", "origin", "HEAD:refs/heads/main");
+
+  const agent = join(base, "agent");
+  git(base, "clone", "-q", local, agent);
+  mkdirSync(join(agent, ".github", "workflows"), { recursive: true });
+  writeFileSync(join(agent, ".github", "workflows", "ci.yml"), "name: CI\n");
+  git(agent, "add", ".");
+  git(agent, "commit", "-q", "-m", "add workflow");
+
+  const dir = join(runsDir, "r-warn");
+  mkdirSync(join(dir, "out"), { recursive: true });
+  git(agent, "format-patch", "-q", "-o", join(dir, "out"), `${baseSha}..HEAD`);
+  writeMeta(dir, { source: "local", repo: local, base: baseSha });
+
+  let err;
+  try {
+    await pushRun(dir);
+  } catch (e) {
+    err = e;
+  }
+  assert.match(String(err?.message), /push needs confirmation/);
+  assert.equal(err.code, "OUTPUT_SCAN_WARNINGS");
+  assert.match(err.message, /ci-workflow \.github\/workflows\/ci\.yml/);
+  assert.equal(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")).outputScan.warned, true);
+
+  const pushed = await pushRun(dir, { confirmWarnings: true });
+  assert.equal(pushed.commits, 1);
+  assert.equal(gitDir(remoteGit, "log", "-1", "--format=%s", "hive/r-warn").trim(), "add workflow");
 });

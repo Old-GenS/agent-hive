@@ -41,6 +41,7 @@ import { startStallWatch } from "./stall.js";
 import { cacheBucket, cacheKey, pruneVmCache, useCacheBucket } from "./vmcache.js";
 import { startDiskWatch } from "./diskwatch.js";
 import { composeSystemPrompt, defaultSystemPrompt, MAX_SYSTEM_PROMPT } from "./system-prompt.js";
+import { knownSecrets, scanPatches, type Finding, type ScanResult } from "./output-scan.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -144,6 +145,8 @@ export interface RunMeta {
   pushed?: { branch: string; url: string; at: number };
   /** the last automatic or manual push failed: `error` is its message */
   pushError?: boolean;
+  /** what the pre-push scan saw in the current patches; details are masked */
+  outputScan?: { blocked: boolean; warned: boolean; findings: Finding[]; at: number };
   /** starred: never deleted by retention or Clear (the UI's ★, `hive keep`) */
   kept?: boolean;
   prUrl?: string;
@@ -387,6 +390,34 @@ export function patchFiles(dir: string): string[] {
     files.push(path);
   }
   return files.sort();
+}
+
+/**
+ * Scan the run's current patches for secrets and code that runs outside the sandbox. out/ is
+ * VM-writable, so the patches are copied through copyVmFileOut into a host-only folder and the
+ * scan reads only those copies, never a path the agent could have replaced with a symlink.
+ */
+function scanRunPatches(dir: string): ScanResult {
+  const patches = patchFiles(dir);
+  if (patches.length === 0) return { findings: [], blocked: false, warned: false };
+  const patchDir = mkdtempSync(join(tmpdir(), "hive-scan-"));
+  try {
+    const copies = patches.map((patch) => {
+      const copy = join(patchDir, basename(patch));
+      copyVmFileOut(patch, copy);
+      return copy;
+    });
+    return scanPatches(copies, knownSecrets());
+  } finally {
+    rmSync(patchDir, { recursive: true, force: true });
+  }
+}
+
+/** An error the CLI and web routes can tell apart without reading its message. */
+function outputScanError(message: string, code: string): Error {
+  const err = new Error(message);
+  (err as Error & { code: string }).code = code;
+  return err;
 }
 
 /**
@@ -686,10 +717,38 @@ export function prArgs(o: {
  */
 export async function pushRun(
   dir: string,
-  o: { branch?: string; remote?: string; requireGithub?: boolean; update?: boolean } = {},
+  o: {
+    branch?: string;
+    remote?: string;
+    requireGithub?: boolean;
+    update?: boolean;
+    /** the person saw the warnings and confirmed this push */
+    confirmWarnings?: boolean;
+  } = {},
 ): Promise<{ branch: string; url: string; commits: number }> {
   const meta = readMeta(dir);
   if (meta.status !== "done") throw new Error(`run is ${meta.status}; nothing to push`);
+
+  // The checkpoint. Nothing is pushed, and no new repo is created, until these patches are clean
+  // or the person has confirmed the warnings.
+  const scan = scanRunPatches(dir);
+  meta.outputScan = { ...scan, at: Date.now() };
+  writeMeta(dir, meta);
+  if (scan.blocked) {
+    const file = scan.findings.find((f) => f.level === "block")?.file ?? "a patch";
+    throw outputScanError(
+      `push refused: the changes contain one of your API keys (${file}). Remove it and revoke the key.`,
+      "OUTPUT_SCAN_BLOCKED",
+    );
+  }
+  if (scan.warned && !o.confirmWarnings) {
+    const warnings = scan.findings.filter((f) => f.level === "warn");
+    const lines = warnings.map((f) => `${f.kind} ${f.file}`);
+    throw outputScanError(
+      `push needs confirmation:\n${lines.join("\n")}\nRerun with confirmation to push anyway.`,
+      "OUTPUT_SCAN_WARNINGS",
+    );
+  }
 
   // A follow-up run owns the branch an earlier prompt pushed; force-update it.
   if (o.update && meta.pushed) {
@@ -1457,6 +1516,9 @@ async function runStepsInner(
       }
     } else {
       meta.commits = exp.commits;
+      // Keep the checkpoint current after every step (a follow-up rewrites out/ entirely).
+      const scan = scanRunPatches(dir);
+      meta.outputScan = { ...scan, at: Date.now() };
     }
   }
 
