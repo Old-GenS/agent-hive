@@ -405,5 +405,5 @@ test("a follow-up keeps the run's own system-base.md", async () => {
   prepareStepFiles(dir, JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")), "next step");
   const system = readFileSync(join(dir, "io", "system.md"), "utf8");
   assert.match(system, /^Keep these\.\n\n/);
-  assert.doesNotMatch(system, /You are a senior software developer/);
+  assert.doesNotMatch(system, /You are a senior developer working unattended/);
 });
