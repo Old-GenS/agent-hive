@@ -2845,3 +2845,40 @@ a.btn {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* The pre-push checkpoint: a blocked key is red, changes to look at are amber. */
+.output-scan {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 10px;
+  max-width: 720px;
+  padding: 10px 12px;
+}
+
+.output-scan-blocked {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.output-scan-warn {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.output-scan-title {
+  font-weight: 600;
+  margin: 0;
+}
+
+.output-scan-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.output-scan-list li {
+  overflow-wrap: anywhere;
+}

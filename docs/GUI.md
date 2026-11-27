@@ -79,3 +79,18 @@ through the server's `/api/keys` routes.
 See `docs/RESEARCH.md`: opencode's client/server split (the GUI as a client of `hive serve`),
 OpenHands' action timeline, interrupt button and file-changes view, and Open WebUI's
 "test connection" button on provider settings (ideas only; its license limits reuse).
+
+## Run page: the pre-push scan
+
+Before the web UI pushes a run's branch or creates a new project's repository, the host scans the
+commits' patches. A known API key from this computer appears under the run flags in a red box:
+**Not pushed: the changes contain one of your API keys**, with each finding's file and a masked key.
+The Push and Open pull request buttons stay disabled, and the red box's message says to remove the
+key from the code and revoke it.
+
+Warnings appear in an amber box: CI workflows, package install scripts, submodules, newly
+executable files and secret-looking strings. The automatic push is held, so the run stays unpushed
+with its findings visible. Clicking Push again (or Open pull request) when the server answers 409
+`OUTPUT_SCAN_WARNINGS` shows a confirmation listing the findings; on OK the request is retried with
+`confirmWarnings: true`. A blocked run cannot be confirmed. Findings and details are rendered as
+text only, and secret values are never shown or stored.

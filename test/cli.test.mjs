@@ -433,3 +433,28 @@ test("hive login without github prints the usage, and --help mentions it", () =>
     assert.match(`${result.stdout}${result.stderr}`, /hive login github/);
   }
 });
+
+test("hive push on a warned run without --yes is non-interactive: exit 1 and says --yes", () => {
+  const name = "scan-warn-20240101-000000";
+  const dir = makeRunsDir("hive-push-scan-", { [name]: finishedMeta() });
+  mkdirSync(join(dir, name, "out"), { recursive: true });
+  writeFileSync(
+    join(dir, name, "out", "0001-ci.patch"),
+    [
+      "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/.github/workflows/ci.yml",
+      "@@ -0,0 +1 @@",
+      "+name: CI",
+      "",
+    ].join("\n"),
+  );
+
+  const pushed = cli(["push", name], dir);
+  assert.equal(pushed.status, 1, pushed.stderr);
+  assert.match(`${pushed.stdout}${pushed.stderr}`, /ci-workflow \.github\/workflows\/ci\.yml/);
+  assert.match(`${pushed.stdout}${pushed.stderr}`, /rerun with --yes to push/);
+  assert.equal(JSON.parse(readFileSync(join(dir, name, "meta.json"), "utf8")).outputScan.warned, true);
+  assert.equal(JSON.parse(readFileSync(join(dir, name, "meta.json"), "utf8")).pushed, undefined);
+});

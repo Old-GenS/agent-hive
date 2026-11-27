@@ -105,6 +105,20 @@ Nothing reaches GitHub because the agent said so. Branches are pushed by the hos
 (by the web UI automatically, by the CLI when you run `hive push`), and pull requests and issues
 are only opened when you ask.
 
+Before any push or new-repository creation, the host scans the exported patches. A known host API
+key in an added line **blocks** the push; the message names the file and masked key, never the
+value, and even an explicit confirmation cannot override it. Changes that can run code outside the
+sandbox once pushed are **warnings**: CI workflows, `preinstall`/`install`/`postinstall`/`prepare`
+hooks in a `package.json`, a `.gitmodules` change, and newly executable files. Secret-looking
+strings (private keys, GitHub and AWS tokens, `sk-` keys) are warnings too, and so is code that
+often hides a payload or a data grab: downloading and running a script (`curl … | sh`), long
+base64 or hex blobs outside lockfiles and data files, and reading credential files (`~/.ssh`,
+`~/.aws/credentials`, `.netrc`). These are patterns, not a model reading the code, so text in the
+diff cannot talk its way past them. An automatic push is
+held and the run stays unpushed; a manual push needs a confirmation (`hive push --yes`, or the
+web UI's dialog). Findings are stored masked on the run and shown on its page. This complements
+using disposable, capped provider keys; it does not replace that.
+
 ## Keeping runs under control
 
 - **Time limit:** each agent step is stopped after `HIVE_SANDBOX_TIMEOUT_MIN` (60) minutes. The

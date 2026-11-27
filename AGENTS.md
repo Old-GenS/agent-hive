@@ -104,6 +104,7 @@ A tool that runs [pi](https://pi.dev) on a repo inside a throwaway microVM.
 | `src/routes/keys.ts` | `/api/keys`: list (masked), add (tested first), test, remove and make-default provider keys for Settings › API keys |
 | `src/routes/settings.ts` | `/api/settings`: read the run settings and this computer, save a patch (400 field errors, 409 for env values), reset one setting to its default, for Settings › Runs |
 | `src/models.ts` | Model lists per provider (OpenRouter's live list, cached 1 h) |
+| `src/output-scan.ts` | The pre-push checkpoint over a run's exported patches: a known host API key blocks a push, secret-looking strings and files that can run code outside the sandbox (CI workflows, install scripts, submodules, executable files) warn; findings carry masked details only |
 | `image/` | The sandbox image: pi (pinned `PI_VERSION`), `hive-agent` (runs pi), `hive-export` (format-patch), `hive-vm-init` (libkrun guest init), `hive-netd` (guest TCP → vsock relay, macOS) |
 | `vm/` | libkrun backend: `hive-vm.c` (launcher), `build.sh` (ad-hoc signs on macOS), `hive-vm.entitlements`, `build-rootfs.sh` |
 | `ui/` | Vite + vanilla TS web UI, built to `ui/dist`: `main.ts` (Runs: form, timeline, result; Settings: API keys, Runs, This computer), `bee.ts` (the run indicator), `util.ts` (`el()`, `esc()`, `api()`), `app.css` (light and dark tokens) |
@@ -172,7 +173,8 @@ the arm64 native pieces, `npm run smoke:macos` checks the real VM's isolation, a
    (`<run>/io.launcher.log`) sits outside the VM-writable `io/` folder for the same reason.
 9. **Nothing reaches GitHub on the agent's say-so.** Branch pushes and new repos happen in the host
    after the run; pull requests and issues only when the user asks (`POST /pr/:id`, `/issue/:id`). `gh` and `git` run with
-   argument arrays, never a shell.
+   argument arrays, never a shell. Every push and new-repo creation is scanned first: a known host API
+   key in the patches refuses it, and warnings need an explicit confirmation.
 10. **Provider keys are written only to the keys file** (`~/.config/agent-hive/env`, mode 600, atomic
     rename). They are never logged or returned whole (the UI and API only see a masked form), and a
     value is validated (`^[\x21-\x7E]{1,400}$`, no quotes, `#`, `\` or backticks) before it is

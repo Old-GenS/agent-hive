@@ -64,7 +64,7 @@ keeps the instructions its run started with. See
 | Command | What it does |
 |---------|--------------|
 | `hive apply [run]` | Apply the patches to the current repo as uncommitted changes (the repo must be clean and at the run's base), or `--branch <name>` to put them on a new branch. Local runs only. |
-| `hive push [run]` | Push the commits to a new branch with your own git credentials: `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for its base. Never forced; after a follow-up it updates the run's own branch. |
+| `hive push [run]` | Push the commits to a new branch with your own git credentials: `--branch <name>` (default `hive/<run>`), `--remote <name>` (default `origin`), `--pr` to open a GitHub pull request, `--base <branch>` for its base. Never forced; after a follow-up it updates the run's own branch. The run's patches are scanned first: a host API key in them refuses the push, and warnings need a confirmation (`--yes`, or a `y` at the prompt on a terminal). |
 | `hive export [run]` | Save the result: a zip of the project files (default), `--bundle` for a git bundle of the commits (`git clone <file>.bundle`), or `--report` for a Markdown report (prompts, the agent's report, errors, commits). `-o <path>` sets the file, `--force` overwrites. |
 
 Zip and bundle are built on your machine from the run's patches in a fresh clone of the original
@@ -72,6 +72,14 @@ source, never from the agent's copy. `push --pr` needs a github.com remote and t
 [GitHub CLI](https://cli.github.com) (`hive login github`, or `gh auth login`). Pushes run as you, with your SSH key,
 credential helper or `gh` login; none of these ever enter the VM. Commits use your git
 `user.name` and `user.email` unless `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` are set.
+
+Every push (including a new project's repository creation) is scanned first. An API key hive knows
+on this computer appearing in an added line blocks the push; the message names the file and a
+masked key, never the value, and `--yes` does not override it. CI workflows, package install
+scripts, submodules, newly executable files and secret-looking strings are warnings: without
+`--yes`, a terminal lists them and asks `Push anyway? [y/N]`; a pipe exits 1 and says to rerun with
+`--yes`. `hive log` and a run's final summary print a one-line scan result. This complements
+disposable, capped provider keys rather than replacing them.
 
 ## Keys and housekeeping
 

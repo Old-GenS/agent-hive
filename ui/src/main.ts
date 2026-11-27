@@ -154,6 +154,57 @@ interface Changes {
   moreFiles: number;
 }
 
+/** One pre-push scan finding. `detail` is masked for secrets by the server. */
+interface ScanFinding {
+  level: "block" | "warn";
+  kind: "known-key" | "secret-pattern" | "ci-workflow" | "install-script" | "submodule" | "executable" | "suspicious-code";
+  file: string;
+  detail: string;
+}
+
+interface OutputScan {
+  blocked: boolean;
+  warned: boolean;
+  findings: ScanFinding[];
+  at?: number;
+}
+
+function parseFinding(raw: unknown): ScanFinding | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const level = r.level === "block" || r.level === "warn" ? r.level : undefined;
+  const kind =
+    r.kind === "known-key" ||
+    r.kind === "secret-pattern" ||
+    r.kind === "ci-workflow" ||
+    r.kind === "install-script" ||
+    r.kind === "submodule" ||
+    r.kind === "executable" ||
+    r.kind === "suspicious-code"
+      ? r.kind
+      : undefined;
+  if (!level || !kind) return undefined;
+  return {
+    level,
+    kind,
+    file: typeof r.file === "string" ? r.file : "",
+    detail: typeof r.detail === "string" ? r.detail : "",
+  };
+}
+
+function parseOutputScan(raw: unknown): OutputScan | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const findings = Array.isArray(r.findings) ? r.findings.map(parseFinding).filter((f): f is ScanFinding => !!f) : [];
+  if (findings.length === 0) return undefined;
+  return {
+    blocked: r.blocked === true || findings.some((f) => f.level === "block"),
+    warned: r.warned === true || findings.some((f) => f.level === "warn"),
+    findings,
+    at: typeof r.at === "number" ? r.at : undefined,
+  };
+}
+
 function parseChanges(raw: unknown): Changes | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as Record<string, unknown>;
@@ -188,6 +239,7 @@ function prElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
     pr.state === "opening" ? "Opening pull request…" : "Open pull request",
   );
   button.disabled = pr.state === "opening";
+  markBlockedPush(button);
   button.onclick = () => void openPr(item);
   box.append(button, el("span", { class: "pr-hint" }, "Uses the agent's write-up and the change list as the description."));
   if (pr.state === "error" && pr.error) box.append(el("p", { class: "alert alert-danger" }, pr.error));
@@ -199,13 +251,38 @@ async function openPr(item: Extract<RunItem, { kind: "banner" }>): Promise<void>
   const sessionId = run.sessionId;
   item.pr = { state: "opening" };
   updateItem(item);
+  let confirmed = false;
   try {
-    const res = await api(`/pr/${encodeURIComponent(sessionId)}`, { method: "POST" });
-    const data = (await res.json().catch(() => ({}))) as { url?: unknown; error?: unknown };
-    if (!res.ok || typeof data.url !== "string") {
+    for (;;) {
+      const res = await api(`/pr/${encodeURIComponent(sessionId)}`, {
+        method: "POST",
+        body: JSON.stringify(confirmed ? { confirmWarnings: true } : {}),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        url?: unknown;
+        error?: unknown;
+        code?: unknown;
+        findings?: unknown;
+      };
+      if (res.ok && typeof data.url === "string") {
+        item.pr = { state: "open", url: data.url };
+        break;
+      }
+      const code = typeof data.code === "string" ? data.code : "";
+      if (code === "OUTPUT_SCAN_WARNINGS") {
+        const findings = Array.isArray(data.findings)
+          ? data.findings.map(parseFinding).filter((f): f is ScanFinding => !!f)
+          : [];
+        applyOutputScan(data.findings, false);
+        if (!confirmed && findings.length > 0 && confirmOutputScan(findings)) {
+          confirmed = true;
+          continue;
+        }
+      } else if (code === "OUTPUT_SCAN_BLOCKED") {
+        applyOutputScan(data.findings, true);
+      }
       throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
     }
-    item.pr = { state: "open", url: data.url };
   } catch (err) {
     item.pr = { state: "error", error: err instanceof Error ? err.message : String(err) };
   }
@@ -214,6 +291,13 @@ async function openPr(item: Extract<RunItem, { kind: "banner" }>): Promise<void>
 
 /** GitHub's refusal when the login lacks the `workflow` scope (the server's pushErrorText text). */
 const WORKFLOW_SCOPE_ERROR = /workflow/i;
+
+/** A blocked scan cannot be overridden: the push buttons stay disabled and say why. */
+function markBlockedPush(button: HTMLButtonElement): void {
+  if (run?.outputScan?.blocked !== true) return;
+  button.disabled = true;
+  button.title = "Not pushed: the changes contain one of your API keys. Remove it from the code and revoke that key.";
+}
 
 /** Push again (after a failed push), with the error inline and the permission fix for workflow refusals. */
 function pushElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
@@ -226,6 +310,7 @@ function pushElement(item: Extract<RunItem, { kind: "banner" }>): HTMLElement {
   );
   button.disabled = pushing;
   button.onclick = () => void pushAgain(item);
+  markBlockedPush(button);
   box.append(button);
   if (item.pushError) box.append(el("p", { class: "alert alert-danger", role: "alert" }, item.pushError));
   if (item.pushError && WORKFLOW_SCOPE_ERROR.test(item.pushError)) {
@@ -252,10 +337,32 @@ async function pushAgain(item: Extract<RunItem, { kind: "banner" }>): Promise<vo
   const sessionId = run.sessionId;
   item.push = { state: "pushing" };
   updateItem(item);
+  let confirmed = false;
   try {
-    const res = await api(`/push/${encodeURIComponent(sessionId)}`, { method: "POST" });
-    const data = (await res.json().catch(() => ({}))) as { error?: unknown };
-    if (!res.ok) {
+    for (;;) {
+      const res = await api(`/push/${encodeURIComponent(sessionId)}`, {
+        method: "POST",
+        body: JSON.stringify(confirmed ? { confirmWarnings: true } : {}),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: unknown;
+        code?: unknown;
+        findings?: unknown;
+      };
+      if (res.ok) break;
+      const code = typeof data.code === "string" ? data.code : "";
+      if (code === "OUTPUT_SCAN_WARNINGS") {
+        const findings = Array.isArray(data.findings)
+          ? data.findings.map(parseFinding).filter((f): f is ScanFinding => !!f)
+          : [];
+        applyOutputScan(data.findings, false);
+        if (!confirmed && findings.length > 0 && confirmOutputScan(findings)) {
+          confirmed = true;
+          continue;
+        }
+      } else if (code === "OUTPUT_SCAN_BLOCKED") {
+        applyOutputScan(data.findings, true);
+      }
       throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
     }
     // Reload the run: the replayed done banner now carries the pushed branch and repo link.
@@ -434,6 +541,8 @@ interface RunState {
   model: string;
   /** the run reaches only its provider's API hosts */
   offline: boolean;
+  /** the pre-push checkpoint's findings for the current patches, if any */
+  outputScan?: OutputScan;
   /** the run's own instructions: added to or replacing the default, or none */
   instructions: "added" | "replaced" | null;
   instructionsText: string;
@@ -572,6 +681,10 @@ interface RunUi {
   followBtn: HTMLButtonElement;
   empty: HTMLElement | null;
   bee: BeeIndicator;
+  /** the pre-push scan box, if the run has findings */
+  scan: HTMLElement | null;
+  /** the run flags, which a newly discovered scan box sits under */
+  flags: HTMLElement;
 }
 
 // ── state ──
@@ -882,6 +995,7 @@ function runStateFromStatus(status: Record<string, unknown>): RunState {
     model: typeof status.model === "string" ? status.model : "",
     offline: status.offline === true,
     ...runSettingsFrom(status),
+    outputScan: parseOutputScan(status.outputScan),
     title: typeof status.title === "string" && status.title ? status.title : "Untitled run",
     status: runStatus,
     busy: BUSY_STATUS.has(runStatus),
@@ -1770,6 +1884,7 @@ function startRun(data: Record<string, unknown>, prompt: string): void {
     model: typeof data.model === "string" ? data.model : "",
     offline: data.offline === true,
     ...runSettingsFrom(data),
+    outputScan: parseOutputScan(data.outputScan),
     title: firstLine(prompt),
     status: "queued",
     busy: true,
@@ -1889,6 +2004,7 @@ function buildRunView(): HTMLElement {
   const modelText = `${state.model || "default model"}${state.offline ? " · offline" : ""}`;
   const metaEl = el("p", { class: "run-meta" }, `${repoText} · ${state.providerLabel || "provider"} · ${modelText}`);
   const flagsEl = runFlags(state);
+  const scanEl = outputScanElement(state.outputScan);
   const bee = createBeeIndicator();
   const head = el(
     "section",
@@ -1899,6 +2015,7 @@ function buildRunView(): HTMLElement {
       el("h1", { class: "run-title", title: state.title }, state.title),
       metaEl,
       flagsEl,
+      ...(scanEl ? [scanEl] : []),
       bee.root,
       toolbar,
     ),
@@ -1943,6 +2060,8 @@ function buildRunView(): HTMLElement {
     followBtn,
     empty,
     bee,
+    scan: scanEl,
+    flags: flagsEl,
   };
   syncRunUi();
   return el("div", {}, head, timelineCard, followUp);
@@ -1975,10 +2094,74 @@ function syncHeaderBee(): void {
   }
 }
 
+/** The finding kinds in words, so the run page never shows a raw enum. */
+const SCAN_KIND_LABEL: Record<ScanFinding["kind"], string> = {
+  "known-key": "known API key",
+  "secret-pattern": "possible secret",
+  "ci-workflow": "CI workflow",
+  "install-script": "install script",
+  submodule: "submodule",
+  executable: "executable file",
+  "suspicious-code": "suspicious code",
+};
+
 /**
- * What this run was started with, shown under its title: offline (and the only hosts its VM may
- * reach) and its own instructions, expandable. Nothing for a run with neither. Text only.
+ * The pre-push checkpoint's box under the run flags. Blocked is red; warnings only are amber.
+ * Every value (including file paths and masked details) is textContent, never HTML.
  */
+function outputScanElement(scan: OutputScan | undefined): HTMLElement | null {
+  if (!scan || scan.findings.length === 0) return null;
+  const blocked = scan.blocked;
+  const box = el("section", {
+    class: `output-scan ${blocked ? "output-scan-blocked" : "output-scan-warn"}`,
+    "aria-label": "Pre-push scan",
+    role: blocked ? "alert" : "status",
+  });
+  box.append(
+    el(
+      "p",
+      { class: "output-scan-title" },
+      blocked
+        ? "Not pushed: the changes contain one of your API keys. Remove it from the code and revoke that key."
+        : "Check before pushing: these changes can run code outside the sandbox once pushed.",
+    ),
+  );
+  const list = el("ul", { class: "output-scan-list" });
+  for (const finding of scan.findings) {
+    const detail = finding.detail ? ` — ${finding.detail}` : "";
+    list.append(el("li", {}, `${SCAN_KIND_LABEL[finding.kind]}: ${finding.file}${detail}`));
+  }
+  box.append(list);
+  return box;
+}
+
+/**
+ * A 409 from a push: keep the findings on the run, show them, and ask before retrying. Uses the
+ * browser's confirm(), whose text is plain and cannot render HTML.
+ */
+function confirmOutputScan(findings: ScanFinding[]): boolean {
+  const lines = findings.map((f) => `${SCAN_KIND_LABEL[f.kind]}: ${f.file}${f.detail ? ` — ${f.detail}` : ""}`);
+  return window.confirm(
+    `Push anyway?\n\nThe pre-push scan found ${findings.length} warning${findings.length === 1 ? "" : "s"}:\n\n${lines.join("\n")}`,
+  );
+}
+
+/** Replace the run's scan box after a 409, without waiting for a reload. */
+function applyOutputScan(findings: unknown, blocked: boolean): void {
+  if (!run) return;
+  const scan = parseOutputScan({ findings, blocked, warned: true });
+  if (!scan) return;
+  run.outputScan = scan;
+  if (runUi) {
+    const next = outputScanElement(scan);
+    const current = runUi.scan;
+    if (next && current) current.replaceWith(next);
+    else if (next && !current) runUi.flags.after(next);
+    else if (!next && current) current.remove();
+    runUi.scan = next;
+  }
+}
+
 function runFlags(state: RunState): HTMLElement {
   const flags = el("div", { class: "run-flags" });
   if (state.offline) {
@@ -2193,6 +2376,11 @@ function finishRun(event: any): void {
   const status = String(event.status ?? "");
   const pushFailed = event.pushFailed === true;
   const pushError = pushFailed && typeof event.error === "string" ? event.error : undefined;
+  if (event.outputScan) applyOutputScan(event.outputScan.findings, event.outputScan.blocked === true);
+  // The automatic push is held when the pre-push scan has findings: the commits exist, but no
+  // branch was pushed, so the "no changes" wording would be wrong.
+  const heldByScan =
+    event.outputScan?.findings?.length > 0 && !event.resultBranch && Number(event.commitsPushed ?? 0) === 0;
   if (run.currentStep) {
     run.currentStep.step = status === "idle" ? "done" : "failed";
     updateItem(run.currentStep);
@@ -2220,15 +2408,17 @@ function finishRun(event: any): void {
         const encoded = branch.split("/").map(encodeURIComponent).join("/");
         link = { href: `https://github.com/${slug}/compare/${encoded}`, label: "See the changes on GitHub" };
       }
-    } else if (!run.newRepo && run.repo) {
+    } else if (!run.newRepo && run.repo && !heldByScan) {
       parts.push("No changes were made");
     }
+    if (heldByScan) parts.push("Not pushed yet: check the pre-push scan");
     const cost = Number(event.usage?.cost);
     if (cost > 0) parts.push(`$${cost.toFixed(4)}`);
     const canPr = !createdRepo && !!event.resultBranch && typeof event.repoSlug === "string" && !!event.repoSlug;
     const wroteSomething = run.items.some((i) => i.kind === "assistant" && i.text.trim() !== "");
     const canIssue =
       !pushFailed &&
+      !heldByScan &&
       !run.newRepo &&
       !event.resultBranch &&
       Number(event.commitsPushed ?? 0) === 0 &&

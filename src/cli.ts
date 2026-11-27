@@ -43,7 +43,7 @@ hive log [run] [--json]
 hive diff [run] [--stat]
 hive apply [run] [--branch <name>]
 hive export [run] [--zip | --bundle | --report] [-o <path>] [--force]
-hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]]
+hive push [run] [--branch <name>] [--remote <name>] [--pr [--base <branch>]] [--yes]
 hive list
 hive clean <run> | --all
 hive keep [--off] <run>
@@ -86,6 +86,28 @@ function writeEvent(json: boolean, render: (e: any) => string | undefined, e: an
 /** The first line of an error, for the one-line summary. */
 function firstLine(text: string | undefined): string {
   return String(text ?? "").split("\n")[0].trim();
+}
+
+/**
+ * One line about the pre-push scan, for a run summary or `hive log`. Files come from the patch's
+ * `diff --git` line, so they go through plainText() before a terminal sees them. No secret value
+ * is ever printed: the scan stores masked details only.
+ */
+function scanSummary(meta: {
+  outputScan?: { blocked: boolean; warned: boolean; findings: { level: string; kind: string; file: string }[] };
+}): string | undefined {
+  const scan = meta.outputScan;
+  if (!scan || scan.findings.length === 0) return undefined;
+  if (scan.blocked) return "hive: output scan: blocked — the changes contain one of your API keys";
+  const warnings = scan.findings.filter((f) => f.level === "warn");
+  if (warnings.length === 0) return undefined;
+  const list = warnings.map((f) => `${f.kind} ${plainText(f.file)}`).join(", ");
+  return `hive: output scan: ${warnings.length} warning${warnings.length === 1 ? "" : "s"} — ${list}`;
+}
+
+function printScanSummary(meta: Parameters<typeof scanSummary>[0]): void {
+  const line = scanSummary(meta);
+  if (line !== undefined) console.error(forTerminal(line, process.stderr));
 }
 
 /** `2h ago`, or `running 3m` while a run is live. */
@@ -389,6 +411,7 @@ async function cmdRun(args: string[]): Promise<number> {
 
   const dir = run.dir;
   const meta = run.meta;
+  printScanSummary(meta);
 
   const name = basename(dir);
   const routing = meta.routing as any;
@@ -521,6 +544,7 @@ async function cmdNew(args: string[]): Promise<number> {
 
   const runName = basename(run.dir);
   const meta = run.meta;
+  printScanSummary(meta);
   const routing = meta.routing as any;
   if (Array.isArray(routing?.order) && routing.order.length > 0) {
     const line = `hive: providers, in order: ${routing.order.join(", ")}`;
@@ -636,6 +660,7 @@ async function cmdContinue(args: string[]): Promise<number> {
 
   const name = basename(run.dir);
   const meta = run.meta;
+  printScanSummary(meta);
   progress.stepResult(meta.status);
   if (meta.status === "done") {
     const hints = [`hive diff ${name}`, `hive push ${name}`];
@@ -678,12 +703,16 @@ async function cmdLog(args: string[]): Promise<number> {
   if (!isLive(readMeta(dir))) {
     follower.poll();
     follower.stop();
-    console.error(`hive: ${readMeta(dir).status}`);
+    const meta = readMeta(dir);
+    console.error(`hive: ${meta.status}`);
+    printScanSummary(meta);
     return 0;
   }
   while (isLive(readMeta(dir))) await sleep(500);
   follower.stop();
-  console.error(`hive: ${readMeta(dir).status}`);
+  const meta = readMeta(dir);
+  console.error(`hive: ${meta.status}`);
+  printScanSummary(meta);
   return 0;
 }
 
@@ -759,18 +788,53 @@ async function cmdPush(args: string[]): Promise<number> {
       remote: { type: "string" },
       pr: { type: "boolean" },
       base: { type: "string" },
+      yes: { type: "boolean" },
     },
   });
   if (values.base !== undefined && !values.pr) throw new Error("--base needs --pr");
   const { openPr, pushRun, readMeta, resolveRun } = await import("./runs.js");
   const dir = resolveRun(positionals[0]);
   const meta = readMeta(dir);
-  const result = await pushRun(dir, {
-    branch: values.branch,
-    remote: values.remote,
-    requireGithub: !!values.pr,
-    update: meta.pushed !== undefined,
-  });
+
+  const push = (confirmWarnings: boolean) =>
+    pushRun(dir, {
+      branch: values.branch,
+      remote: values.remote,
+      requireGithub: !!values.pr,
+      update: meta.pushed !== undefined,
+      confirmWarnings,
+    });
+
+  let result: Awaited<ReturnType<typeof pushRun>>;
+  try {
+    result = await push(!!values.yes);
+  } catch (err) {
+    const code = (err as Error & { code?: string }).code;
+    if (code === "OUTPUT_SCAN_BLOCKED") {
+      console.error(forTerminal(`hive: ${(err as Error).message}`, process.stderr));
+      return 1;
+    }
+    if (code !== "OUTPUT_SCAN_WARNINGS") throw err;
+
+    // The fresh scan was saved before pushRun refused, so list exactly what it found.
+    const scan = readMeta(dir).outputScan;
+    const warnings = scan?.findings.filter((f) => f.level === "warn") ?? [];
+    const lines = warnings.map((f) => `  ${f.kind} ${plainText(f.file)}`);
+    const list = `hive: push needs confirmation:\n${lines.join("\n")}`;
+    const interactive = process.stdout.isTTY === true && process.stdin.isTTY === true;
+    if (!interactive) {
+      console.error(forTerminal(list, process.stderr));
+      console.error("hive: rerun with --yes to push");
+      return 1;
+    }
+    console.error(forTerminal(list, process.stderr));
+    const answer = await ask("Push anyway? [y/N] ");
+    if (!/^y(es)?$/i.test(answer.trim())) {
+      console.error("hive: not pushed");
+      return 1;
+    }
+    result = await push(true);
+  }
   process.stdout.write(`hive: pushed ${result.commits} commit(s) to ${result.branch} on ${result.url}\n`);
   if (values.pr) process.stdout.write((await openPr(dir, { base: values.base })) + "\n");
   return 0;
