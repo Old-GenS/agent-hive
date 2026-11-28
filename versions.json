@@ -29,7 +29,7 @@
     "sha256": "aa75616cc43925f0bd6c05bcfbbaecd77397c03d7bd23591b34ef535be5dfcdc"
   },
   "rust": "1.100.1",
-  "buildImage": "quay.io/pypa/manylinux_2_28_x86_64@sha256:55a36963bc0504cdf004011001c1072306402f0b8b83be5a5eba7068f93eec53",
+  "buildImage": "quay.io/pypa/manylinux_2_28_x86_64@sha256:138aa47510791068def4919c447e639cbcf5b40ccd70950015782bfda3f0503f",
   "node": "26.13.1",
   "skip": {
     "libkrunfw": {
